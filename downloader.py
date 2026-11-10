@@ -22,21 +22,45 @@ import app_paths
 import sys as _sys
 
 
+# J5: certificate-verification downgrade must be visible, never silent.
+# `_SSL_INSECURE` is process-wide state; the hook lets the UI warn the user and
+# persist the warning in the run log. See ssl_insecure_active().
+_SSL_INSECURE = False
+_SSL_INSECURE_HOOK = None
+
+
+def set_ssl_insecure_hook(cb):
+    """Register ``cb(reason: str)`` invoked when verification is disabled."""
+    global _SSL_INSECURE_HOOK
+    _SSL_INSECURE_HOOK = cb
+
+
+def ssl_insecure_active() -> bool:
+    """True when the current process has fallen back to CERT_NONE."""
+    return _SSL_INSECURE
+
+
 def _ssl_ctx() -> ssl.SSLContext:
     """建立 SSL Context，優先序：certifi bundle → 系統預設 → 不驗證（fallback）。
 
     PyInstaller EXE 中 Python 的 CA bundle 路徑常失效，
     certifi 套件自帶 Mozilla cacert.pem，是最可靠的修法。
     若兩者都不可用，才退回「不驗證」模式（只用於可信任的 HuggingFace URL）。
+    J5: that fallback is now reported through set_ssl_insecure_hook() instead
+    of failing silently - downloading model weights over an unverified TLS
+    connection is a security-relevant state the user must be told about.
     """
+    global _SSL_INSECURE
     # 優先：certifi 套件的 CA bundle
     try:
         import certifi
+        _SSL_INSECURE = False
         return ssl.create_default_context(cafile=certifi.where())
     except Exception:
         pass
     # 次選：系統預設（開發環境通常正常）
     try:
+        _SSL_INSECURE = False
         return ssl.create_default_context()
     except Exception:
         pass
@@ -44,6 +68,12 @@ def _ssl_ctx() -> ssl.SSLContext:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode    = ssl.CERT_NONE
+    if not _SSL_INSECURE and _SSL_INSECURE_HOOK:
+        try:
+            _SSL_INSECURE_HOOK("CA bundle unavailable; TLS certificate verification disabled")
+        except Exception:
+            pass
+    _SSL_INSECURE = True
     return ctx
 
 # ── 路徑 ─────────────────────────────────────────────────────────────

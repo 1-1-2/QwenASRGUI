@@ -95,7 +95,11 @@ jobs:
             tests/test_wave15.py tests/test_wave2.py \
             app_webview.py build_release.py version.py tests/test_wave34.py \
             tests/test_postprocess.py postprocess.py app_paths.py \
-            tests/test_layout.py
+            tests/test_layout.py batch_queue.py single_instance.py run_log.py \
+            subtitle_extras.py release_manifest.py tests/test_batch_queue.py \
+            tests/test_batch_api.py tests/test_ui_ops.py tests/test_wave5.py \
+            tests/test_release_manifest.py tests/test_docs.py \
+            tools/gen_download_doc.py
 
       - name: Frontend syntax check
         run: |
@@ -116,6 +120,23 @@ jobs:
         # Fakes sys.frozen/_MEIPASS and rebuilds the three layouts; asserts user
         # data stays beside the launcher and shipped resources under _internal/.
         run: python tests/test_layout.py
+
+      - name: Wave 3 regression (manifest / delta / smooth upgrade / rollback)
+        run: python tests/test_release_manifest.py
+
+      - name: Wave 4 regression (server-side batch queue)
+        run: |
+          python tests/test_batch_queue.py
+          python tests/test_batch_api.py
+
+      - name: Wave 4 regression (single instance / run log / UI state / i18n)
+        run: python tests/test_ui_ops.py
+
+      - name: Wave 5 regression (punctuation / handout / TLS warning)
+        run: python tests/test_wave5.py
+
+      - name: Wave 6 regression (bilingual docs / generated artefacts)
+        run: python tests/test_docs.py
 
       - name: Wave 3/4 regression (window / persistence / live subtitles)
         # Pure static + mock Runner checks; no GUI, no .NET, no model weights.

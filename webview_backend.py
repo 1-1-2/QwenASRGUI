@@ -20,6 +20,7 @@ from pathlib import Path
 
 import app as core          # 重用 ASREngine / 常數 / 診斷函式（__main__ guard 保護）
 import app_paths
+from run_log import RunLog
 
 # Application directory for user data (settings / models / subtitles / checkpoints).
 # Deliberately not Path(__file__).parent: when frozen that points into the
@@ -238,6 +239,12 @@ class WebBackend:
 
     def __init__(self, on_event=None):
         """on_event(event:str, payload:dict)：狀態/進度推送回呼（可選）。"""
+        # G5: record first-run BEFORE _seed_defaults() creates settings.json.
+        try:
+            self._first_run = not Path(getattr(
+                core, "SETTINGS_FILE", BASE_DIR / "settings.json")).exists()
+        except Exception:
+            self._first_run = False
         self.engine = core.ASREngine()
         self._loaded = False
         self._load_err = None
@@ -247,6 +254,8 @@ class WebBackend:
         self._server = None              # api_server.TranscribeServer（LAN 端點）
         self._tunnel = None              # cf_tunnel.CloudflareTunnel（對外臨時網址，延遲建立）
         self._on_event = on_event
+        # H1: structured runtime log shared by the WebView and LAN endpoint.
+        self.run_log = RunLog(on_event=on_event)
         self._theme_cb = None            # 主題變更回呼（app_webview 用來同步視窗標題列深淺）
         self._lock = threading.Lock()
         self._seed_defaults()            # 首次啟動（無 backend）→ 種子預設模型
@@ -269,6 +278,13 @@ class WebBackend:
 
         try:
             _dl.set_download_event_hook(_hook)
+            # J5: surface a TLS verification downgrade as a persistent
+            # warning (run log + UI banner), not a silent fallback.
+            _dl.set_ssl_insecure_hook(
+                lambda reason: self._emit("warning", {
+                    "message": "SSL 憑證驗證已降級（" + str(reason) +
+                               "）：下載的模型檔無法驗證來源，請在可信網路環境中使用。",
+                    "code": "ssl_insecure"}))
         except Exception:
             pass
 
@@ -343,11 +359,27 @@ class WebBackend:
 
     # ── 事件推送 ────────────────────────────────────────────
     def _emit(self, event: str, payload: dict):
+        # Mirror user-visible backend messages into the run log. "log" itself
+        # is excluded to avoid an infinite publish loop.
+        if event in ("status", "capabilities", "download", "warning") and isinstance(payload, dict):
+            msg = payload.get("message") or payload.get("status")
+            if msg:
+                level = "warn" if event in ("warning",) else "info"
+                self.run_log.add(msg, level=level, source=event)
         if self._on_event:
             try:
                 self._on_event(event, payload)
             except Exception:
                 pass
+
+    def get_logs(self, limit: int | None = None) -> dict:
+        """Return the recent runtime log (H1)."""
+        return self.run_log.snapshot(limit)
+
+    def clear_logs(self) -> dict:
+        """Empty the runtime log buffer without touching disk."""
+        self.run_log.clear()
+        return {"ok": True}
 
     # ── 模型載入（背景執行緒呼叫）──────────────────────────
     def start_load(self):
@@ -571,7 +603,18 @@ class WebBackend:
             "hasAnyModel": self._has_any_model(),
             # 目前選擇的模型是否已就緒 → 前端決定開始頁（就緒=語音轉文字／否=模型頁等下載）
             "selectedReady": self.selected_model_present(),
+            # J5: let a reloaded page re-show the TLS downgrade banner.
+            "sslInsecure": self._ssl_insecure(),
+            "firstRun": bool(getattr(self, "_first_run", False)),
         }
+
+    @staticmethod
+    def _ssl_insecure() -> bool:
+        try:
+            import downloader
+            return bool(downloader.ssl_insecure_active())
+        except Exception:
+            return False
 
     def selected_model_present(self) -> bool:
         """目前持久化選擇的『那一個』模型檔是否已下載。
@@ -1976,4 +2019,39 @@ class WebBackend:
 
     # ── 批次（桌面實機後續搬入）────────────────────────────
     def get_batch(self) -> dict:
+        # Kept for API compatibility; the real queue lives on WebViewServer.
         return {"summary": {"done": 0, "total": 0}, "items": []}
+
+    # ── C1 / C2: optional exports derived from a finished SRT ──────────
+    @staticmethod
+    def _safe_srt(srt_path) -> Path:
+        """Resolve a subtitle path, refusing anything outside the output dir.
+
+        The path comes from the browser (and from the LAN endpoint), so it is
+        attacker-controlled. Never trust it for a read or a write.
+        """
+        base = Path(getattr(core, "SRT_DIR", BASE_DIR / "subtitles")).resolve()
+        path = Path(str(srt_path or "")).resolve()
+        if path != base and base not in path.parents:
+            raise ValueError("字幕路徑不在輸出目錄內")
+        if not path.is_file():
+            raise FileNotFoundError("找不到字幕檔")
+        return path
+
+    def refine_punctuation(self, srt_path: str) -> dict:
+        """C1: write a ``*.punct.srt`` copy with cross-segment punctuation."""
+        from subtitle_extras import parse_srt, refine_srt_file
+        path = self._safe_srt(srt_path)
+        dst = refine_srt_file(path)
+        return {"ok": True, "path": str(dst),
+                "lines": len(parse_srt(path.read_text(encoding="utf-8-sig")))}
+
+    def export_handout(self, srt_path: str, fmt: str = "md") -> dict:
+        """C2: write a Markdown / TXT lecture note from the finished SRT."""
+        from subtitle_extras import parse_srt, export_handout_file
+        path = self._safe_srt(srt_path)
+        fmt = "txt" if str(fmt).lower() in ("txt", "text") else "md"
+        dst = export_handout_file(path, fmt=fmt)
+        return {"ok": True, "path": str(dst), "format": fmt,
+                "bytes": dst.stat().st_size,
+                "lines": len(parse_srt(path.read_text(encoding="utf-8-sig")))}

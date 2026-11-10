@@ -65,7 +65,7 @@
       const sel = $("#catalog-import-bundle");
       if (sel) {
         sel.innerHTML = bundles.map(b =>
-          `<option value="${esc(b.id)}">${esc(b.label)}</option>`).join("");
+          `<option value="${esc(b.id)}">${esc(window.I18N ? I18N.L(b.label) : b.label)}</option>`).join("");
       }
       host.innerHTML = bundles.map(b => {
         const badge = b.complete
@@ -97,7 +97,7 @@
         }).join("");
         return `<details style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:6px">
           <summary style="cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center">
-            <span style="flex:1">${esc(b.label)}</span>${approx}${badge}
+            <span style="flex:1">${esc(window.I18N ? I18N.L(b.label) : b.label)}</span>${approx}${badge}
           </summary>
           <div style="margin-top:6px;color:var(--ink-2);font-size:12px">目標：${esc(b.target_dir)} · 來源：${esc(b.provider || "")}${b.optional ? " · 選用" : ""}</div>
           ${files}
@@ -140,24 +140,102 @@
       : (s.loading ? T("status.loading", "載入模型中…") : T("status.needModel", "尚未載入模型"));
     // 版本徽章：純數字版本前綴 v（如 v1.0.9）；已含文字者（如 webview 0.1）原樣顯示
     if (s.version) $("#app-version").textContent = /^\d/.test(s.version) ? "v" + s.version : s.version;
+    // J5: a page reload must still show a TLS downgrade that happened earlier.
+    if (s.sslInsecure) showGlobalWarning(I18N.t("warn.ssl"));
+    // G5: first-run guidance, shown once until the user dismisses it.
+    const hint = $("#first-run-hint");
+    if (hint && s.firstRun && !localStorage.getItem("qwenasr_welcomed")) {
+      hint.hidden = false; hint.style.display = "flex"; I18N.apply(hint);
+    }
   }
+
+  function showGlobalWarning(msg) {
+    const box = $("#global-warning"), text = $("#global-warning-text");
+    if (!box || !text) return;
+    text.textContent = msg;
+    box.hidden = false;
+    box.style.display = "flex";
+  }
+  function dismissWelcome() {
+    const hint = $("#first-run-hint");
+    if (hint) { hint.hidden = true; hint.style.display = "none"; }
+    try { localStorage.setItem("qwenasr_welcomed", "1"); } catch {}
+  }
+  $("#btn-welcome-go") && $("#btn-welcome-go").addEventListener("click", () => {
+    dismissWelcome(); switchView("model");
+  });
+  $("#btn-welcome-close") && $("#btn-welcome-close").addEventListener("click", dismissWelcome);
+  $("#btn-warning-dismiss") && $("#btn-warning-dismiss").addEventListener("click", () => {
+    const box = $("#global-warning"); if (box) { box.hidden = true; box.style.display = "none"; }
+  });
+  // Backend warnings are localised when a dictionary key is supplied; the raw
+  // message is kept in the run log verbatim for diagnostics.
+  API.on("warning", p => {
+    if (!p) return;
+    const msg = p.code === "ssl_insecure" && I18N.t("warn.ssl") ? I18N.t("warn.ssl")
+              : (p.message || "");
+    if (msg) showGlobalWarning(msg);
+  });
 
   // ════════════════════════════════════════════════════════
   // 音檔轉字幕
   // ════════════════════════════════════════════════════════
+  // ── H2: one button state machine for the whole UI ───────────────────
+  // Previously every handler set .disabled by hand; a second long task could
+  // leave buttons enabled and let the user start a competing transcription.
+  // UI_BUSY holds the active scopes; syncActionButtons() is the only writer.
+  const UI_BUSY = new Set();       // "transcribe" | "model" | "preview" | "batch"
+  let batchItems = [];             // declared here so syncActionButtons is safe
+  let batchRunning = false, batchMockRunning = false, batchActiveIdx = -1;
+  let batchUploadErrors = [], logExpanded = false;
+
+  function markBusy(scope, on) {
+    if (on) UI_BUSY.add(scope); else UI_BUSY.delete(scope);
+    syncActionButtons();
+  }
+  function syncActionButtons() {
+    const busy = UI_BUSY.size > 0;
+    const run = $("#btn-run");
+    if (run) {
+      run.disabled = busy || !picked;
+      const span = run.querySelector("[data-i18n]");
+      if (span && window.I18N) {
+        span.dataset.i18n = UI_BUSY.has("transcribe") ? "file.running" : "file.run";
+        I18N.apply(run);
+      }
+    }
+    const prev = $("#btn-vad-preview");
+    if (prev && !UI_BUSY.has("preview")) prev.disabled = busy || !picked;
+    const loadTxt = $("#btn-load-txt"); if (loadTxt) loadTxt.disabled = busy;
+    const add = $("#btn-batch-add"); if (add) add.disabled = busy || batchRunning;
+    const clear = $("#btn-batch-clear");
+    if (clear) clear.disabled = busy || !batchItems.some(
+      i => ["done", "failed", "canceled"].includes(i.status));
+    const batchRun = $("#btn-batch-run");
+    if (batchRun) {
+      batchRun.disabled = UI_BUSY.has("transcribe") || UI_BUSY.has("model");
+      const span = batchRun.querySelector("[data-i18n]");
+      if (span && window.I18N) {
+        span.dataset.i18n = batchRunning ? "batch.cancel" : "batch.run";
+        I18N.apply(batchRun);
+      }
+      batchRun.title = batchRunning ? "取消佇列" : "全部開始";
+    }
+  }
+
   let picked = null;             // {path?, name, file?} 或 null
   const drop = $("#drop"), hiddenFile = $("#hidden-file");
 
   function setFile(f) {
     picked = f;
-    if (!f) { drop.classList.remove("has-file"); renderDropEmpty(); $("#btn-run").disabled = true; return; }
+    if (!f) { drop.classList.remove("has-file"); renderDropEmpty(); syncActionButtons(); return; }
     drop.classList.add("has-file");
     const meta = f.sizeSec ? `${f.sizeSec} 秒` : (f.size ? (f.size / 1048576).toFixed(1) + " MB" : "");
     drop.innerHTML = `<span class="file-chip">${escapeHtml(f.name)}
       ${meta ? `<span class="meta">${meta}</span>` : ""}
       <button class="x" title="移除">✕</button></span>`;
     drop.querySelector(".x").addEventListener("click", ev => { ev.stopPropagation(); setFile(null); });
-    $("#btn-run").disabled = false;
+    syncActionButtons();
   }
   function renderDropEmpty() {
     drop.innerHTML = `<div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></div>
@@ -195,8 +273,7 @@
   $("#btn-run").addEventListener("click", async () => {
     if (!picked || running) return;
     running = true;
-    const btn = $("#btn-run");
-    btn.disabled = true; btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>辨識中…`;
+    markBusy("transcribe", true);
     $("#result").hidden = true;
     showProgress(0, "準備中…");
     resetLive();
@@ -226,16 +303,19 @@
       logLine("✕ " + (err.message || err));
     } finally {
       running = false;
-      btn.disabled = false;
-      btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>開始轉換`;
+      markBusy("transcribe", false);
     }
   });
 
-  // 進度分派：模型就地載入中 → 模型頁進度；批次執行中 → 當前批次列；否則 → 單檔進度條
+  // 進度分派：模型就地載入 → 模型頁；服務端批次 → 由 batch SSE 事件獨自負責；
+  // mock 批次 → 當前批次列；否則 → 單檔進度條。
   API.on("progress", ({ pct, status }) => {
     if (_modelLoading) {
       setModelProg(pct, status);
-    } else if (batchRunning && batchActiveIdx >= 0) {
+    } else if (batchRunning) {
+      // Server-side queue publishes its own "batch" events; do not paint the
+      // single-file progress bar with a task belonging to another view.
+    } else if (batchMockRunning && batchActiveIdx >= 0) {
       batchItems[batchActiveIdx].progress = pct / 100;
       updateBatchRow(batchActiveIdx);
     } else {
@@ -283,7 +363,8 @@
     $("#progress").hidden = false;
     $("#prog-bar").style.width = pct + "%";
     $("#prog-pct").textContent = Math.round(pct) + "%";
-    if (status != null) $("#prog-status").textContent = status;
+    if (status != null) $("#prog-status").textContent =
+      window.I18N ? I18N.L(status) : status;
   }
 
   /* ── Wave 4: two progress views + live subtitles ───────────────────────
@@ -305,10 +386,13 @@
     if (elTime) elTime.textContent = `已處理 ${fmtDur(done)} / ${total ? fmtDur(total) : "—"}`;
     if (elGroups) elGroups.textContent = `${d.groups ?? 0} 段`;
     if (elEta) elEta.textContent = d.etaSec == null ? "剩餘 —" : `剩餘 ${fmtDur(d.etaSec)}`;
-    if (elPhase) elPhase.textContent = PHASE_TEXT[d.phase] || d.phase || "識別中";
+    if (elPhase) {
+      const raw = PHASE_TEXT[d.phase] || d.phase || "識別中";
+      elPhase.textContent = window.I18N ? I18N.L(raw) : raw;
+    }
     // Queue view: keep the overall percentage list in sync without a second
     // polling loop. The batch page renders the same number in its summary.
-    if (batchRunning && batchActiveIdx >= 0 && batchItems[batchActiveIdx]) {
+    if (!batchRunning && batchMockRunning && batchActiveIdx >= 0 && batchItems[batchActiveIdx]) {
       batchItems[batchActiveIdx].detail = d;
       updateBatchRow(batchActiveIdx);
       batchSummary();
@@ -336,6 +420,7 @@
   }
   API.on("segments", (p) => {
     if (!p || !Array.isArray(p.segments) || !liveListEl) return;
+    if (batchRunning) return;   // queue items are not the single-file live view
     const frag = document.createDocumentFragment();
     for (const s of p.segments) {
       const row = document.createElement("div");
@@ -364,8 +449,13 @@
   const WAVE_N = 200;
   let audioEl = null, audioUrl = null, waveDur = 0, curSegs = [];
 
+  let lastSrtPath = null;
   async function renderResult(res) {
     $("#result").hidden = false;
+    lastSrtPath = res.srtPath || null;
+    const rp = $("#btn-refine-punct"), eh = $("#btn-export-handout");
+    if (rp) rp.disabled = !lastSrtPath;
+    if (eh) eh.disabled = !lastSrtPath;
     const segments = res.segments || [];
     curSegs = segments;
     _karaCache = null;
@@ -694,47 +784,167 @@
   }
   $("#btn-save-sub").addEventListener("click", saveSubtitle);
 
-  // ── 記錄 ────────────────────────────────────────────────
-  function logLine(msg) {
-    const el = $("#file-log"); el.hidden = false;
-    const d = document.createElement("div"); d.className = "ln"; d.textContent = msg;
-    el.appendChild(d); el.scrollTop = el.scrollHeight;
+  // ── C1 / C2: optional post-processing exports ───────────────────────
+  $("#btn-refine-punct") && $("#btn-refine-punct").addEventListener("click", async () => {
+    if (!lastSrtPath) return;
+    try {
+      const r = await API.refinePunctuation(lastSrtPath);
+      logLine("✓ 跨段標點修正完成：" + r.path + "（" + r.lines + " 行）");
+    } catch (e) { logLine("✕ 跨段標點修正失敗：" + (e.message || e)); }
+  });
+  $("#btn-export-handout") && $("#btn-export-handout").addEventListener("click", async () => {
+    if (!lastSrtPath) return;
+    try {
+      const r = await API.exportHandout(lastSrtPath, "md");
+      logLine("✓ 講義已匯出：" + r.path + "（" + r.lines + " 行 / " + r.bytes + " bytes）");
+    } catch (e) { logLine("✕ 講義匯出失敗：" + (e.message || e)); }
+  });
+
+  // ── H1: collapsible runtime log ─────────────────────────────────────
+  // Browser-side actions go through logLine(); backend events arrive as SSE
+  // "log" and a reload restores history from GET /api/logs. Log text is kept
+  // verbatim on purpose - diagnostic messages must not be rewritten by i18n.
+  const LOG_MAX = 300;
+  function appendLogRow(entry) {
+    const el = $("#file-log"); if (!el) return;
+    const d = document.createElement("div"); d.className = "ln";
+    if (entry.level === "error") d.style.color = "var(--danger, #c0392b)";
+    else if (entry.level === "warn") d.style.color = "#b26a00";
+    d.textContent = `[${entry.ts || ""}] ${entry.message || entry}`;
+    el.appendChild(d);
+    while (el.childElementCount > LOG_MAX) el.removeChild(el.firstChild);
+    el.scrollTop = el.scrollHeight;
+    const cnt = $("#log-count");
+    if (cnt) cnt.textContent = el.childElementCount ? `(${el.childElementCount})` : "";
   }
+  function logLine(msg) {
+    const el = $("#file-log"); if (!el) return;
+    el.hidden = false; logExpanded = true;
+    const toggle = $("#btn-log-toggle"), chevron = $("#log-chevron");
+    if (toggle) toggle.setAttribute("aria-expanded", "true");
+    if (chevron) chevron.textContent = "▾";
+    appendLogRow({ ts: new Date().toTimeString().slice(0, 8),
+                   level: String(msg).startsWith("✕") ? "error" : "info",
+                   message: msg });
+  }
+  API.on("log", entry => { if (entry) appendLogRow(entry); });
+  $("#btn-log-toggle") && $("#btn-log-toggle").addEventListener("click", () => {
+    const el = $("#file-log"); if (!el) return;
+    logExpanded = !logExpanded; el.hidden = !logExpanded;
+    $("#btn-log-toggle").setAttribute("aria-expanded", String(logExpanded));
+    const c = $("#log-chevron"); if (c) c.textContent = logExpanded ? "▾" : "▸";
+  });
+  $("#btn-log-clear") && $("#btn-log-clear").addEventListener("click", async () => {
+    const el = $("#file-log"); if (el) el.innerHTML = "";
+    const cnt = $("#log-count"); if (cnt) cnt.textContent = "";
+    try { await API.clearLogs(); } catch {}
+  });
 
   // ════════════════════════════════════════════════════════
-  // 批次（client-side 佇列：循序呼叫既有 /api/transcribe）
+  // ════════════════════════════════════════════════════════
+  // 批次（B4）：服務端持久佇列。檔案上傳一次、背景單 worker 逐一處理，
+  // 狀態由 SSE「batch」事件推送；重新整理頁面也不會掉佇列。
+  // mock（離屏預覽）模式保留原本的前端序列迴圈，讓靜態展示不需後端。
   // ════════════════════════════════════════════════════════
   const ST = {
     done: ["完成", "chip-ok"], running: ["辨識中", "chip-accent"],
     pending: ["待處理", "chip-muted"], failed: ["失敗", "chip-live"],
+    canceled: ["已取消", "chip-muted"], uploading: ["上傳中", "chip-muted"],
   };
-  let batchItems = [];                          // {file, name, status, progress, srtPath?, error?}
-  let batchRunning = false, batchActiveIdx = -1;
+  // batchItems / batchRunning / batchMockRunning / batchActiveIdx /
+  // batchUploadErrors are declared with the H2 state machine above.
 
   // 隱藏的多檔選擇器（瀏覽器原生）
   const batchInput = document.createElement("input");
   batchInput.type = "file"; batchInput.accept = "audio/*,video/*";
   batchInput.multiple = true; batchInput.style.display = "none";
   document.body.appendChild(batchInput);
-  batchInput.addEventListener("change", e => {
-    for (const f of e.target.files) batchItems.push({ file: f, name: f.name, status: "pending", progress: 0 });
+
+  // 批次與單檔共用同一組參數（辨識頁），不再維護第二份開關。
+  function currentBatchOpts() {
+    return {
+      language: $("#sel-lang") ? $("#sel-lang").value : null,
+      diarize: $("#sw-diar") ? $("#sw-diar").checked : false,
+      nSpeakers: $("#sel-spk") ? $("#sel-spk").value : "auto",
+      align: $("#sw-align") ? $("#sw-align").checked : false,
+      hint: $("#hint-box") ? $("#hint-box").value.trim() : "",
+      trial: $("#sw-trial") ? $("#sw-trial").checked : false,
+    };
+  }
+
+  batchInput.addEventListener("change", async e => {
+    const files = Array.from(e.target.files || []);
     batchInput.value = "";
+    if (!files.length) return;
+    if (API.mode === "web") {
+      const opts = currentBatchOpts();
+      for (let i = 0; i < files.length; i++) {
+        const sum = $("#batch-summary");
+        if (sum) sum.textContent = `上傳中 ${i + 1} / ${files.length}…`;
+        try { await API.batchAdd(files[i], opts); }
+        catch (err) { batchUploadErrors.push(`${files[i].name}：${err.message || err}`); }
+      }
+      await refreshBatch();
+    } else {
+      for (const f of files) batchItems.push({
+        id: "m" + Math.random().toString(36).slice(2, 9), file: f,
+        name: f.name, status: "pending", progress: 0,
+      });
+      renderBatch();
+    }
+  });
+
+  /** 從服務端拉全量快照；服務端是唯一事實源。 */
+  async function refreshBatch() {
+    if (API.mode !== "web") return;
+    let snap;
+    try { snap = await API.getBatch(); }
+    catch { return; }
+    batchItems = (snap.items || []).map(it => Object.assign({}, it, { file: null }));
+    batchRunning = !!(snap.summary && snap.summary.running);
     renderBatch();
+    syncActionButtons();
+  }
+
+  API.on("batch", payload => {
+    if (API.mode !== "web" || !payload) return;
+    if (payload.type === "state" && Array.isArray(payload.items)) {
+      batchItems = payload.items.map(it => Object.assign({}, it, { file: null }));
+    } else if (payload.item) {
+      const idx = batchItems.findIndex(i => i.id === payload.item.id);
+      if (idx >= 0) batchItems[idx] = Object.assign({}, batchItems[idx], payload.item);
+      else batchItems.push(Object.assign({}, payload.item, { file: null }));
+    }
+    if (payload.summary) batchRunning = !!payload.summary.running;
+    else if (typeof payload.running === "boolean") batchRunning = payload.running;
+    renderBatch();
+    syncActionButtons();
   });
 
   function batchSummary() {
     const done = batchItems.filter(i => i.status === "done").length;
+    const failed = batchItems.filter(i => i.status === "failed").length;
     const avg = batchItems.length
       ? batchItems.reduce((a, b) => a + (b.progress || 0), 0) / batchItems.length : 0;
-    $("#batch-summary").textContent =
-      `${done} / ${batchItems.length} 完成 · 總進度 ${Math.round(avg * 100)}%`;
+    let text = `${done} / ${batchItems.length} 完成 · 總進度 ${Math.round(avg * 100)}%`;
+    if (failed) text += ` · ${failed} 失敗`;
+    if (batchRunning) text += " · 執行中";
+    const el = $("#batch-summary"); if (el) el.textContent = text;
   }
   function renderBatch() {
     batchSummary();
-    const host = $("#batch-list"); host.innerHTML = "";
+    const host = $("#batch-list"); if (!host) return;
+    host.innerHTML = "";
+    if (batchUploadErrors.length) {
+      const box = document.createElement("div");
+      box.className = "card";
+      box.style.cssText = "color:var(--danger, #c0392b);padding:10px;margin-bottom:8px;font-size:12px";
+      box.textContent = "上傳失敗：" + batchUploadErrors.join("；");
+      host.appendChild(box);
+    }
     if (!batchItems.length) {
-      host.innerHTML = `<div class="card" style="text-align:center;color:var(--muted);padding:28px">
-        尚未加入檔案 — 點「加入檔案」可一次選多個音訊循序處理。</div>`;
+      host.innerHTML += `<div class="card" style="text-align:center;color:var(--muted);padding:28px">
+        尚未加入檔案 — 點「加入檔案」可一次選多個音訊，由服務端依序處理。</div>`;
       return;
     }
     batchItems.forEach((it, idx) => host.appendChild(batchRow(it, idx)));
@@ -743,15 +953,24 @@
     const [label, cls] = ST[it.status] || ST.pending;
     const row = document.createElement("div");
     row.className = "b-row"; row.dataset.idx = idx;
+    const terminal = ["failed", "canceled"].includes(it.status);
+    const actTitle = it.status === "done" ? "開啟輸出資料夾"
+      : (terminal && API.mode === "web") ? "重試" : "移除";
     row.innerHTML = `
       <div class="nm"><div class="f">${escapeHtml(it.name)}</div>
         ${it.error ? `<div class="e">${escapeHtml(it.error)}</div>` : ""}</div>
       <div class="pbar"><div class="bar"><i style="width:${Math.round((it.progress || 0) * 100)}%"></i></div></div>
       <span class="chip ${cls}">${label}</span>
-      <button class="more" title="${it.status === "done" ? "開啟輸出資料夾" : "移除"}">⋯</button>`;
-    row.querySelector(".more").addEventListener("click", () => {
-      if (it.status === "done") API.openOutputDir();
-      else if (!batchRunning) { batchItems.splice(idx, 1); renderBatch(); }
+      <button class="more" title="${actTitle}">⋯</button>`;
+    row.querySelector(".more").addEventListener("click", async () => {
+      if (it.status === "done") { API.openOutputDir(); return; }
+      if (API.mode === "web") {
+        if (terminal) { await API.batchRetry(it.id); }
+        else if (!batchRunning) { await API.batchRemove(it.id); }
+        await refreshBatch();
+      } else if (!batchMockRunning) {
+        batchItems.splice(idx, 1); renderBatch();
+      }
     });
     return row;
   }
@@ -766,30 +985,31 @@
 
   $("#btn-batch-add").addEventListener("click", () => batchInput.click());
   $("#btn-batch-run").addEventListener("click", runBatch);
+  $("#btn-batch-clear") && $("#btn-batch-clear").addEventListener("click", async () => {
+    if (API.mode === "web") { await API.batchClear(); await refreshBatch(); }
+    else { batchItems = batchItems.filter(i => !["done", "failed", "canceled"].includes(i.status)); renderBatch(); }
+  });
 
   async function runBatch() {
-    if (batchRunning) return;
+    if (API.mode === "web") {
+      try {
+        if (batchRunning) await API.batchCancel();
+        else await API.batchStart();
+      } catch (err) { logLine("✕ " + (err.message || err)); }
+      await refreshBatch();
+      return;
+    }
+    // ── mock 預覽：沿用前端序列迴圈（無後端可用）──
+    if (batchMockRunning) return;
     if (!batchItems.some(i => i.status !== "done")) return;
-    batchRunning = true;
-    $("#btn-batch-run").disabled = true; $("#btn-batch-add").disabled = true;
-    resetLive();
-    // One set of controls for both views: the batch page no longer keeps its
-    // own diarization / hint toggles that silently fell out of sync.
+    batchMockRunning = true; syncActionButtons(); resetLive();
     for (let i = 0; i < batchItems.length; i++) {
       const it = batchItems[i];
       if (it.status === "done") continue;
       batchActiveIdx = i; it.status = "running"; it.progress = 0; it.error = null;
       renderBatch();
       try {
-        const res = await API.transcribe({
-          file: it.file,
-          language: $("#sel-lang").value || null,
-          diarize: $("#sw-diar").checked,
-          nSpeakers: $("#sel-spk").value,
-          align: $("#sw-align").checked,
-          hint: $("#hint-box").value.trim(),
-          trial: $("#sw-trial") ? $("#sw-trial").checked : false,
-        });
+        const res = await API.transcribe(Object.assign({ file: it.file }, currentBatchOpts()));
         it.status = "done"; it.progress = 1; it.srtPath = res.srtPath;
       } catch (err) {
         it.status = "failed"; it.progress = 0;
@@ -797,9 +1017,19 @@
       }
       renderBatch();
     }
-    batchActiveIdx = -1; batchRunning = false;
-    $("#btn-batch-run").disabled = false; $("#btn-batch-add").disabled = false;
+    batchActiveIdx = -1; batchMockRunning = false; markBusy("batch", false); renderBatch();
   }
+
+  // 進入批次頁或首次連上後端時，從服務端還原佇列（重新整理也不掉）。
+  API.ready.then(async () => {
+    if (API.mode !== "web") return;
+    refreshBatch();
+    syncActionButtons();
+    try {
+      const snap = await API.getLogs(200);
+      (snap.items || []).forEach(appendLogRow);
+    } catch {}
+  });
 
   // ════════════════════════════════════════════════════════
   // 模型與裝置（核心 + 模型下拉 + 架構標籤）
@@ -824,12 +1054,12 @@
     groups.forEach(g => {
       const card = document.createElement("div"); card.className = "health-core";
       const active = g.backend && g.backend === h.activeBackend;
-      card.innerHTML = `<div class="hc-title">${escapeHtml(g.label)}` +
+      card.innerHTML = `<div class="hc-title">${escapeHtml(I18N.L(g.label))}` +
         (active ? ` <span class="chip chip-ok" style="font-size:10px">使用中</span>` : ``) + `</div>`;
       (g.items || []).forEach(it => {
         const row = document.createElement("div"); row.className = "hc-item";
-        row.innerHTML = `${dot(it.status)}<span class="hi-label">${escapeHtml(it.label)}</span>` +
-          `<span class="hi-detail">${escapeHtml(it.detail || "")}</span>`;
+        row.innerHTML = `${dot(it.status)}<span class="hi-label">${escapeHtml(I18N.L(it.label))}</span>` +
+          `<span class="hi-detail">${escapeHtml(I18N.L(it.detail || ""))}</span>`;
         card.appendChild(row);
       });
       host.appendChild(card);
@@ -861,7 +1091,7 @@
       const el = document.createElement("div"); el.className = "dev";
       el.innerHTML = `<span class="ic">${cpu ? ICON_CPU : ICON_GPU}</span>
         <span class="nm">${dev.kind === "cpu" ? "CPU · " : "GPU · "}${escapeHtml(dev.name)}</span>
-        <span class="vram">${escapeHtml(dev.note || "")}</span>`;
+        <span class="vram">${escapeHtml(I18N.L(dev.note || ""))}</span>`;
       host.appendChild(el);
     });
     await renderAccel();
@@ -885,7 +1115,7 @@
       card.className = "radio-card" + (core.label === _curCore ? " sel" : "");
       card.dataset.core = core.label;
       card.innerHTML = `<span class="rd"></span><div class="info">
-        <div class="t">${escapeHtml(core.label)}</div>
+        <div class="t">${escapeHtml(I18N.L(core.label))}</div>
         <div class="d">${escapeHtml(T("model.nModels", `${core.models.length} 種模型可選`, { n: core.models.length }))}</div></div>`;
       host.appendChild(card);
     });
@@ -895,7 +1125,9 @@
     const sel = $("#model-select"); sel.innerHTML = "";
     core.models.forEach(m => {
       const o = document.createElement("option");
-      o.value = m.label; o.textContent = m.label; o.dataset.arch = m.arch;
+      o.value = m.label;                       // canonical id, never localised
+      o.textContent = I18N.L(m.label);         // display only
+      o.dataset.arch = m.arch;
       o.dataset.note = m.note || "";
       if (m.label === modelLabel) o.selected = true;
       sel.appendChild(o);
@@ -951,8 +1183,8 @@
         ? `<span class="chip chip-muted" style="font-weight:400">已下載</span>`
         : `<span class="chip chip-muted" style="font-weight:400">需下載</span>`;
       card.innerHTML = `<span class="rd"></span><div class="info">
-        <div class="t">${escapeHtml(p.title)}　${state}</div>
-        <div class="d">${escapeHtml(p.desc || "")}</div>
+        <div class="t">${escapeHtml(I18N.L(p.title))}　${state}</div>
+        <div class="d">${escapeHtml(I18N.L(p.desc || ""))}</div>
         <div class="d" style="margin-top:4px;font-family:var(--font-mono);font-size:11.5px">
           建議模型：${escapeHtml(p.model)}</div></div>`;
       host.appendChild(card);
@@ -963,7 +1195,7 @@
     const el = $("#basic-note"); if (!el) return;
     const txt = p && p.note;
     if (!txt) { el.hidden = true; el.textContent = ""; return; }
-    el.hidden = false; el.textContent = txt;
+    el.hidden = false; el.textContent = window.I18N ? I18N.L(txt) : txt;
   }
   $("#basic-profiles") && $("#basic-profiles").addEventListener("click", async e => {
     const card = e.target.closest(".radio-card"); if (!card) return;
@@ -997,10 +1229,10 @@
           && a.installed.version === a.latest) tags.push("已安裝");
       const tagHtml = tags.length
         ? ` <span class="chip chip-muted" style="font-weight:400">${tags.join(" · ")}</span>` : "";
-      const noteHtml = op.note ? `　<span style="color:var(--warn,#b26a00)">${escapeHtml(op.note)}</span>` : "";
+      const noteHtml = op.note ? `　<span style="color:var(--warn,#b26a00)">${escapeHtml(I18N.L(op.note))}</span>` : "";
       card.innerHTML = `<span class="rd"></span><div class="info">
-        <div class="t">${escapeHtml(op.label)}　<span style="font-weight:400;color:var(--muted)">約 ${op.size_mb} MB</span>${tagHtml}</div>
-        <div class="d">${escapeHtml(op.desc || "")}${noteHtml}</div></div>`;
+        <div class="t">${escapeHtml(I18N.L(op.label))}　<span style="font-weight:400;color:var(--muted)">約 ${op.size_mb} MB</span>${tagHtml}</div>
+        <div class="d">${escapeHtml(I18N.L(op.desc || ""))}${noteHtml}</div></div>`;
       host.appendChild(card);
     });
     const rb = $("#accel-reason");
@@ -1019,7 +1251,7 @@
     if (!text) { el.hidden = true; el.innerHTML = ""; return; }
     el.hidden = false; el.style.marginTop = "10px";
     el.className = "banner " + (level === "warn" ? "banner-warn" : "banner-info");
-    el.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg><div>${escapeHtml(text)}</div>`;
+    el.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg><div>${escapeHtml(window.I18N ? I18N.L(text) : text)}</div>`;
   }
   const _accelHost = $("#accel-cards");
   if (_accelHost) _accelHost.addEventListener("click", async e => {
@@ -1079,12 +1311,12 @@
   $("#btn-model-load") && $("#btn-model-load").addEventListener("click", async () => {
     const btn = $("#btn-model-load");
     if (btn.dataset.act === "goto") { switchView("file"); return; }
-    _modelLoading = true; btn.disabled = true; btn.textContent = "下載／載入中…";
+    _modelLoading = true; markBusy("model", true); btn.textContent = "下載／載入中…";
     $("#model-progress").hidden = false;
     setModelProg(0, "準備載入…");
     modelMsg("正在下載並載入模型，請稍候——可留在本頁觀看進度。", "info");
     try { await API.startLoad(); }
-    catch (err) { _modelLoading = false; modelMsg("載入失敗：" + (err.message || err), "warn"); updateLoadBtn(); }
+    catch (err) { _modelLoading = false; markBusy("model", false); modelMsg("載入失敗：" + (err.message || err), "warn"); updateLoadBtn(); }
   });
   function setModelProg(pct, status) {
     $("#model-prog-bar").style.width = pct + "%";
@@ -1096,7 +1328,7 @@
     if (!text) { el.hidden = true; el.innerHTML = ""; return; }
     el.hidden = false; el.style.marginTop = "10px";
     el.className = "banner " + (level === "warn" ? "banner-warn" : "banner-info");
-    el.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg><div>${escapeHtml(text)}</div>`;
+    el.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg><div>${escapeHtml(window.I18N ? I18N.L(text) : text)}</div>`;
   }
   const ICON_CPU = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>`;
   const ICON_GPU = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 18v2M18 18v2"/></svg>`;
@@ -1112,7 +1344,8 @@
         sel.innerHTML = "";
         languages.forEach(l => {
           const o = document.createElement("option");
-          o.value = l.value; o.textContent = l.value ? l.label : "語言 自動";
+          o.value = l.value;
+          o.textContent = l.value ? (window.I18N ? I18N.L(l.label) : l.label) : (I18N.t("common.langAuto") || "語言 自動");
           sel.appendChild(o);
         });
         if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
@@ -1229,8 +1462,10 @@
     const cs = (+s.chunkSecs > 0) ? +s.chunkSecs : 30;
     if ($("#seg-chunk")) { $("#seg-chunk").value = cs; $("#seg-chunk-val").textContent = cs + "s"; }
     // 介面語言：選單回填 + 套用 i18n（含目前視圖標題）
-    const uiLang = s.uiLang || "繁體中文";
-    if ([...$("#set-lang").options].some(o => o.value === uiLang)) $("#set-lang").value = uiLang;
+    // B5.2: settings may still hold a legacy Chinese label; normalise to a
+    // stable enum on read so the next save migrates it automatically.
+    const uiLang = window.I18N ? I18N.normalize(s.uiLang || "hant") : "hant";
+    $("#set-lang").value = uiLang;
     if (window.I18N) { I18N.setLang(uiLang); refreshViewTitle(); }
     applyModelMode(s.modelMode || "basic", false);   // 模型頁預設「基礎」
     // Wave 4 (B3): restore transcription-page controls. They used to reset on
@@ -1311,7 +1546,7 @@
   $("#btn-vad-preview") && $("#btn-vad-preview").addEventListener("click", async () => {
     if (!picked) return;
     const btn = $("#btn-vad-preview");
-    btn.disabled = true; btn.dataset.label = btn.textContent;
+    markBusy("preview", true); btn.dataset.label = btn.textContent;
     btn.textContent = "預檢中…";
     try {
       const r = await API.vadPreview({
@@ -1323,7 +1558,7 @@
     } catch (e) {
       logLine("✕ 切分預檢失敗：" + (e.message || e));
     } finally {
-      btn.disabled = false;
+      markBusy("preview", false);
       btn.textContent = btn.dataset.label || I18N.t("file.previewRun");
     }
   });
@@ -1359,10 +1594,13 @@
   $("#set-ffmpeg").addEventListener("change", e => API.setSettings({ ffmpeg: e.target.value.trim() }));
   // 介面語言切換：寫回設定 + 即時套用 i18n（含目前視圖標題、模型頁動態文字）
   $("#set-lang").addEventListener("change", e => {
-    const v = e.target.value;
+    const v = window.I18N ? I18N.normalize(e.target.value) : e.target.value;
     API.setSettings({ uiLang: v });
     if (window.I18N) { I18N.setLang(v); refreshViewTitle(); }
-    if (_curView === "model") renderModel();   // 重繪動態文字（核心卡描述等）
+    // H6/H7: backend-generated labels must be re-rendered on language change.
+    if (_curView === "model") renderModel();
+    if (_curView === "settings") renderHealth();
+    if (_curView === "file") loadLanguages();
   });
   // 檢查更新：開啟 GitHub Releases 頁（系統瀏覽器）
   $("#btn-check-update") && $("#btn-check-update").addEventListener("click", async () => {
@@ -1632,14 +1870,14 @@
     let ready = s && s.modelReady;
     if (ready == null) { try { ready = (await API.getStatus()).modelReady; } catch (e) {} }
     if (_modelLoading && ready) {
-      _modelLoading = false;
+      _modelLoading = false; markBusy("model", false);
       setModelProg(100, "完成");
       setTimeout(() => { $("#model-progress").hidden = true; }, 800);
       modelMsg("模型已就緒。已為你切換到「語音轉文字」。", "info");
       renderHealth();                 // 自檢色點刷新
       switchView("file");             // 完成 → 進入轉錄頁
     } else if (s && s.error && _modelLoading) {
-      _modelLoading = false;
+      _modelLoading = false; markBusy("model", false);
       $("#model-progress").hidden = true;
       modelMsg("載入失敗：" + s.error, "warn");
       updateLoadBtn();

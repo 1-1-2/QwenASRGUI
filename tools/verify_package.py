@@ -83,6 +83,17 @@ def main() -> int:
             print(f"错误：{d}/ 不应出现在 _internal/ 内")
             return 1
 
+    # G7: verify the content-addressed manifest of the staged package.
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from release_manifest import verify_manifest
+    mf = verify_manifest(stage)
+    print(f"manifest：{mf['checked']} 個檔案，狀態 "
+          f"{'通過' if mf['ok'] else '失敗'}")
+    if not mf["ok"]:
+        print(f"錯誤：manifest 校驗失敗 {mf}")
+        return 1
+
     print(f"ZIP：{zips[0].name}  {zips[0].stat().st_size/1024/1024:.1f} MB")
     print(f"启动器：{exe_size/1024/1024:.1f} MB")
     print(f"_internal/：{internal_size/1024/1024:.1f} MB")

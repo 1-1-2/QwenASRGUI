@@ -8,9 +8,15 @@
 (function () {
   "use strict";
 
-  // uiLang 設定值（與 #set-lang 選項一致）→ locale code
-  const LANG_MAP = { "繁體中文": "hant", "简体中文": "hans", "簡體中文": "hans", "English": "en" };
+  // B5.2: stable locale enums are the only values persisted / stored in the
+  // <select>. Legacy Chinese labels (older settings.json) still map here so
+  // existing users are migrated on first load instead of falling back to hant.
+  const LANG_MAP = {
+    "hant": "hant", "hans": "hans", "en": "en",
+    "繁體中文": "hant", "简体中文": "hans", "簡體中文": "hans", "English": "en",
+  };
   let LOCALE = "hant";
+  function normalize(uiLang) { return LANG_MAP[uiLang] || "hant"; }
 
   // key: [繁體, 简体, English]
   const D = {
@@ -64,6 +70,29 @@
 
     "batch.add": ["加入檔案", "添加文件", "Add files"],
     "batch.run": ["全部開始", "全部开始", "Start all"],
+    "welcome.text": ["初次使用：請先在「模型與裝置」頁選擇並下載辨識模型，完成後即可開始轉寫。",
+                     "初次使用：请先在「模型与设备」页选择并下载识别模型，完成后即可开始转写。",
+                     "First time here: pick and download a recognition model on the Model page, then start transcribing."],
+    "welcome.go": ["前往模型頁", "前往模型页", "Go to Model page"],
+    "file.refine": ["跨段標點修正", "跨段标点修正", "Refine punctuation"],
+    "file.refineHint": ["另存 *.punct.srt，補齊跨段標點，不修改原始字幕",
+                        "另存 *.punct.srt，补齐跨段标点，不修改原始字幕",
+                        "Save a *.punct.srt copy with cross-segment punctuation; the original is untouched"],
+    "file.handout": ["匯出講義", "导出讲义", "Export notes"],
+    "file.handoutHint": ["由字幕產生 Markdown 講義（依停頓分段）",
+                         "由字幕生成 Markdown 讲义（依停顿分段）",
+                         "Generate Markdown lecture notes from subtitles, split by pauses"],
+    "warn.ssl": ["SSL 憑證驗證已降級：下載的模型檔無法驗證來源，請僅在可信網路環境中使用。",
+                 "SSL 证书验证已降级：下载的模型文件无法验证来源，请仅在可信网络环境中使用。",
+                 "TLS certificate verification is disabled: downloaded model files cannot be authenticated. Use a trusted network only."],
+    "log.title": ["執行紀錄", "运行日志", "Run log"],
+    "log.clear": ["清除", "清除", "Clear"],
+    "file.running": ["辨識中…", "识别中…", "Transcribing…"],
+    "batch.cancel": ["取消佇列", "取消队列", "Cancel queue"],
+    "batch.clear": ["清除已完成", "清除已完成", "Clear finished"],
+    "batch.resumeHint": ["服務端佇列：重新整理頁面仍會保留進度與斷點",
+                         "服务端队列：刷新页面仍会保留进度与断点",
+                         "Server-side queue: refresh keeps progress and checkpoints"],
     "batch.sharedOpts": ["語言、提示詞、切分與試跑參數共用「音檔轉字幕」頁的設定",
                          "语言、提示词、切分与试跑参数共用「音频转字幕」页的设置",
                          "Language, hint, segmentation and trial options are shared with the Audio page"],
@@ -142,7 +171,78 @@
   };
 
   function idx() { return LOCALE === "hans" ? 1 : (LOCALE === "en" ? 2 : 0); }
-  function t(key) { const e = D[key]; return e ? (e[idx()] || e[0]) : null; }
+  function t(key, vars) {
+    const e = D[key];
+    if (!e) return null;
+    let out = e[idx()] || e[0];
+    if (vars) for (const k in vars) out = out.split("{" + k + "}").join(String(vars[k]));
+    return out;
+  }
+
+  // ── H6/H7: localise backend-generated strings ────────────────────────
+  // The backend emits Chinese labels for model cards, health rows, progress
+  // status, arch tags and profile descriptions. They used to stay Chinese
+  // after switching the UI to English. Rule:
+  //   * hant -> verbatim (source of truth)
+  //   * hans -> per-character Traditional->Simplified mapping
+  //   * en   -> phrase dictionary; unlisted proper nouns / model names stay
+  //            verbatim (project convention: generated names are not translated)
+  // A keyHint wins over both, for strings that have a proper dictionary entry.
+  const S2S_PAIRS = (
+    "體体灣湾國国語语簡简轉转換换檔档錄录製制設设選选項项預预檢检測测試试處处" +
+    "識识別别說说話话數数據据載载優优準准確确錯错誤误於于後后裡里當当顯显" +
+    "開开啟启閉闭關关連连線线網网絡络傳传輸输儲储敗败狀状態态執执紀纪總总" +
+    "進进餘余時时間间聲声頻频長长組组邊边續续從从頭头結结純纯講讲義义標标" +
+    "點点導导驗验證证碼码鏡镜來来備备內内積积報报讀读寫写刪删變变數数邏逻" +
+    "輯辑緒绪隊队復复異异過过濾滤對对齊齐詞词級级軸轴豐丰構构圖图參参離离" +
+    "類类聚聚憶忆積积環环裝装權权問问題题許许應应負責责實实際际產产業业" +
+    "課课學学習习溫温會会議议訪访談谈質质詢询講讲座座場场景景適适適适" +
+    "優优異异發发現现處处檔档歷历經经驗验靜静音音辯辩認认讀读寫写" +
+    "隨随機机變变數数續续傳传統统檔档案案內内建建置置預预覽览" +
+    "釐厘釐厘覆复蓋盖範范圍围滾滚動动緩缓衝冲裁裁切切極极短短佔占" +
+    "預预估估駐驻體体積积執执緒绪瀏浏覽览器器窗窗口口標标題题欄栏" +
+    "配配顏颜淺浅深深主主題题圖图示示切切換换裝装幀帧縮缩放放" +
+    "檢检查查更更新新版版本本說说明明檔档案案清清單单匯汇入入校校" +
+    "驗验完完成成失失敗败取取消消儲储存存續续跑跑斷断點点" +
+    "詞词彙汇轉转換换詞词級级時时間间軸轴逐逐字字高高亮亮" +
+    "說说話话者者分分離离著著色色聚聚類类自自動动偵侦測测");
+  const S2S = {};
+  for (let i = 0; i + 1 < S2S_PAIRS.length; i += 2) S2S[S2S_PAIRS[i]] = S2S_PAIRS[i + 1];
+  function toSimplified(text) {
+    let out = "";
+    for (const ch of text) out += (S2S[ch] || ch);
+    return out;
+  }
+
+  const EN_MAP = {
+    "自動偵測": "Auto detect", "語言 自動": "Language: auto", "人數 自動": "Speakers: auto",
+    "全部就緒": "All ready", "核心就緒": "Engine ready", "使用中": "In use",
+    "共用元件": "Shared components", "尚未載入": "Not loaded", "已載入": "Loaded",
+    "模型未安裝": "Model not installed", "未安裝": "Not installed", "已安裝": "Installed",
+    "正在探测音频时长…": "Probing audio duration…", "準備中…": "Preparing…",
+    "準備中": "Preparing", "識別中": "Transcribing", "完成": "Done",
+    "已暫停": "Paused", "分段增量落盘": "incremental segment writes",
+    "試跑前 5 分鐘": "Trial: first 5 minutes", "生效切分": "effective chunk",
+    "預估常駐約": "estimated resident", "模型上限": "model ceiling",
+    "中文（標準）": "Chinese (standard)",
+    "繁體中文 TEA（乾淨聲音）": "Traditional Chinese TEA (clean speech)",
+    "日本語": "Japanese", "台灣國語": "Taiwan Mandarin",
+    "一般用途首選": "Best general-purpose choice",
+    "CPU · OpenVINO INT8": "CPU · OpenVINO INT8", "GPU · CRISPASR": "GPU · CRISPASR",
+    "GPU · chatllm Vulkan": "GPU · chatllm Vulkan",
+    "待處理": "Pending", "辨識中": "Transcribing", "失敗": "Failed",
+    "已取消": "Canceled", "上傳中": "Uploading",
+    "服務端佇列": "Server-side queue",
+    "模型輸出異常，此核心可能不相容，建議改用 CPU(OpenVINO) 核心。":
+      "Engine output is abnormal; this backend may be incompatible. Try the CPU (OpenVINO) engine.",
+  };
+  function L(text, keyHint) {
+    if (!text) return "";
+    if (keyHint) { const v = t(keyHint); if (v) return v; }
+    if (LOCALE === "hant") return String(text);
+    if (LOCALE === "hans") return toSimplified(String(text));
+    return EN_MAP[String(text)] || String(text);
+  }
 
   function apply(root) {
     root = root || document;
@@ -153,10 +253,12 @@
   }
 
   function setLang(uiLang) {
-    LOCALE = LANG_MAP[uiLang] || "hant";
+    LOCALE = normalize(uiLang);
     document.documentElement.lang = LOCALE === "en" ? "en" : (LOCALE === "hans" ? "zh-Hans" : "zh-Hant");
     apply(document);
+    return LOCALE;
   }
 
-  window.I18N = { setLang, t, apply, get locale() { return LOCALE; } };
+  window.I18N = { setLang, normalize, t, L, toSimplified, apply,
+                  get locale() { return LOCALE; } };
 })();

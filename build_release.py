@@ -94,6 +94,8 @@ HIDDEN_IMPORTS = [
     "fa_aligner", "api_server", "endpoint_tab", "segno", "cf_tunnel",
     "proc_guard", "diarize", "audio_io", "processor_numpy", "downloader",
     "ffmpeg_utils", "model_catalog", "longform_runner", "app_paths",
+    "batch_queue", "single_instance", "run_log", "subtitle_extras",
+    "release_manifest",
 ]
 
 # CPU + OpenVINO INT8 only. Exclude PyTorch / transformers, and the .NET
@@ -315,6 +317,11 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None) -> Path:
     (stage / "build_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # G3: content-addressed manifest over the managed payload only. It must be
+    # written BEFORE the ZIP is assembled so it ships inside the package.
+    from release_manifest import build_manifest
+    build_manifest(stage, version, sha)
+
     zip_path = ROOT / "release_pkg" / f"{APP_NAME}_{version}_windows-x64.zip"
     if zip_path.exists():
         zip_path.unlink()
@@ -343,6 +350,7 @@ REQUIRED_FILES = [
     "_internal/prompt_template.json",
     "_internal/webview_assets/index.html",
     "_internal/ov_models/silero_vad_v4.onnx",
+    "manifest.json",
 ]
 
 

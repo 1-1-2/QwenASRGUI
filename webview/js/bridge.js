@@ -240,11 +240,77 @@
     },
 
     async getBatch() {
-      if (MODE === "web") { try { return await apiGet("/api/batch"); } catch { return { summary: { done: 0, total: 0 }, items: [] }; } }
+      if (MODE === "web") {
+        try { return await apiGet("/api/batch"); }
+        catch { return { summary: { done: 0, total: 0, failed: 0, progress: 0, running: false }, items: [] }; }
+      }
       return MOCK.batch;
+    },
+    // B4: the server owns the queue. Files are uploaded once, then a single
+    // background worker processes them. The UI only renders SSE snapshots.
+    async batchAdd(file, opts) {
+      if (MODE !== "web") return { ok: true, item: null, mock: true };
+      const fd = new FormData();
+      fd.append("file", file, file.name);
+      if (opts) {
+        if (opts.language) fd.append("language", opts.language);
+        fd.append("align", opts.align ? "1" : "0");
+        fd.append("diarize", opts.diarize ? "1" : "0");
+        if (opts.nSpeakers && opts.nSpeakers !== "auto") fd.append("n_speakers", String(opts.nSpeakers));
+        if (opts.hint) fd.append("hint", opts.hint);
+        if (opts.trial) fd.append("trial", "1");
+      }
+      const r = await fetch(withKey("/api/batch/add"), {
+        method: "POST", body: fd, headers: authHeaders(),
+      });
+      if (!r.ok) {
+        let msg = "HTTP " + r.status;
+        try { msg = (await r.json()).error?.message || msg; } catch {}
+        throw new Error(msg);
+      }
+      return r.json();
+    },
+    async batchStart() {
+      if (MODE !== "web") return { ok: true, mock: true };
+      return apiPost("/api/batch/start", {});
+    },
+    async batchCancel() {
+      if (MODE !== "web") return { ok: true, mock: true };
+      return apiPost("/api/batch/cancel", {});
+    },
+    async batchRemove(id) {
+      if (MODE !== "web") return { ok: true, mock: true };
+      return apiPost("/api/batch/remove", { id });
+    },
+    async batchRetry(id) {
+      if (MODE !== "web") return { ok: true, mock: true };
+      return apiPost("/api/batch/retry", { id });
+    },
+    async batchClear() {
+      if (MODE !== "web") return { ok: true, removed: 0, mock: true };
+      return apiPost("/api/batch/clear", {});
     },
     async addBatchFiles() { return this.getBatch(); },
     async runBatch() { return true; },
+    // H1: server-side run log (bounded ring buffer, SSE "log" for live rows).
+    async getLogs(limit) {
+      if (MODE !== "web") return { items: [], total: 0, capacity: 300 };
+      try { return await apiGet("/api/logs" + (limit ? "?limit=" + limit : "")); }
+      catch { return { items: [], total: 0, capacity: 300 }; }
+    },
+    async clearLogs() {
+      if (MODE !== "web") return { ok: true, mock: true };
+      return apiPost("/api/logs/clear", {});
+    },
+    // C1 / C2: optional exports from a finished SRT.
+    async refinePunctuation(path) {
+      if (MODE !== "web") return { ok: false, message: "preview mode" };
+      return apiPost("/api/refine-punct", { path });
+    },
+    async exportHandout(path, format) {
+      if (MODE !== "web") return { ok: false, message: "preview mode" };
+      return apiPost("/api/export-handout", { path, format: format || "md" });
+    },
   };
 
   // ── web 轉錄：POST /api/transcribe（進度走 SSE）──────────

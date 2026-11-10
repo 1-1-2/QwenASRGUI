@@ -103,6 +103,10 @@ class WebViewServer:
         self.host = host
         self.hub = _EventHub()
         self.backend = WebBackend(on_event=self.hub.publish)
+        # B4: the batch queue lives on the server, not in the browser. It
+        # publishes through the same hub so the UI just renders SSE state.
+        from batch_queue import BatchQueue
+        self.batch_queue = BatchQueue(self.backend, on_event=self.hub.publish)
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._want_port = port
@@ -187,7 +191,16 @@ class WebViewServer:
                 if path == "/api/qr":
                     return self._qr(urlparse(self.path).query)
                 if path == "/api/batch":
-                    return self._json(server.backend.get_batch())
+                    return self._json(server.batch_queue.snapshot())
+                if path == "/api/logs":
+                    limit = None
+                    try:
+                        from urllib.parse import parse_qs
+                        raw = parse_qs(urlparse(self.path).query).get("limit", [None])[0]
+                        limit = int(raw) if raw else None
+                    except (ValueError, TypeError):
+                        pass
+                    return self._json(server.backend.get_logs(limit))
                 if path == "/api/model-catalog":
                     return self._json(server.backend.get_model_catalog())
                 if path == "/api/events":
@@ -246,6 +259,34 @@ class WebViewServer:
                         body = self._read_json_body()
                         return self._json(server.backend.import_local_model(
                             body.get("dir", ""), body.get("bundle", "")))
+                    if path == "/api/batch/add":
+                        return self._batch_add()
+                    if path == "/api/batch/start":
+                        return self._json({"ok": True,
+                                           "summary": server.batch_queue.start()})
+                    if path == "/api/batch/cancel":
+                        return self._json({"ok": True,
+                                           "summary": server.batch_queue.cancel()})
+                    if path == "/api/batch/remove":
+                        body = self._read_json_body()
+                        return self._json({"ok": server.batch_queue.remove(
+                            str(body.get("id", "")))})
+                    if path == "/api/batch/retry":
+                        body = self._read_json_body()
+                        return self._json({"ok": server.batch_queue.retry(
+                            str(body.get("id", "")))})
+                    if path == "/api/logs/clear":
+                        return self._json(server.backend.clear_logs())
+                    if path == "/api/refine-punct":
+                        return self._json(server.backend.refine_punctuation(
+                            self._read_json_body().get("path", "")))
+                    if path == "/api/export-handout":
+                        body = self._read_json_body()
+                        return self._json(server.backend.export_handout(
+                            body.get("path", ""), body.get("format", "md")))
+                    if path == "/api/batch/clear":
+                        return self._json({"ok": True, "removed":
+                                           server.batch_queue.clear_finished()})
                     return self._err(404, "unknown api")
                 except Exception as e:
                     return self._err(500, str(e))
@@ -366,6 +407,26 @@ class WebViewServer:
                     shutil.rmtree(tmp_dir, ignore_errors=True)
                 except Exception:
                     pass
+
+            def _batch_add(self):
+                """Upload one file into the persistent server-side queue.
+
+                Reuses _receive_upload() so the multipart body is released
+                immediately (Wave 1.5 memory fix); the file is then copied by
+                BatchQueue.add() into longform_state/batch_uploads/ and this
+                handler's temp dir is removed right away.
+                """
+                tmp_dir, opts, err = self._receive_upload()
+                if err is not None:
+                    return err
+                try:
+                    item = server.batch_queue.add(
+                        Path(opts["path"]), opts["name"], opts)
+                    return self._json({"ok": True, "item": item})
+                except Exception as exc:
+                    return self._err(500, str(exc))
+                finally:
+                    self._cleanup_upload(tmp_dir)
 
             def _transcribe(self):
                 tmp_dir, opts, err = self._receive_upload()

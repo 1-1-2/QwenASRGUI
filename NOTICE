@@ -1,0 +1,77 @@
+NOTICE — Third-party assets and licensing
+=========================================
+
+This file lists third-party components shipped, downloaded or referenced by
+QwenASRGUI. It is intentionally not translated.
+
+IMPORTANT — licensing blocker
+-----------------------------
+QwenASRGUI is a fork of dseditor/QwenASRMiniTool. The upstream repository does
+NOT contain a LICENSE file. Until the upstream author clarifies the license of
+the upstream code and of the published OpenVINO IR models, the upstream code and
+those models must be treated as "all rights reserved". This is a hard gate for
+contributing changes back upstream via pull request. Do not assume that a
+missing license equals permission to redistribute.
+
+The list below records what is known. Entries marked "TO CONFIRM" are best-effort
+identifications, not legal conclusions. Verify each before any redistribution.
+
+Bundled / installed dependencies (source distribution)
+------------------------------------------------------
+OpenVINO Runtime                  Apache License 2.0
+ONNX Runtime                      MIT License
+NumPy                             BSD 3-Clause
+SciPy                             BSD 3-Clause
+librosa                           ISC License
+soundfile                         BSD 3-Clause
+soxr (python-soxr)                LGPL-2.1-or-later (TO CONFIRM for the wheel)
+sounddevice                       MIT License
+kaldi-native-fbank                Apache License 2.0 (TO CONFIRM)
+opencc-python-reimplemented       MIT License (TO CONFIRM)
+customtkinter                     MIT License (TO CONFIRM)
+pywebview                         BSD 3-Clause (source installs only)
+certifi                           MPL 2.0
+segno                             BSD 2-Clause (TO CONFIRM)
+bottle                            MIT License
+proxy_tools                       MIT License (TO CONFIRM)
+tokenizers                        Apache License 2.0
+PyInstaller                       GPL-2.0-or-later with bootloader exception
+Space Grotesk / Space Mono        SIL Open Font License 1.1
+Noto Sans TC                      SIL Open Font License 1.1
+
+Model weights and external assets (downloaded at runtime, NOT bundled)
+-----------------------------------------------------------------------
+Qwen3-ASR 0.6B / 1.7B INT8 OpenVINO IR
+    Published by dseditor on Hugging Face. Upstream repository has no LICENSE.
+    The underlying Qwen3-ASR models are subject to the Qwen license.
+    TO CONFIRM: the exact IR redistribution terms and the Qwen license version.
+
+Silero VAD v4 (silero_vad_v4.onnx)   MIT License
+ForcedAligner (qwen3 ForcedAligner GGUF, optional)   TO CONFIRM
+Diarization ONNX model (optional)                    TO CONFIRM
+CrispASR (Vulkan / CUDA / CPU builds, optional)      TO CONFIRM
+Breeze-ASR-26 / TEA-ASR-1.1 GGUF (optional)          TO CONFIRM
+ffmpeg.exe (optionally bundled with the release ZIP)
+    LGPL-2.1-or-later or GPL-2.0-or-later depending on the build.
+    Obtain from a build whose license you accept. Not sourced from this repo.
+cloudflared.exe (optional tunnel)                     TO CONFIRM
+
+Upstream attribution
+--------------------
+Original project: https://github.com/dseditor/QwenASRMiniTool
+The unmodified upstream README is archived at docs/legacy/README_upstream.md.
+All GUI wording from the upstream project is preserved; this fork adds a
+separate WebView front end and a long-audio streaming path.
+
+Fonts served by Google Fonts are referenced by URL in webview/index.html and
+are not embedded in this repository.
+
+Generated files
+---------------
+models.json, the download manifest .txt exports and manifest.json are machine
+generated. They contain upstream file names, sizes, hashes and URLs; they are
+data, not licensed documentation, and are deliberately left untranslated.
+
+If you are the owner of any asset listed above and believe the attribution or
+license is incorrect, please open an issue in this repository with the correct
+information and it will be corrected.

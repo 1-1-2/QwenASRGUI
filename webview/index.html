@@ -11,7 +11,22 @@
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
+<!-- J5: persistent banner for security-relevant runtime states (e.g. TLS
+     certificate verification was disabled for model downloads). -->
+<div class="banner banner-warn" id="global-warning" role="alert" hidden
+     style="margin:8px 12px;display:flex;align-items:center;gap:10px">
+  <span id="global-warning-text" style="flex:1"></span>
+  <button class="btn btn-ghost btn-sm" id="btn-warning-dismiss" title="關閉">✕</button>
+</div>
 <div class="app">
+
+  <!-- G5: first-run guidance (hidden once a settings file exists). -->
+  <div class="banner banner-info" id="first-run-hint" hidden
+       style="margin:8px 12px;display:flex;align-items:center;gap:10px">
+    <span style="flex:1" data-i18n="welcome.text">初次使用：請先在「模型與裝置」頁選擇並下載辨識模型，完成後即可開始轉寫。</span>
+    <button class="btn btn-ghost btn-sm" id="btn-welcome-go"><span data-i18n="welcome.go">前往模型頁</span></button>
+    <button class="btn btn-ghost btn-sm" id="btn-welcome-close" title="關閉">✕</button>
+  </div>
 
   <!-- ════════════ 側欄 ════════════ -->
   <aside class="sidebar">
@@ -158,6 +173,14 @@
         <!-- Signature：波形 + 字幕卡 -->
         <div class="result" id="result" hidden>
           <div class="sec-title" data-i18n="file.resultTitle">辨識結果</div>
+          <!-- C1 / C2: optional exports from the finished SRT. They write
+               separate files and never modify the original subtitle. -->
+          <div class="result-extras" style="display:flex;gap:8px;margin:0 0 10px">
+            <button class="btn btn-ghost btn-sm" id="btn-refine-punct" disabled
+                    data-i18n-title="file.refineHint"><span data-i18n="file.refine">跨段標點修正</span></button>
+            <button class="btn btn-ghost btn-sm" id="btn-export-handout" disabled
+                    data-i18n-title="file.handoutHint"><span data-i18n="file.handout">匯出講義</span></button>
+          </div>
           <div class="wave-panel">
             <div class="wave" id="wave"></div>
             <div class="wave-time"><span>00:00</span><span id="wave-dur">00:00</span></div>
@@ -183,7 +206,20 @@
           <div class="subs" id="subs"></div>
         </div>
 
-        <div class="log" id="file-log" hidden></div>
+        <!-- H1: collapsible runtime log. Feed by browser events and the
+             server-side run_log ring buffer (SSE "log"). -->
+        <div class="log-wrap" id="log-wrap" style="margin-top:10px">
+          <div class="log-head" style="display:flex;align-items:center;gap:8px">
+            <button class="btn btn-ghost btn-sm" id="btn-log-toggle"
+                    aria-expanded="false" title="展開／收合執行紀錄">
+              <span id="log-chevron">▸</span> <span data-i18n="log.title">執行紀錄</span>
+              <span id="log-count" style="font-size:11px;color:var(--muted)"></span>
+            </button>
+            <div class="sp" style="flex:1"></div>
+            <button class="btn btn-ghost btn-sm" id="btn-log-clear"><span data-i18n="log.clear">清除</span></button>
+          </div>
+          <div class="log" id="file-log" hidden></div>
+        </div>
       </section>
 
       <!-- ───── 批次辨識 ───── -->
@@ -191,6 +227,7 @@
         <div class="batch-head">
           <button class="btn btn-ghost" id="btn-batch-add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span data-i18n="batch.add">加入檔案</span></button>
           <button class="btn btn-primary" id="btn-batch-run"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span data-i18n="batch.run">全部開始</span></button>
+          <button class="btn btn-ghost" id="btn-batch-clear"><span data-i18n="batch.clear">清除已完成</span></button>
           <span style="font-size:12px;color:var(--ink-2)" data-i18n="batch.sharedOpts">語言、提示詞、切分與試跑參數共用「音檔轉字幕」頁的設定</span>
           <div class="sp"></div>
           <div class="summary" id="batch-summary">0 / 0 完成 · 總進度 0%</div>
@@ -390,7 +427,7 @@
           <div class="row"><div class="label"><div class="t" data-i18n="set.theme">外觀主題</div></div>
             <div class="seg" id="set-theme"><button class="on" data-v="light" data-i18n="set.themeLight">淺色</button><button data-v="dark" data-i18n="set.themeDark">深色</button><button data-v="system" data-i18n="set.themeSystem">跟隨系統</button></div></div>
           <div class="row"><div class="label"><div class="t" data-i18n="set.lang">介面語言</div></div>
-            <select class="select" id="set-lang"><option>繁體中文</option><option>简体中文</option><option>English</option></select></div>
+            <select class="select" id="set-lang"><option value="hant">繁體中文</option><option value="hans">简体中文</option><option value="en">English</option></select></div>
         </div>
         <div class="card" style="margin-top:14px;display:flex;align-items:center;gap:12px">
           <div class="label"><div class="t" style="font-size:13px">聲音辨識小工具 <span class="chip chip-muted" id="app-version">v—</span></div><div class="d" data-i18n="set.appDesc">本地推理 · 資料不離開你的電腦</div></div>

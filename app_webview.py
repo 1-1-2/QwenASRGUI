@@ -19,6 +19,7 @@ Startup order: local server (127.0.0.1 only) -> optional background model load
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import subprocess
 import sys
@@ -30,7 +31,13 @@ from pathlib import Path
 
 import app_paths
 from proc_guard import setup_kill_on_close_job
-from webview_server import WebViewServer
+from single_instance import SingleInstance
+try:
+    from webview_server import WebViewServer
+    _SERVER_IMPORT_ERR = None
+except ImportError as _exc:      # --selftest must work without GUI deps
+    WebViewServer = None
+    _SERVER_IMPORT_ERR = str(_exc)
 
 APP_NAME = "聲音辨識小工具"
 WIN_W, WIN_H = 1180, 820
@@ -350,7 +357,65 @@ def _cli_argv() -> list[str] | None:
     return None
 
 
+def _selftest() -> int:
+    """G6: cold-start benchmark for the onedir layout.
+
+    Measures what can be measured without a desktop: server construction +
+    bind, one HTTP round-trip to /health, and resource-root resolution. Window
+    creation and Edge startup are intentionally excluded - those need a real
+    Windows desktop. When the GUI dependency stack is unavailable (headless
+    CI), the server part is reported as skipped instead of crashing, so this
+    command stays usable as a smoke test everywhere.
+    """
+    import time as _t
+    from version import __version__
+    result = {
+        "ok": True,
+        "version": __version__,
+        "layout": "onedir" if (app_paths.app_dir() / "_internal").is_dir() else "source",
+        "frozen": app_paths.is_frozen(),
+        "python": sys.version.split()[0],
+        "server": "measured",
+        "note": "Excludes OS process creation, window creation and Edge startup; "
+                "measure those on the target Windows machine.",
+    }
+    t0 = _t.perf_counter()
+    root = app_paths.resource_root()
+    result["resourceResolveMs"] = round((_t.perf_counter() - t0) * 1000, 3)
+    result["resourceRoot"] = str(root)
+
+    if WebViewServer is None:
+        result["server"] = "skipped"
+        result["serverSkipReason"] = _SERVER_IMPORT_ERR or "GUI dependencies absent"
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+
+    import urllib.request
+    t1 = _t.perf_counter()
+    srv = WebViewServer(host="127.0.0.1", port=0)
+    t2 = _t.perf_counter()
+    srv.start()
+    t3 = _t.perf_counter()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{srv.port}/health",
+                                   timeout=3) as resp:
+            resp.read()
+            result["healthRoundTripMs"] = round((_t.perf_counter() - t3) * 1000, 2)
+    except Exception as exc:
+        result["ok"] = False
+        result["healthRoundTripMs"] = f"error: {type(exc).__name__}"
+    result["constructMs"] = round((t2 - t1) * 1000, 2)
+    result["serverStartMs"] = round((t3 - t2) * 1000, 2)
+    srv.stop()
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result["ok"] else 1
+
+
 def main():
+    # G6: headless cold-start benchmark; never opens a window or models.
+    if "--selftest" in sys.argv[1:]:
+        return _selftest()
+
     # ── 無頭 CLI 模式（給外部 Agent／腳本）──────────────────────────────
     #   帶子命令就完全不開視窗、不起 server，跑完即退並回傳退出碼。
     cli = _cli_argv()
@@ -367,8 +432,22 @@ def main():
     # 設定獨立 AppUserModelID（要在開任何視窗前）→ 工作列圖示不跟 python.exe 共用。
     set_app_user_model_id()
 
+    # H4: only one GUI instance may own the user-data directory. A second
+    # launch hands the user to the existing window instead of racing on the
+    # same settings / checkpoint / subtitle files.
+    guard = SingleInstance()
+    owned, existing_url = guard.acquire()
+    if not owned:
+        if existing_url:
+            print(f"[{APP_NAME}] 已有執行中的執行個體，導向現有視窗：{existing_url}")
+            webbrowser.open(existing_url)
+        else:
+            print(f"[{APP_NAME}] 已有執行中的執行個體（未取得視窗網址），本次啟動結束。")
+        return 0
+
     srv = WebViewServer(host="127.0.0.1", port=0)   # 隨機空閒埠，只綁回環
     srv.start()
+    guard.publish(srv.url)
     # 視窗外觀：讀持久化外觀偏好決定初始標題列深淺；註冊回呼，讓 UI 切換主題時
     # 視窗標題列即時跟著深/淺。
     global _initial_theme
@@ -417,6 +496,7 @@ def main():
         # os._exit 跳過 atexit/GC/DLL 卸載，由 OS 直接回收行程與 GPU 資源；
         # 同一瞬間 Job handle 關閉 → 殘餘子程序一併被終止。
         try:
+            guard.release()
             srv.stop()
         finally:
             sys.stdout.flush()

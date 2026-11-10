@@ -130,6 +130,11 @@ jobs:
             python tests/test_wave15.py
             python tests/test_wave2.py
             python tests/test_layout.py
+            python tests/test_release_manifest.py
+            python tests/test_batch_queue.py
+            python tests/test_ui_ops.py
+            python tests/test_wave5.py
+            python tests/test_docs.py
             python tests/test_integration.py
             python tests/test_longform_runner.py --minutes 0.5 --skip-ffmpeg \
               --real-vad ov_models/silero_vad_v4.onnx

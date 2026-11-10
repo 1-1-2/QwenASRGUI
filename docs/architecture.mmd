@@ -1,0 +1,41 @@
+flowchart TB
+  subgraph IN["输入 / Inputs"]
+    F["单文件 / 批量<br/>CLI / 局域网 API"]
+  end
+  subgraph APP["启动与窗口"]
+    L["app_webview.py<br/>Edge --app · 单例锁"]
+    S["WebViewServer<br/>127.0.0.1 · HTTP + SSE"]
+  end
+  subgraph CORE["调度层"]
+    B["WebBackend"]
+    Q["BatchQueue<br/>持久队列 · 单 worker"]
+    P["app_paths<br/>用户数据 vs 只读资源"]
+  end
+  subgraph PIPE["统一流式管道"]
+    R["LongformRunner<br/>VAD 分组 → 逐组写盘"]
+    E["ASREngine<br/>OpenVINO INT8"]
+    X["StreamEnhancer<br/>词级 / 说话人（可选）"]
+  end
+  subgraph OUT["输出"]
+    O["SRT · JSONL · checkpoint<br/>rich.json · punct.srt · handout.md"]
+  end
+  subgraph LAYOUT["onedir 分层"]
+    EXE["QwenASR-WebView.exe"]
+    INT["_internal/ + manifest.json"]
+    UD["ov_models/ subtitles/<br/>longform_state/ settings.json"]
+  end
+  F --> L --> S --> B
+  F -. 批量 .-> Q --> B
+  B --> R --> E --> O
+  R --> X -. 另存 .-> O
+  P -. 路径 .-> B
+  EXE --> L
+  INT --> S
+  UD -. 更新时不动 .-> O
+
+  classDef user fill:#e8f5f3,stroke:#0d9488,color:#134e4a;
+  classDef core fill:#eef2ff,stroke:#4f46e5,color:#312e81;
+  classDef io fill:#fef3c7,stroke:#d97706,color:#78350f;
+  class F,O,UD user;
+  class B,Q,R,E,X core;
+  class L,S,EXE,INT io;

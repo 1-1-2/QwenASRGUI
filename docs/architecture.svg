@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 670" width="800" height="670" role="img" aria-label="QwenASRGUI architecture">
+<rect width="800" height="670" fill="#ffffff"/>
+<defs><marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#94a3b8"/></marker></defs>
+<line x1="400" y1="74" x2="400" y2="100" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#ar)"/>
+<line x1="400" y1="154" x2="400" y2="180" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#ar)"/>
+<line x1="400" y1="234" x2="400" y2="260" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#ar)"/>
+<line x1="250" y1="287" x2="220" y2="287" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#ar)"/>
+<line x1="550" y1="287" x2="580" y2="287" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#ar)"/>
+<line x1="400" y1="314" x2="400" y2="340" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#ar)"/>
+<line x1="400" y1="394" x2="400" y2="420" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#ar)"/>
+<line x1="220" y1="447" x2="250" y2="447" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#ar)"/>
+<line x1="400" y1="474" x2="400" y2="500" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#ar)"/>
+<line x1="400" y1="562" x2="400" y2="590" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#ar)"/>
+<rect x="250" y="20" width="300" height="54" rx="9" fill="#e8f5f3" stroke="#0d9488" stroke-width="1.6"/>
+<text x="400.0" y="52.0" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">输入：单文件 / 批量 / CLI / 局域网 API</text>
+<rect x="250" y="100" width="300" height="54" rx="9" fill="#fef3c7" stroke="#d97706" stroke-width="1.6"/>
+<text x="400.0" y="123" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">app_webview.py</text>
+<text x="400.0" y="141" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#64748b">Edge --app · 单例锁 · --selftest</text>
+<rect x="250" y="180" width="300" height="54" rx="9" fill="#fef3c7" stroke="#d97706" stroke-width="1.6"/>
+<text x="400.0" y="203" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">WebViewServer</text>
+<text x="400.0" y="221" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#64748b">127.0.0.1 · HTTP + SSE</text>
+<rect x="250" y="260" width="300" height="54" rx="9" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.6"/>
+<text x="400.0" y="283" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">WebBackend</text>
+<text x="400.0" y="301" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#64748b">设置 / 模型 / 健康检查</text>
+<rect x="30" y="260" width="190" height="54" rx="9" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.6"/>
+<text x="125.0" y="283" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">BatchQueue</text>
+<text x="125.0" y="301" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#64748b">持久队列 · 单 worker</text>
+<rect x="580" y="260" width="190" height="54" rx="9" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.6"/>
+<text x="675.0" y="283" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">app_paths</text>
+<text x="675.0" y="301" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#64748b">用户数据 vs 只读资源</text>
+<rect x="250" y="340" width="300" height="54" rx="9" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.6"/>
+<text x="400.0" y="363" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">LongformRunner</text>
+<text x="400.0" y="381" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#64748b">VAD 分组 → 逐组增量写盘</text>
+<rect x="250" y="420" width="300" height="54" rx="9" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.6"/>
+<text x="400.0" y="443" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">ASREngine</text>
+<text x="400.0" y="461" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#64748b">OpenVINO INT8 · 纯 CPU</text>
+<rect x="30" y="420" width="190" height="54" rx="9" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.6"/>
+<text x="125.0" y="443" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">StreamEnhancer</text>
+<text x="125.0" y="461" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#64748b">词级 / 说话人 · 可选</text>
+<rect x="250" y="500" width="300" height="62" rx="9" fill="#e8f5f3" stroke="#0d9488" stroke-width="1.6"/>
+<text x="400.0" y="523" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">输出</text>
+<text x="400.0" y="541" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#64748b">SRT · JSONL · checkpoint · rich.json · punct.srt · handout.md</text>
+<rect x="250" y="590" width="300" height="54" rx="9" fill="#fef3c7" stroke="#d97706" stroke-width="1.6"/>
+<text x="400.0" y="613" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">QwenASR-WebView.exe</text>
+<text x="400.0" y="631" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#64748b">启动器（内容稳定）</text>
+<rect x="30" y="590" width="190" height="54" rx="9" fill="#fef3c7" stroke="#d97706" stroke-width="1.6"/>
+<text x="125.0" y="613" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">_internal/</text>
+<text x="125.0" y="631" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#64748b">manifest.json · 随包资源</text>
+<rect x="580" y="590" width="190" height="54" rx="9" fill="#e8f5f3" stroke="#0d9488" stroke-width="1.6"/>
+<text x="675.0" y="613" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#0f172a">ov_models/ subtitles/</text>
+<text x="675.0" y="631" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#64748b">longform_state/ · 用户数据</text>
+<text x="400" y="662" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#64748b">统一流式管道 · onedir 分层 · 所有回归均为 mock ASR</text>
+</svg>
