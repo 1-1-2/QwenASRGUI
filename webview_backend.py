@@ -798,6 +798,9 @@ class WebBackend:
                     work_dir=BASE_DIR / "longform_state",
                     ffmpeg=_ff,
                     progress_cb=progress_cb,   # same (pct,status) contract
+                    # Wave 4: structured progress + throttled live subtitles.
+                    detail_cb=lambda d: self._emit("progress-detail", d),
+                    segment_cb=lambda s: self._emit("segments", s),
                     cancel=self._cancel_event,
                     language=_lang,
                     context=_hint or None,
@@ -1024,9 +1027,9 @@ class WebBackend:
         try:
             import version
             url = getattr(version, "GITHUB_RELEASES_PAGE",
-                          "https://github.com/dseditor/QwenASRMiniTool/releases/latest")
+                          "https://github.com/1-1-2/QwenASRGUI/releases/latest")
         except Exception:
-            url = "https://github.com/dseditor/QwenASRMiniTool/releases/latest"
+            url = "https://github.com/1-1-2/QwenASRGUI/releases/latest"
         try:
             webbrowser.open(url)
             return {"ok": True, "url": url}
@@ -1640,6 +1643,14 @@ class WebBackend:
             # 模型頁模式：basic（用途導向，預設）／advanced（核心+模型全手動）
             "modelMode": (s.get("model_mode") if s.get("model_mode") in ("basic", "advanced")
                           else "basic"),
+            # Wave 4 (B3): transcription-page controls are persisted too, so a
+            # restart no longer resets language / diarization / hint / trial.
+            "language": s.get("language", ""),
+            "diarize": bool(s.get("diarize", True)),
+            "nSpeakers": s.get("n_speakers", "auto"),
+            "align": bool(s.get("align", True)),
+            "hint": s.get("hint", ""),
+            "trial": bool(s.get("trial", False)),
         }
 
     def set_settings(self, patch: dict) -> dict:
@@ -1659,7 +1670,11 @@ class WebBackend:
         key_map = {"scale": "ui_scale", "format": "output_format",
                    "mirror": "hf_mirror", "ffmpeg": "ffmpeg_path", "theme": "appearance",
                    "uiLang": "ui_lang", "vad": "vad_threshold", "chunkSecs": "chunk_secs",
-                   "modelMode": "model_mode"}
+                   "modelMode": "model_mode",
+                   # Wave 4 (B3): transcription-page controls.
+                   "language": "language", "diarize": "diarize",
+                   "nSpeakers": "n_speakers", "align": "align", "hint": "hint",
+                   "trial": "trial"}
         for k, v in patch.items():
             if k in key_map:
                 cur[key_map[k]] = v

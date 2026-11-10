@@ -192,6 +192,7 @@
     btn.disabled = true; btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>辨識中…`;
     $("#result").hidden = true;
     showProgress(0, "準備中…");
+    resetLive();
     logLine("▶ 開始轉換：" + picked.name);
     try {
       const res = await API.transcribe({
@@ -265,6 +266,77 @@
     $("#prog-pct").textContent = Math.round(pct) + "%";
     if (status != null) $("#prog-status").textContent = status;
   }
+
+  /* ── Wave 4: two progress views + live subtitles ───────────────────────
+     progress-detail carries processed/total audio seconds, group count, ETA
+     and phase. The percentage bar above stays as-is; this fills the time /
+     segment ratio below it and also drives the batch queue summary. */
+  function fmtDur(sec) {
+    const s = Math.max(0, Math.round(Number(sec) || 0));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+    const pad = n => String(n).padStart(2, "0");
+    return (h ? h + ":" : "") + pad(m) + ":" + pad(r);
+  }
+  const PHASE_TEXT = { running: "識別中", paused: "已暫停", done: "完成", preparing: "準備中" };
+  API.on("progress-detail", (d) => {
+    if (!d) return;
+    const total = Number(d.totalSec) || 0, done = Number(d.doneSec) || 0;
+    const elTime = $("#prog-time"), elGroups = $("#prog-groups"),
+          elEta = $("#prog-eta"), elPhase = $("#prog-phase");
+    if (elTime) elTime.textContent = `已處理 ${fmtDur(done)} / ${total ? fmtDur(total) : "—"}`;
+    if (elGroups) elGroups.textContent = `${d.groups ?? 0} 段`;
+    if (elEta) elEta.textContent = d.etaSec == null ? "剩餘 —" : `剩餘 ${fmtDur(d.etaSec)}`;
+    if (elPhase) elPhase.textContent = PHASE_TEXT[d.phase] || d.phase || "識別中";
+    // Queue view: keep the overall percentage list in sync without a second
+    // polling loop. The batch page renders the same number in its summary.
+    if (batchRunning && batchActiveIdx >= 0 && batchItems[batchActiveIdx]) {
+      batchItems[batchActiveIdx].detail = d;
+      updateBatchRow(batchActiveIdx);
+      batchSummary();
+    }
+  });
+
+  const LIVE_MAX = 200;
+  let liveFollow = true, liveCount = 0;
+  function resetLive() {
+    const panel = $("#live-panel"), list = $("#live-list");
+    if (list) { list.innerHTML = ""; }
+    if (panel) panel.hidden = false;
+    liveFollow = true; liveCount = 0;
+  }
+  $("#btn-live-follow") && $("#btn-live-follow").addEventListener("click", () => {
+    liveFollow = true;
+    const list = $("#live-list"); if (list) list.scrollTop = list.scrollHeight;
+  });
+  const liveListEl = $("#live-list");
+  if (liveListEl) {
+    liveListEl.addEventListener("scroll", () => {
+      const nearBottom = liveListEl.scrollHeight - liveListEl.scrollTop - liveListEl.clientHeight < 40;
+      if (!nearBottom) liveFollow = false;
+    });
+  }
+  API.on("segments", (p) => {
+    if (!p || !Array.isArray(p.segments) || !liveListEl) return;
+    const frag = document.createDocumentFragment();
+    for (const s of p.segments) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;gap:10px;padding:3px 2px;border-bottom:1px solid var(--line)";
+      const t = document.createElement("span");
+      t.style.cssText = "color:var(--ink-2);font-family:var(--font-mono);white-space:nowrap;font-size:11px";
+      t.textContent = fmtDur(s.start);
+      const x = document.createElement("span");
+      x.style.cssText = "flex:1;min-width:0;word-break:break-word";
+      x.textContent = s.text;
+      row.append(t, x);
+      frag.appendChild(row);
+      liveCount++;
+    }
+    liveListEl.appendChild(frag);
+    // Bound the DOM: a 5-hour lecture must not recreate the renderer OOM.
+    while (liveListEl.childElementCount > LIVE_MAX) liveListEl.removeChild(liveListEl.firstElementChild);
+    if (liveFollow) liveListEl.scrollTop = liveListEl.scrollHeight;
+    const panel = $("#live-panel"); if (panel) panel.hidden = false;
+  });
 
   // ════ Signature：波形 + 播放 + 分段標註（Suno 式）════
   //   波形峰值由後端在串流 PCM 時增量算出（200 個數字），前端不再解碼整份音檔；
@@ -633,7 +705,10 @@
 
   function batchSummary() {
     const done = batchItems.filter(i => i.status === "done").length;
-    $("#batch-summary").textContent = `${done} / ${batchItems.length} 完成`;
+    const avg = batchItems.length
+      ? batchItems.reduce((a, b) => a + (b.progress || 0), 0) / batchItems.length : 0;
+    $("#batch-summary").textContent =
+      `${done} / ${batchItems.length} 完成 · 總進度 ${Math.round(avg * 100)}%`;
   }
   function renderBatch() {
     batchSummary();
@@ -678,6 +753,9 @@
     if (!batchItems.some(i => i.status !== "done")) return;
     batchRunning = true;
     $("#btn-batch-run").disabled = true; $("#btn-batch-add").disabled = true;
+    resetLive();
+    // One set of controls for both views: the batch page no longer keeps its
+    // own diarization / hint toggles that silently fell out of sync.
     for (let i = 0; i < batchItems.length; i++) {
       const it = batchItems[i];
       if (it.status === "done") continue;
@@ -685,9 +763,13 @@
       renderBatch();
       try {
         const res = await API.transcribe({
-          file: it.file, language: $("#sel-lang").value || null,
-          diarize: $("#sw-batch-diar").checked, nSpeakers: $("#sel-batch-spk").value,
-          align: $("#sw-align").checked, hint: "",
+          file: it.file,
+          language: $("#sel-lang").value || null,
+          diarize: $("#sw-diar").checked,
+          nSpeakers: $("#sel-spk").value,
+          align: $("#sw-align").checked,
+          hint: $("#hint-box").value.trim(),
+          trial: $("#sw-trial") ? $("#sw-trial").checked : false,
         });
         it.status = "done"; it.progress = 1; it.srtPath = res.srtPath;
       } catch (err) {
@@ -1132,6 +1214,40 @@
     if ([...$("#set-lang").options].some(o => o.value === uiLang)) $("#set-lang").value = uiLang;
     if (window.I18N) { I18N.setLang(uiLang); refreshViewTitle(); }
     applyModelMode(s.modelMode || "basic", false);   // 模型頁預設「基礎」
+    // Wave 4 (B3): restore transcription-page controls. They used to reset on
+    // every launch because only the settings-page keys were persisted.
+    if (s.language != null && $("#sel-lang") &&
+        [...$("#sel-lang").options].some(o => o.value === s.language)) {
+      $("#sel-lang").value = s.language;
+    }
+    if ($("#sw-diar")) $("#sw-diar").checked = !!s.diarize;
+    if ($("#sel-spk") && s.nSpeakers != null) $("#sel-spk").value = s.nSpeakers;
+    if ($("#sw-align")) $("#sw-align").checked = !!s.align;
+    if ($("#hint-box") && s.hint != null) $("#hint-box").value = s.hint;
+    if ($("#sw-trial")) $("#sw-trial").checked = !!s.trial;
+  }
+  // Persist control changes as they happen (no need to press a save button).
+  function bindPersisted(sel, key, read) {
+    const el = $(sel);
+    if (!el) return;
+    el.addEventListener("change", () => {
+      try { API.setSettings({ [key]: read(el) }); } catch (e) {}
+    });
+  }
+  bindPersisted("#sel-lang", "language", el => el.value);
+  bindPersisted("#sw-diar", "diarize", el => !!el.checked);
+  bindPersisted("#sel-spk", "nSpeakers", el => el.value);
+  bindPersisted("#sw-align", "align", el => !!el.checked);
+  bindPersisted("#sw-trial", "trial", el => !!el.checked);
+  const hintEl = $("#hint-box");
+  if (hintEl) {
+    let hintTimer = null;
+    hintEl.addEventListener("input", () => {
+      clearTimeout(hintTimer);
+      hintTimer = setTimeout(() => {
+        try { API.setSettings({ hint: hintEl.value }); } catch (e) {}
+      }, 400);
+    });
   }
   function segSet(sel, v) { $$(sel + " button").forEach(b => b.classList.toggle("on", b.dataset.v === v)); }
   // 介面縮放：用 CSS zoom（Chromium/WebView2 支援）整體縮放，px 版面也能等比生效。

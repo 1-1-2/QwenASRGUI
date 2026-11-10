@@ -95,11 +95,15 @@ _CTK_LAST_VERSION = "1.0.9"
 # （webview_backend._app_version / setting.py 版本徽章）。
 WEBVIEW_VERSION = __version__
 
-# 自動更新來源：GitHub repo（owner/name）
+# Upstream project identifier (kept for changelog / attribution only).
 GITHUB_REPO = "dseditor/QwenASRMiniTool"
 
-# GitHub Releases API（latest 端點，回傳最新「非預發佈」版本）
-GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+# Distribution source for update checks. This fork publishes its own builds;
+# pointing at upstream would offer a package that overwrites the fork. Set
+# QWENASR_UPDATE_REPO when contributing back upstream so no code change is needed.
+import os as _os
+UPDATE_REPO = _os.environ.get("QWENASR_UPDATE_REPO", "1-1-2/QwenASRGUI")
 
-# 發行頁（供「前往下載頁」按鈕使用）
-GITHUB_RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
+# GitHub Releases API (latest non-prerelease) and the human-facing page.
+GITHUB_API_LATEST = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+GITHUB_RELEASES_PAGE = f"https://github.com/{UPDATE_REPO}/releases/latest"

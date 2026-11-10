@@ -56,15 +56,16 @@ STATIC_DATA = [
     ("ov_models/silero_vad_v4.onnx", "ov_models"),
 ]
 
-# 这些包带原生 DLL / 数据文件，PyInstaller 静态分析抓不全，整包塞进去
+# Packages with native DLLs / data files that PyInstaller cannot fully trace.
+# pywebview / pythonnet / clr_loader were removed in Wave 3 (G1): the default
+# window is Edge --app, so no .NET assembly is ever loaded. That also removes
+# the MOTW failure mode that forced the onefile build.
 COLLECT_DIRS = ["opencc", "openvino", "kaldi_native_fbank"]
-COLLECT_ALL = ["webview", "pythonnet", "clr_loader", "tokenizers"]
+COLLECT_ALL = ["tokenizers"]
 COLLECT_DATA = ["certifi"]
 
 HIDDEN_IMPORTS = [
-    "certifi", "webview", "webview.platforms.edgechromium",
-    "webview.platforms.winforms", "clr", "clr_loader", "pythonnet",
-    "proxy_tools", "bottle", "app", "webview_backend", "webview_server",
+    "certifi", "proxy_tools", "bottle", "app", "webview_backend", "webview_server",
     "openvino", "openvino.runtime", "onnxruntime", "opencc", "customtkinter",
     "sounddevice", "soxr", "soundfile", "kaldi_native_fbank",
     "scipy", "scipy.cluster", "scipy.cluster.hierarchy",
@@ -72,13 +73,15 @@ HIDDEN_IMPORTS = [
     "crisp_engine", "subtitle_lines", "cli_mode", "version", "updater",
     "fa_aligner", "api_server", "endpoint_tab", "segno", "cf_tunnel",
     "proc_guard", "diarize", "audio_io", "processor_numpy", "downloader",
-    "ffmpeg_utils", "subtitle_lines", "longform_runner",
+    "ffmpeg_utils", "model_catalog", "longform_runner",
 ]
 
-# 纯 CPU + OpenVINO INT8：明确排除 PyTorch 全家桶与 transformers
+# CPU + OpenVINO INT8 only. Exclude PyTorch / transformers, and the .NET
+# window stack that is no longer used by the default Edge --app path.
 EXCLUDE_MODULES = [
     "torch", "torchvision", "torchaudio", "transformers", "qwen_asr",
     "triton", "bitsandbytes",
+    "webview", "webview.platforms", "pythonnet", "clr", "clr_loader",
 ]
 
 
@@ -169,7 +172,9 @@ def readme_text(version: str, sha: str, has_ffmpeg: bool) -> str:
 【怎么用】
 1. 解压整个文件夹到任意位置（路径尽量不要带中文和空格）。
 2. 双击 QwenASR-WebView.exe 启动。无需安装 Python。
-   Windows 10/11 一般已自带 WebView2 Runtime；缺失时会自动回退到 Edge 窗口。
+   窗口使用系统自带的 Microsoft Edge（--app 无痕模式），不依赖 .NET、
+   WebView2 SDK 或 pythonnet；因此也不会出现「文件带网络标记导致组件拒绝加载」
+   的问题。若系统没有 Edge，会自动回退到默认浏览器。
 3. 首次使用需要在「模型」页下载识别模型：
      · 0.6B  INT8：约 1.2GB，速度快，内存占用低
      · 1.7B  INT8：约 4.4GB，中文准确率更高，段长上限 10 秒
@@ -177,6 +182,10 @@ def readme_text(version: str, sha: str, has_ffmpeg: bool) -> str:
    hf-mirror.com 镜像。也可以离线把现成 IR 放到：
      ov_models\\qwen3_asr_int8\\            （0.6B）
      ov_models\\qwen3_asr_1p7b_kv_int8\\    （1.7B）
+   「模型」页下方的下载中心会列出每组模型需要哪些文件、各自状态与校验结果；
+   点「输出下载清单」可得到一份 .txt，含完整链接与可直接粘贴的 aria2c 命令，
+   弱网时可先用专业下载器下好，再用「导入并验证」放进来。未实测的大小与
+   SHA256 会明确显示「未知」，不会用估计值冒充。
 4. 把网课音频/视频拖进界面开始转写，字幕输出到 subtitles\\。
 
 【为什么模型没有内嵌】
@@ -188,22 +197,26 @@ INT8 权重单份就有 1.2~4.4GB，内嵌会让安装包变成数 GB，且不�
 {ffmpeg_line}
 
 【长音频（1~5 小时网课）】
-音频时长 ≥ 20 分钟会自动进入流式模式：边读边分段、每组立刻写 SRT，
-中途取消或崩溃都不丢已完成字幕；对同一文件再次开始可从断点续跑。
-断点与逐段记录保存在 longform_state\\。
-如需命令行强制启用或从头重跑（源码版）：
-    python app_webview.py transcribe 课程.mp4 --longform --json
-    python app_webview.py transcribe 课程.mp4 --longform --no-resume
+所有输入统一走同一条流式路径：边读边分段、每组立刻写 SRT，不再按时长
+区分两套逻辑；中途取消或崩溃都不丢已完成字幕，对同一文件再次开始可从
+断点续跑。断点与逐段记录保存在 longform_state\\。取消与续跑都在语音组
+边界生效，结果可与完整跑逐条一致。
+如需从头重跑（源码版）：
+    python app_webview.py transcribe 课程.mp4 --no-resume --json
 注意：本 EXE 是无控制台的窗口版，命令行子命令请用源码版运行。
 
-流式模式的功能边界：词级时间轴（逐字高亮）、说话人分离、ForcedAligner
-精确对齐暂不支持，会回退为行级字幕；短音频（< 20 分钟）仍走原路径，
-这些功能不受影响。断点恢复时 VAD 状态会重置，边界最多损失一个语音组
-（≤30 秒）；要求零丢失请按 20~30 分钟预先切分文件。
+识别页可勾选「只试跑前 5 分钟」先验准确率（另存 .trial.srt，不影响正式任务），
+也可先跑「切分预检」（同样只看前 5 分钟、不跑识别）确认 VAD 参数是否合理。
+切分长度只影响上下文完整度与总耗时，不影响单段内存；内存主要由模型决定
+（1.7B 约 6GB 常驻，系统另计约 1~2GB 的浏览器与文件缓存）。
+1.7B 的段长上限是 10 秒，填更大值会被夹紧并在界面显示实际生效值。
+
+流式路径的功能边界：词级时间轴（逐字高亮）、说话人分离、ForcedAligner
+精确对齐暂不支持，界面会把这几个开关置灰说明；短音频同样走流式路径。
 
 【关于自动更新】
-本仓库是 dseditor/QwenASRMiniTool 的 fork，程序内「检查更新」仍指向上游
-仓库。请到本仓库的 Releases 页面手动下载新版，不要依赖内置更新器。
+本仓库是 dseditor/QwenASRMiniTool 的 fork。程序内「检查更新」已指向本仓库
+（1-1-2/QwenASRGUI）的 Releases 页面，不会再用上游包覆盖本版本。
 
 【目录】
   QwenASR-WebView.exe   主程序（单文件，内含全部 Python 代码与前端资源）

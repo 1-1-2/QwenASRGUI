@@ -1,13 +1,20 @@
-"""app_webview.py — 桌面 WebView 啟動器（本機 HTTP server + 原生 WebView2 視窗）
+"""app_webview.py - desktop launcher (local HTTP server + browser window).
 
-視窗用 pywebview 開「只載入本機網址」的原生 WebView2 視窗：系統內建
-WebView2 runtime（不打包 Chromium → EXE 小）、原生標題列、無瀏覽器感、
-無登入提示。前端完全透過 HTTP/SSE 與 server 溝通，**不使用 pywebview 的
-js_api** —— 那一層（pythonnet 序列化 .NET 物件）正是先前踩到無限遞迴
-死鎖的元兇；改成純載入網址後視窗穩定（實測無遞迴、視窗持續存活）。
+Window strategy (Wave 3 / G1)
+-----------------------------
+The default window is the system Microsoft Edge in ``--app`` + ``--inprivate``
+mode. It needs no .NET assembly, no pythonnet, no WebView2 SDK and no
+``Mark-of-the-Web`` workaround: the original onefile build existed only because
+loose DLLs inherited MOTW and .NET refused to load them. Removing pythonnet
+removes that whole failure mode and makes an onedir / layered layout possible.
 
-啟動順序：起本機 server(只綁 127.0.0.1) → 背景載入模型 → 開原生視窗。
-WebView2 不可用時 fallback：系統 Edge --app 無痕視窗 → 再不行開預設瀏覽器。
+The native pywebview/WebView2 window is still available as an **opt-in** path
+for source installs via ``QWENASR_NATIVE_WINDOW=1``. The release EXE no longer
+bundles pywebview/pythonnet, so enabling it there is expected to fail and fall
+back to Edge --app automatically.
+
+Startup order: local server (127.0.0.1 only) -> optional background model load
+-> Edge --app window -> default browser as last resort.
 """
 from __future__ import annotations
 
@@ -387,14 +394,18 @@ def main():
     url = srv.url
     print(f"[{APP_NAME}] {url}")
 
-    # 只有在系統具備 WebView2 Runtime 時才試原生視窗（否則會卡在空白窗，
-    # 見 webview2_available 註解）；缺則直接走 Edge --app，不需 WebView2/.NET。
-    has_wv2 = webview2_available()
-    if not has_wv2:
-        print(f"[{APP_NAME}] 未偵測到 WebView2 Runtime，改用 Edge --app 視窗。")
-    native_ok = has_wv2 and run_native_window(url)
+    # Default: Edge --app. No .NET / pythonnet / WebView2 SDK is touched, so a
+    # MOTW-marked DLL can never break startup. The native window is opt-in for
+    # source installs only (QWENASR_NATIVE_WINDOW=1); release builds do not
+    # bundle pywebview and will fall through cleanly if it is requested.
+    native_requested = os.environ.get("QWENASR_NATIVE_WINDOW", "") == "1"
+    native_ok = False
+    if native_requested and webview2_available():
+        native_ok = run_native_window(url)
+        if not native_ok:
+            print(f"[{APP_NAME}] Native window unavailable, using Edge --app.")
     try:
-        if not native_ok:                           # fallback：Edge --app 無痕 → 預設瀏覽器
+        if not native_ok:
             proc = open_edge_app(url)
             if proc is not None:
                 proc.wait()

@@ -143,7 +143,7 @@
     },
     async checkUpdate() {
       if (MODE === "web") { try { return await apiPost("/api/check-update", {}); } catch {} }
-      window.open("https://github.com/dseditor/QwenASRMiniTool/releases/latest", "_blank");
+      window.open("https://github.com/1-1-2/QwenASRGUI/releases/latest", "_blank");
       return { ok: true };
     },
 

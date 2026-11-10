@@ -135,9 +135,25 @@
           <div class="d" data-i18n="file.trialDesc">輸出的字幕另存為 .trial.srt，不影響正式任務。</div>
         </div>
 
+        <!-- Two progress views coexist: time/segment ratio above, percentage
+             bar below. Live subtitles arrive over SSE in bounded batches. -->
         <div class="progress" id="progress" hidden>
           <div class="meta"><span class="s" id="prog-status">辨識中 · 第 5/8 段</span><span class="p" id="prog-pct">68%</span></div>
           <div class="bar"><i id="prog-bar" style="width:68%"></i></div>
+          <div id="prog-detail" style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--ink-2);font-family:var(--font-mono)">
+            <span id="prog-time">已處理 — / —</span>
+            <span id="prog-groups">— 段</span>
+            <span id="prog-eta">剩餘 —</span>
+            <span id="prog-phase">準備中</span>
+          </div>
+        </div>
+
+        <div class="card" id="live-panel" hidden style="margin-top:12px">
+          <div class="hint-head">
+            <div class="l"><span class="t">即時字幕 / Live subtitles</span><span class="d">邊跑邊顯示，最多保留最近 200 條；完整結果仍以 SRT 為準</span></div>
+            <button class="btn btn-ghost btn-sm" id="btn-live-follow">回到最新</button>
+          </div>
+          <div id="live-list" style="max-height:220px;overflow:auto;font-size:13px"></div>
         </div>
 
         <!-- Signature：波形 + 字幕卡 -->
@@ -176,13 +192,9 @@
         <div class="batch-head">
           <button class="btn btn-ghost" id="btn-batch-add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span data-i18n="batch.add">加入檔案</span></button>
           <button class="btn btn-primary" id="btn-batch-run"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span data-i18n="batch.run">全部開始</span></button>
-          <label class="switch"><input type="checkbox" id="sw-batch-diar"><span class="track"></span><span data-i18n="file.diar">說話者分離</span></label>
-          <select class="select" id="sel-batch-spk" title="人數">
-            <option value="auto" data-i18n="common.spkAuto">人數 自動</option>
-            <option>2</option><option>3</option><option>4</option><option>5</option><option>6</option>
-          </select>
+          <span style="font-size:12px;color:var(--ink-2)" data-i18n="batch.sharedOpts">語言、提示詞、切分與試跑參數共用「音檔轉字幕」頁的設定</span>
           <div class="sp"></div>
-          <div class="summary" id="batch-summary">3 / 7 完成</div>
+          <div class="summary" id="batch-summary">0 / 0 完成 · 總進度 0%</div>
         </div>
         <div class="batch-list" id="batch-list"></div>
       </section>

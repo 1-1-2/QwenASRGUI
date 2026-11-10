@@ -135,6 +135,7 @@ UI.txt
 !tests/test_wave1.py
 !tests/test_wave15.py
 !tests/test_wave2.py
+!tests/test_wave34.py
 !tests/fixtures/sources/*.wav
 
 # Generated artifacts and checkpoint state are never committed.

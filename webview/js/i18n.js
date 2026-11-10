@@ -64,6 +64,9 @@
 
     "batch.add": ["加入檔案", "添加文件", "Add files"],
     "batch.run": ["全部開始", "全部开始", "Start all"],
+    "batch.sharedOpts": ["語言、提示詞、切分與試跑參數共用「音檔轉字幕」頁的設定",
+                         "语言、提示词、切分与试跑参数共用「音频转字幕」页的设置",
+                         "Language, hint, segmentation and trial options are shared with the Audio page"],
 
     "record.mic": ["麥克風", "麦克风", "Microphone"],
     "record.refresh": ["重新整理", "刷新", "Refresh"],

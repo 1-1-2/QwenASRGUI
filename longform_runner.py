@@ -13,7 +13,9 @@ What it changes
 3. A SQLite checkpoint stores the global frame index, SRT index, a task
    fingerprint and the VAD recurrent state, enabling exact resume.
 4. progress_cb(pct:int, status:str) matches the existing WebView SSE contract;
-   no frontend change is required.
+   no frontend change is required. Optional detail_cb / segment_cb add
+   structured progress (processed seconds, group count, ETA) and throttled
+   live-subtitle batches for the UI without changing that legacy contract.
 
 Deliberate non-goals
 --------------------
@@ -605,7 +607,8 @@ class LongformRunner:
                  task_id: str = "default",
                  fingerprint: str = "",
                  gc_every: int = 0,
-                 vad_threshold: float = 0.5):
+                 vad_threshold: float = 0.5,
+                 detail_cb=None, segment_cb=None):
         if vad_sess is None:
             raise ValueError("缺少 VAD session：请传入 engine.vad_sess")
         self.fingerprint = fingerprint or ""
@@ -628,12 +631,67 @@ class LongformRunner:
         self.out_srt.parent.mkdir(parents=True, exist_ok=True)
         self.jsonl = self.work_dir / f"{task_id}.segments.jsonl"
         self.ckpt = Checkpoint(self.work_dir / "checkpoints.db", task_id)
+        # Optional SSE enrichments. They are additive: legacy callers that only
+        # pass progress_cb keep working unchanged.
+        self.detail_cb = detail_cb
+        self.segment_cb = segment_cb
+        self._seg_batch: list[dict] = []
+        self._last_seg_flush = 0.0
+        self._start_wall = time.monotonic()
+        self._last_done_sec = 0.0
+        self._last_group_count = 0
 
-    def _emit(self, pct: int, status: str):
+    def _emit(self, pct: int, status: str, detail: dict | None = None):
+        pct = max(0, min(100, int(pct)))
         try:
-            self.progress_cb(max(0, min(100, int(pct))), status)
+            self.progress_cb(pct, status)
         except Exception:
             pass
+        if self.detail_cb:
+            payload = {"pct": pct, "status": status, "taskId": self.task_id}
+            if detail:
+                payload.update(detail)
+            try:
+                self.detail_cb(payload)
+            except Exception:
+                pass
+
+    def _queue_segment(self, seg: dict):
+        """Batch live subtitles so SSE never floods the renderer.
+
+        A 5-hour lecture can produce tens of thousands of lines; emitting one
+        event per line would make the WebView DOM the new OOM source. Flush at
+        most twice per second or every 8 lines, whichever comes first.
+        """
+        if not self.segment_cb:
+            return
+        self._seg_batch.append(seg)
+        now = time.monotonic()
+        if len(self._seg_batch) >= 8 or now - self._last_seg_flush >= 0.5:
+            self._flush_segments()
+
+    def _flush_segments(self, force: bool = False):
+        if not self.segment_cb or not self._seg_batch:
+            if force:
+                self._last_seg_flush = time.monotonic()
+            return
+        batch, self._seg_batch = self._seg_batch, []
+        self._last_seg_flush = time.monotonic()
+        try:
+            self.segment_cb({"taskId": self.task_id, "segments": batch,
+                             "count": len(batch)})
+        except Exception:
+            pass
+
+    def _eta_sec(self, done_sec: float, total_sec: float) -> float | None:
+        """Extrapolate remaining wall time from processed audio seconds."""
+        if not total_sec or done_sec <= 0:
+            return None
+        elapsed = max(1e-3, time.monotonic() - self._start_wall)
+        rate = done_sec / elapsed
+        if rate <= 0:
+            return None
+        return max(0.0, (total_sec - done_sec) / rate)
 
     def _init_outputs(self, next_index: int):
         if next_index <= 1:
@@ -641,13 +699,15 @@ class LongformRunner:
             self.jsonl.write_text("", encoding="utf-8")
 
     def _append(self, index: int, start: float, end: float, text: str) -> int:
-        """每完成一段立刻落盘：SRT 序号连续，JSONL 便于重排与校对。"""
+        """Append one subtitle to SRT/JSONL immediately, then queue it for SSE."""
         with open(self.out_srt, "a", encoding="utf-8") as f:
             f.write(f"{index}\n{srt_ts(start)} --> {srt_ts(end)}\n{text}\n\n")
         with open(self.jsonl, "a", encoding="utf-8") as f:
             f.write(json.dumps({"index": index, "start": round(start, 3),
                                 "end": round(end, 3), "text": text},
                                ensure_ascii=False) + "\n")
+        self._queue_segment({"index": index, "start": round(start, 3),
+                             "end": round(end, 3), "text": text})
         return index + 1
 
     def run(self, audio_path, pcm_source=None, total_sec: float | None = None,
@@ -661,6 +721,7 @@ class LongformRunner:
         # A trial run must never share the checkpoint / output of a full run.
         if limit_sec:
             resume = False
+        self._start_wall = time.monotonic()
         next_frame, next_index, status = self.ckpt.load() if resume else (0, 1, "new")
         saved_fp, saved_vad = self.ckpt.load_meta() if resume else ("", "")
 
@@ -817,10 +878,27 @@ class LongformRunner:
                 if processed_frames % 512 == 0:
                     done_sec = frame * VAD_CHUNK / SR
                     pct = int(done_sec / total_sec * 100) if total_sec else 0
-                    self._emit(pct, f"已处理 {done_sec / 60:.1f} 分钟 · {group_count} 段")
+                    self._emit(pct, f"已处理 {done_sec / 60:.1f} 分钟 · {group_count} 段",
+                               {"doneSec": round(done_sec, 1),
+                                "totalSec": round(total_sec or 0, 1),
+                                "groups": group_count,
+                                "etaSec": self._eta_sec(done_sec, total_sec or 0),
+                                "phase": "running"})
                     self.ckpt.save(frame, seg_index, "running",
                                    fingerprint=self.fingerprint,
                                    vad_state=encode_vad_state(h, c))
+                elif processed_frames % 128 == 0:
+                    # Progress is emitted more often than the checkpoint is
+                    # written. The old 512-frame (16 s) cadence produced no
+                    # running update at all for clips shorter than ~16 s.
+                    done_sec = frame * VAD_CHUNK / SR
+                    pct = int(done_sec / total_sec * 100) if total_sec else 0
+                    self._emit(pct, f"已处理 {done_sec / 60:.1f} 分钟 · {group_count} 段",
+                               {"doneSec": round(done_sec, 1),
+                                "totalSec": round(total_sec or 0, 1),
+                                "groups": group_count,
+                                "etaSec": self._eta_sec(done_sec, total_sec or 0),
+                                "phase": "running"})
 
             # 文件结束：收尾当前语音段
             if in_sp and frame - s0 >= _MIN_CH:
@@ -855,7 +933,11 @@ class LongformRunner:
             done_sec = frame * VAD_CHUNK / SR
             pct = int(done_sec / total_sec * 100) if total_sec else 0
             # Keep the bar where it stopped; a paused task is not a 0 % task.
-            self._emit(pct, f"已取消，进度已保存（{pct}%），可再次启动续跑")
+            self._emit(pct, f"已取消，进度已保存（{pct}%），可再次启动续跑",
+                       {"doneSec": round(done_sec, 1),
+                        "totalSec": round(total_sec or 0, 1),
+                        "groups": group_count, "phase": "paused"})
+            self._flush_segments(force=True)
             return {"status": "paused", "srt": str(self.out_srt),
                     "segments": seg_index - 1, "next_frame": resume_frame,
                     "groups": group_count, "frames": frame,
@@ -864,7 +946,11 @@ class LongformRunner:
 
         self.ckpt.save(frame, seg_index, "done",
                        fingerprint=self.fingerprint, vad_state="")
-        self._emit(100, f"完成 · 共 {seg_index - 1} 条字幕")
+        self._emit(100, f"完成 · 共 {seg_index - 1} 条字幕",
+                   {"doneSec": round(total_sec or 0, 1),
+                    "totalSec": round(total_sec or 0, 1),
+                    "groups": group_count, "etaSec": 0, "phase": "done"})
+        self._flush_segments(force=True)
         return {"status": "done", "srt": str(self.out_srt),
                 "segments": seg_index - 1, "next_frame": frame,
                 "groups": group_count, "frames": frame,
