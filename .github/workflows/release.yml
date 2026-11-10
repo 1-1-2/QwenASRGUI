@@ -1,0 +1,224 @@
+name: 构建 Windows 发行包
+
+# 本工作流为「一键发行包」改造新增，全部说明使用简体中文。
+# 产出：一个解压即可运行的 ZIP，内含单文件 QwenASR-WebView.exe。
+# 手动运行默认上传为 Actions 工件；勾选「同时创建 Release」可得到永久下载链接。
+# push 以 v 开头的 tag 时自动构建并创建 Release。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_suffix:
+        description: '版本后缀（留空则使用 2.0.0-longform.<提交短码>）'
+        required: false
+        default: ''
+      bundle_ffmpeg:
+        description: '随包附带 ffmpeg.exe（失败不阻断构建）'
+        type: boolean
+        default: true
+      run_tests:
+        description: '打包前先跑回归测试'
+        type: boolean
+        default: true
+      create_release:
+        description: '同时创建 GitHub Release（得到永久下载链接）'
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Release 的 tag（手动触发且勾选创建 Release 时有效，留空自动生成）'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-x64:
+    name: 构建 Windows x64 单文件 EXE 与 ZIP 包
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: 计算版本号与提交短码
+        id: ver
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, re
+          src = open('version.py', encoding='utf-8').read()
+          m = re.search(r'^__version__\s*=\s*["\']([^"\']+)', src, re.M)
+          base = m.group(1) if m else '2.0.0'
+          sha = os.environ.get('GITHUB_SHA', 'local')[:7]
+          suffix = os.environ.get('INPUT_VERSION_SUFFIX', '').strip()
+          version = suffix if suffix else f'{base}-longform.{sha}'
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
+              f.write(f'version={version}\n')
+              f.write(f'sha={sha}\n')
+              f.write(f'base={base}\n')
+          print(f'版本：{version}  提交：{sha}')
+          PY
+        env:
+          INPUT_VERSION_SUFFIX: ${{ inputs.version_suffix }}
+
+      - name: 安装运行与构建依赖
+        # requirements.txt 只列了运行期最小集合；WebView 打包还需要下列包
+        # （与 build_venv.bat / build_webview.bat 保持一致，且全程无 PyTorch）
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install \
+            pyinstaller pywebview pythonnet clr_loader certifi segno \
+            soxr soundfile kaldi-native-fbank scipy tokenizers \
+            bottle proxy_tools
+
+      - name: 打印依赖版本
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib
+          for mod in ['PyInstaller','openvino','onnxruntime','numpy','webview',
+                      'opencc','kaldi_native_fbank','customtkinter']:
+              try:
+                  m = importlib.import_module(mod)
+                  print(f'  {mod:<24} {getattr(m, "__version__", "未知")}')
+              except Exception as e:
+                  print(f'  {mod:<24} 导入失败：{type(e).__name__}: {e}')
+          PY
+          echo "---- 确认未安装 PyTorch ----"
+          python -c "import importlib.util as u; print('torch 存在：', u.find_spec('torch') is not None)"
+
+      - name: 确认随包的 Silero VAD 模型
+        shell: bash
+        run: |
+          if [ -f ov_models/silero_vad_v4.onnx ] && [ "$(stat -c %s ov_models/silero_vad_v4.onnx)" -gt 100000 ]; then
+            echo "仓库已提供 ov_models/silero_vad_v4.onnx"
+          else
+            echo "仓库缺少 VAD 模型，尝试从上游下载……"
+            python -c "from pathlib import Path; from downloader import _download_file, _VAD_URL; p=Path('ov_models'); p.mkdir(exist_ok=True); _download_file(_VAD_URL, p/'silero_vad_v4.onnx')"
+          fi
+          python -c "from pathlib import Path; p=Path('ov_models/silero_vad_v4.onnx'); print('VAD 大小：', p.stat().st_size, 'bytes'); assert p.stat().st_size > 100000"
+
+      - name: 打包前回归测试
+        if: ${{ inputs.run_tests != false }}
+        shell: bash
+        run: |
+          python tests/make_fixture.py --minutes 0.5
+          python tests/test_integration.py
+          python tests/test_longform_runner.py --minutes 0.5 --skip-ffmpeg \
+            --real-vad ov_models/silero_vad_v4.onnx
+
+      - name: 下载可选 ffmpeg.exe
+        if: ${{ inputs.bundle_ffmpeg != false }}
+        continue-on-error: true
+        shell: bash
+        run: python tools/fetch_ffmpeg.py --out ffmpeg/ffmpeg.exe
+
+      - name: 判断 ffmpeg 是否随包
+        id: ff
+        shell: bash
+        run: |
+          if [ -f ffmpeg/ffmpeg.exe ] && [ "$(stat -c %s ffmpeg/ffmpeg.exe)" -gt 1000000 ]; then
+            echo "has=true" >> "$GITHUB_OUTPUT"
+            echo "随包附带 ffmpeg.exe"
+          else
+            echo "has=false" >> "$GITHUB_OUTPUT"
+            echo "不附带 ffmpeg.exe（WAV 不受影响，视频首次处理时自动下载）"
+          fi
+
+      - name: 构建 EXE 并组装发行 ZIP
+        shell: bash
+        run: |
+          FF_ARG=""
+          if [ "${{ steps.ff.outputs.has }}" = "true" ]; then
+            FF_ARG="--ffmpeg ffmpeg/ffmpeg.exe"
+          fi
+          python build_release.py \
+            --version "${{ steps.ver.outputs.version }}" \
+            --sha "${{ steps.ver.outputs.sha }}" $FF_ARG
+
+      - name: 校验发行包内容
+        # 重点确认长音频模块与动态 import 的模块确实进了 EXE，
+        # 否则程序启动正常、点到长音频才报 ImportError。
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          v = json.loads(Path('release_pkg/archive_verify.json').read_text(encoding='utf-8'))
+          print('包内容验证状态：', v['状态'])
+          print('命中：', v['命中'])
+          print('缺失：', v['缺失'])
+          assert v['状态'] in ('通过', '存在缺失'), \
+              f"包内容验证未能执行（PyInstaller 工具不可用）：{v['状态']}"
+          assert not v['缺失'], f"EXE 内缺少关键模块：{v['缺失']}"
+          m = json.loads(Path('release_pkg/QwenASR-WebView/build_manifest.json').read_text(encoding='utf-8'))
+          assert 'longform_runner.py' in m['随附 Python 源码'], '构建清单缺少 longform_runner.py'
+          zips = list(Path('release_pkg').glob('*.zip'))
+          assert len(zips) == 1, f'期望 1 个 ZIP，实际 {len(zips)}'
+          exe = Path('dist/webview/QwenASR-WebView.exe')
+          assert exe.stat().st_size > 20 * 1024 * 1024, 'EXE 体积异常，疑似构建不完整'
+          print(f'ZIP：{zips[0].name}  {zips[0].stat().st_size/1024/1024:.1f} MB')
+          print(f'EXE：{exe.stat().st_size/1024/1024:.1f} MB')
+          PY
+
+      - name: 上传构建工件
+        uses: actions/upload-artifact@v4
+        with:
+          name: QwenASR-WebView-Windows-x64
+          path: release_pkg/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 创建 Release（可选）
+        if: ${{ inputs.create_release == true || github.event_name == 'push' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || (inputs.release_tag != '' && inputs.release_tag || format('v{0}', steps.ver.outputs.version)) }}
+          name: QwenASR 长音频流式版 ${{ steps.ver.outputs.version }}
+          body: |
+            ## Windows 解压即用版
+
+            下载 `QwenASR-WebView_..._windows-x64.zip`，解压后双击
+            `QwenASR-WebView.exe` 即可启动，**无需安装 Python**。
+
+            - 纯 CPU + OpenVINO INT8，不含 PyTorch / transformers，不需要 NVIDIA 显卡
+            - 已集成长音频流式模式：分段增量落盘、断点续跑、取消保留已完成字幕
+            - 包内含前端资源、Mel 滤波器、Silero VAD 模型
+            - **识别模型权重不内嵌**（0.6B 约 1.2GB / 1.7B 约 4.4GB）：
+              首次启动在「模型」页按需下载，国内可切 hf-mirror 镜像；
+              装好后即可完全离线使用
+            - 随包 ffmpeg：见包内「使用说明.txt」；WAV 输入不需要 ffmpeg
+
+            详细功能边界与目录说明见包内 `使用说明.txt` 与 `build_manifest.json`。
+          files: release_pkg/*.zip
+          draft: false
+          prerelease: false
+
+      - name: 写入下载摘要
+        shell: bash
+        run: |
+          {
+            echo "## 构建完成"
+            echo ""
+            echo "- 版本：\`${{ steps.ver.outputs.version }}\`"
+            echo "- 随包 ffmpeg：\`${{ steps.ff.outputs.has }}\`"
+            echo "- 下载：Actions 页面的 **Artifacts → QwenASR-WebView-Windows-x64**"
+            if [ "${{ inputs.create_release == true || github.event_name == 'push' }}" = "true" ]; then
+              echo "- 永久下载：本仓库 **Releases** 页面"
+            fi
+            echo ""
+            echo "> 模型权重未内嵌，首次启动需按需下载，详见包内「使用说明.txt」。"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -18,3 +18,14 @@
 - 拼接产物 `longform_4min.wav` 是生成物，不提交到仓库；运行 `python tests/make_fixture.py` 即可离线复现。
 - 若需要评估中文网课的识别准确率，请改用自行录制或已获授权的真实课程音频；本素材是中英文短句重复拼接，不能代表真实准确率。
 - 如对某段素材的再分发许可有疑虑，删除对应文件并同步修改 `tests/make_fixture.py` 的 `ORDER` 即可，管线本身不依赖具体内容。
+
+## 随发行包附带的 VAD 模型
+
+`ov_models/silero_vad_v4.onnx`（约 1.7 MB）取自
+[`snakers4/silero-vad` v4.0 标签](https://github.com/snakers4/silero-vad/tree/v4.0/files)
+的 `files/silero_vad.onnx`，上游仓库为 **MIT** 许可，允许再分发。
+项目原本就在首次启动时按需下载该文件；提交到仓库是为了让 CI 构建发行包时
+不依赖外网，且用户解压后 VAD 立即可用（无需联网）。
+
+注意：这是**模型文件**，不是测试音频；IR 权重（0.6B / 1.7B INT8）体积过大，
+仍保持按需下载，不随包也不入库。

@@ -392,6 +392,54 @@ python tests/test_longform_runner.py            # 流式 Runner
 
 ---
 
+## 一键构建 Windows 发行包（新增，简体中文）
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) 在
+**windows-latest** 上把 WebView 版打成单文件 EXE，并组装成解压即用的 ZIP。
+
+**手动触发**：仓库 → Actions → 「构建 Windows 发行包」→ Run workflow。
+可选参数：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `version_suffix` | 空 | 留空用 `2.0.0-longform.<提交短码>` |
+| `bundle_ffmpeg` | 开 | 随包附带 `ffmpeg.exe`，下载失败不阻断构建 |
+| `run_tests` | 开 | 打包前跑集成测试与长音频测试 |
+| `create_release` | 关 | 勾选后创建 Release，得到永久下载链接 |
+| `release_tag` | 空 | 手动创建 Release 时指定 tag |
+
+推送 `v*` 开头的 tag 也会自动构建并创建 Release。产物可从
+**Actions → Artifacts → QwenASR-WebView-Windows-x64** 或
+**Releases** 页面下载。
+
+**ZIP 内容**
+
+```text
+QwenASR-WebView/
+  QwenASR-WebView.exe   单文件主程序，双击即用，无需安装 Python
+  ffmpeg/ffmpeg.exe     可选，随包附带
+  ov_models/            模型权重目录（首次启动按需下载）
+  subtitles/            字幕输出目录
+  longform_state/       长音频断点与逐段记录（运行时生成）
+  使用说明.txt           简体中文使用说明
+  build_manifest.json   构建清单与依赖版本
+```
+
+**边界**：识别模型权重（0.6B 约 1.2GB / 1.7B 约 4.4GB）不内嵌，
+首次启动在「模型」页下载，国内可切 hf-mirror 镜像；装好后完全离线可用。
+构建全程**不安装 PyTorch / transformers**，纯 CPU + OpenVINO INT8。
+
+构建脚本 [`build_release.py`](build_release.py) 会自动扫描根目录所有 `.py`
+并随包附带 —— 本项目大量模块是函数内动态 import（如 `longform_runner`、
+`downloader`），若沿用旧 `build_webview.bat` 的手工清单会漏掉长音频模块，
+导致 EXE 启动正常、点到长音频才报 ImportError。本地可先跑：
+
+```bash
+python build_release.py --dry-run     # 只打印 PyInstaller 命令与随包清单
+```
+
+---
+
 ## 授權
 
 本專案程式碼以 **MIT** 授權釋出。模型權重與第三方預編譯二進位依各自來源的授權條款。
