@@ -41,6 +41,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
 
+    # Windows runner 的 Python stdout 默认 cp1252，脚本里的简体中文 print 会
+    # 直接 UnicodeEncodeError（首次构建就栽在这里）。强制 UTF-8 覆盖全部步骤。
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+
     steps:
       - name: 检出代码
         uses: actions/checkout@v4

@@ -302,7 +302,17 @@ def verify_archive(exe: Path) -> dict:
     return result
 
 
+
+def _force_utf8():
+    """Windows 控制台默认 cp1252 会让中文 print 抛 UnicodeEncodeError。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 def main() -> int:
+    _force_utf8()
     ap = argparse.ArgumentParser(description="构建 Windows 发行包（简体中文）")
     ap.add_argument("--version", default="dev", help="版本标签，写入文件名与说明")
     ap.add_argument("--sha", default="local", help="构建对应的 commit 短哈希")

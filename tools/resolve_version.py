@@ -17,7 +17,17 @@ import sys
 from pathlib import Path
 
 
+
+def _force_utf8():
+    """Windows 控制台默认 cp1252 会让中文 print 抛 UnicodeEncodeError。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 def main() -> int:
+    _force_utf8()
     root = Path(__file__).resolve().parent.parent
     src = (root / "version.py").read_text(encoding="utf-8")
     m = re.search(r'^__version__\s*=\s*["\']([^"\']+)', src, re.M)

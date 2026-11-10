@@ -16,7 +16,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+
+def _force_utf8():
+    """Windows 控制台默认 cp1252 会让中文 print 抛 UnicodeEncodeError。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 def main() -> int:
+    _force_utf8()
     pkg = ROOT / "release_pkg"
     v = json.loads((pkg / "archive_verify.json").read_text(encoding="utf-8"))
     print("包内容验证状态：", v["状态"])

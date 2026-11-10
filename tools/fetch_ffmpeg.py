@@ -51,7 +51,17 @@ def find_ffmpeg_in_zip(raw: bytes) -> bytes | None:
         return z.read(names[0])
 
 
+
+def _force_utf8():
+    """Windows 控制台默认 cp1252 会让中文 print 抛 UnicodeEncodeError。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 def main() -> int:
+    _force_utf8()
     ap = argparse.ArgumentParser(description="下载 ffmpeg.exe（失败不阻断）")
     ap.add_argument("--out", default="ffmpeg/ffmpeg.exe",
                     help="输出路径，默认 ffmpeg/ffmpeg.exe")
