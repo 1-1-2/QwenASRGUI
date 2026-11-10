@@ -341,6 +341,10 @@ class WebBackend:
     # 編碼器匯出長度寫死，超過會被靜默截斷掉字，故只允許往短調，絕不超過。
     # crispasr（無 max_chunk_secs 類別屬性）走自身視窗，不受此設定影響。
     _CHUNK_FLOOR = 5
+    # Only the first N subtitles are sent to the WebView. Rendering every card
+    # of a 3-5 h lecture (thousands of DOM nodes) crashed the WebView2
+    # renderer with "Out of memory" right after a successful run.
+    _MAX_PREVIEW_SEGMENTS = 200
     def _apply_chunk_secs(self) -> None:
         eng = getattr(self, "engine", None)
         ceiling = getattr(type(eng), "max_chunk_secs", None) if eng is not None else None
@@ -607,46 +611,49 @@ class WebBackend:
                 extract_audio_to_wav(audio_path, wav, ff)
                 audio_path, tmp_extra = wav, wav
 
-            # ── 新增（简体）：判定是否走长音频流式路径 ──────────────────────
-            # 原 process_file() 会整段加载音频、末尾一次性写盘，1 小时以上容易卡死
-            # 且崩溃即全部丢失。这里按「音频时长 ≥ 阈值」自动切换为流式路径；
-            # 也可用 opts["longform"] 或 CLI --longform 强制开启。
-            # 阈值来自 settings 的 longform_minutes，默认 20 分钟。
-            from longform_runner import probe_duration
+            # Single pipeline for every input, short or long. The legacy
+            # process_file() path loaded the whole waveform and wrote the SRT
+            # only at the end; keeping two frameworks meant two sets of limits
+            # and a length-dependent memory spike. All entries (GUI / batch /
+            # CLI / API) now share the streaming runner.
+            from longform_runner import probe_duration, TRIAL_MINUTES
             _ff = str(self._resolve_ffmpeg() or "ffmpeg")
+            self._emit("progress", {"pct": 0, "status": "正在探测音频时长…"})
             _duration = probe_duration(audio_path, _ff)
+            trial = bool(opts.get("trial"))
+            limit_sec = TRIAL_MINUTES * 60 if trial else None
+
+            _st = self._settings_raw()
+            _ceiling = getattr(type(self.engine), "max_chunk_secs", None)
+            if not isinstance(_ceiling, int):
+                _ceiling = 30
             try:
-                _threshold_min = float(self._settings_raw().get("longform_minutes", 20) or 20)
+                _want = int(_st.get("chunk_secs", 0) or 0)
             except Exception:
-                _threshold_min = 20.0
-            use_longform = bool(opts.get("longform")) or (
-                _duration is not None and _duration >= _threshold_min * 60)
-            if use_longform:
-                self._emit("progress", {"pct": 0,
-                    "status": f"长音频流式模式（{(_duration or 0)/60:.0f} 分钟）：分段增量落盘，可断点续跑"})
+                _want = 0
+            _effective = _ceiling if _want <= 0 else max(5, min(_want, _ceiling))
+            _is_1p7 = "1p7" in getattr(type(self.engine), "_OV_SUBDIR", "").lower() \
+                or "1p7" in type(self.engine).__name__.lower()
+            _ram_mb = 6000 if _is_1p7 else 2000
 
-            # 流式路径暂不支持词级对齐 / 说话人分离，跳过对应模型下载以节省时间
-            want_align = False if use_longform else bool(opts.get("align", True))
-            want_diar = False if use_longform else bool(opts.get("diarize"))
-
-            # ── 時間軸對齊（FA）：缺模型則按需下載（移植自 app.py 的協調層）──
-            if want_align:
-                self._ensure_fa()
-            if hasattr(self.engine, "use_aligner") and getattr(self.engine, "_fa_bin", None):
-                self.engine.use_aligner = want_align
-
-            # ── 說話者分離：外部 ONNX，與後端無關。缺模型則下載 + 掛上 diar_engine ──
-            if want_diar:
-                if not (getattr(self.engine, "diar_engine", None)
-                        and getattr(self.engine.diar_engine, "ready", False)):
-                    try:
-                        self._ensure_diarization()
-                    except Exception as e:
-                        head = str(e).splitlines()[0][:100] if str(e) else type(e).__name__
-                        self._emit("progress", {"pct": 0, "status": f"說話者分離模型下載失敗：{head}"})
-
-            n_spk = opts.get("nSpeakers")
-            n_speakers = int(n_spk) if str(n_spk).isdigit() else None
+            # Capabilities tell the UI what actually takes effect. In
+            # particular a 30 s setting is silently clamped to 10 s on 1.7B;
+            # make that visible instead of pretending the slider is free.
+            self._emit("capabilities", {
+                "streaming": True,
+                "align": False,
+                "diarize": False,
+                "effectiveChunkSecs": _effective,
+                "modelCeilingSecs": _ceiling,
+                "estimatedRamMB": _ram_mb,
+                "trial": trial,
+                "reason": "统一流式模式：词级时间轴与说话人分离暂不可用",
+            })
+            mins = (_duration or 0) / 60
+            self._emit("progress", {"pct": 0, "status":
+                (f"试跑前 {TRIAL_MINUTES} 分钟 · " if trial else "") +
+                f"音频 {mins:.0f} 分钟 · 分段增量落盘 · 生效切分 {_effective} 秒 · "
+                f"预估常驻约 {_ram_mb / 1024:.1f} GB"})
 
             # 語言：空字串 / 自動偵測 / auto → None（讓引擎自動偵測）
             _lang = (opts.get("language") or "").strip()
@@ -677,51 +684,72 @@ class WebBackend:
                 except Exception:
                     pass
 
-                if use_longform:
-                    # ── 新增（简体）：长音频流式路径 ──────────────────────
-                    # 单 worker 串行；ASREngine.transcribe() 自带互斥锁，多线程
-                    # 只会排队，多进程则各载一套 IR 反而放大内存与锯齿。
-                    from longform_runner import LongformRunner
+                # Single streaming path: a single worker. ASREngine.transcribe()
+                # holds a mutex, so extra threads only queue, while extra
+                # processes each load their own IR and multiply memory peaks.
+                from longform_runner import LongformRunner
 
-                    def _splitter(text, t0, t1):
-                        # 复用原版断句与时间轴分配，字幕质量与 process_file 一致
-                        return core._assign_ts(core._split_to_lines(text), t0, t1)
+                def _splitter(text, t0, t1):
+                    # Reuse the original line splitting / timestamp logic.
+                    return core._assign_ts(core._split_to_lines(text), t0, t1)
 
-                    task_id = hashlib.sha1(
-                        str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
-                    runner = LongformRunner(
-                        engine=self.engine,
-                        vad_sess=getattr(self.engine, "vad_sess", None),
-                        out_srt=out_ref.with_suffix(".srt"),
-                        work_dir=BASE_DIR / "longform_state",
-                        ffmpeg=_ff,
-                        progress_cb=progress_cb,   # Runner 用 (pct,status)，与原契约一致
-                        cancel=self._cancel_event,
-                        language=_lang,
-                        context=(opts.get("hint") or "").strip() or None,
-                        line_splitter=_splitter,
-                        task_id=task_id,
-                        max_chunk_secs=int(getattr(self.engine, "max_chunk_secs", 30)),
-                        vad_threshold=float(self._settings_raw().get("vad_threshold", 0.5) or 0.5),
-                    )
-                    result = runner.run(
-                        audio_path, total_sec=_duration,
-                        resume=bool(opts.get("longform_resume", True)))
-                    if result["status"] == "paused":
-                        raise RuntimeError(
-                            "已取消；已完成字幕已保存，再次启动同一文件可从断点续跑。")
-                    srt = runner.out_srt
-                else:
-                    srt = self.engine.process_file(
-                        audio_path,
-                        progress_cb=_cb,
-                        language=_lang,
-                        context=(opts.get("hint") or "").strip() or None,
-                        diarize=want_diar,
-                        n_speakers=n_speakers,
-                        original_path=out_ref,
-                        out_format="srt",
-                    )
+                task_id = hashlib.sha1(
+                    str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
+                out_srt = out_ref.with_suffix(".srt")
+                if trial:
+                    # A trial run must never pollute the full run's checkpoint
+                    # or overwrite its SRT.
+                    task_id += "-trial"
+                    out_srt = out_ref.with_name(out_ref.stem + ".trial.srt")
+
+                # Fingerprint everything that changes the transcript. A
+                # mismatch forces a clean restart instead of resuming into a
+                # half-old / half-new SRT (different model, script, chunk...).
+                _hint = (opts.get("hint") or "").strip()
+                _fp_parts = [
+                    f"backend={getattr(self, '_active_backend', '')}",
+                    f"size={_st.get('cpu_model_size', '')}",
+                    f"chunk={getattr(self.engine, 'max_chunk_secs', '')}",
+                    f"vad={_st.get('vad_threshold', 0.5)}",
+                    f"lang={_lang or 'auto'}",
+                    f"script={_st.get('output_simplified', False)}"
+                    f"/{_st.get('vocab_convert', True)}",
+                    f"hint={hashlib.sha1(_hint.encode('utf-8')).hexdigest()[:8]}",
+                    f"trial={trial}",
+                ]
+                try:
+                    _src = Path(audio_path).stat()
+                    _fp_parts.append(f"src={_src.st_size}/{int(_src.st_mtime)}")
+                except OSError:
+                    pass
+                fingerprint = hashlib.sha1(
+                    "|".join(_fp_parts).encode("utf-8")).hexdigest()[:16]
+
+                runner = LongformRunner(
+                    engine=self.engine,
+                    vad_sess=getattr(self.engine, "vad_sess", None),
+                    out_srt=out_srt,
+                    work_dir=BASE_DIR / "longform_state",
+                    ffmpeg=_ff,
+                    progress_cb=progress_cb,   # same (pct,status) contract
+                    cancel=self._cancel_event,
+                    language=_lang,
+                    context=_hint or None,
+                    line_splitter=_splitter,
+                    task_id=task_id,
+                    fingerprint=fingerprint,
+                    max_chunk_secs=int(getattr(self.engine, "max_chunk_secs", 30)),
+                    vad_threshold=float(_st.get("vad_threshold", 0.5) or 0.5),
+                )
+                result = runner.run(
+                    audio_path, total_sec=_duration,
+                    resume=not trial and bool(opts.get("longform_resume", True)),
+                    limit_sec=limit_sec)
+                if result["status"] == "paused":
+                    raise RuntimeError(
+                        "已取消；已完成字幕已保存，再次启动同一文件可从断点续跑。")
+                srt = runner.out_srt
+                runner_result = result
         finally:
             if tmp_extra:
                 try:
@@ -757,7 +785,72 @@ class WebBackend:
 
         if progress_cb:
             progress_cb(100, "完成")
-        return {"segments": segments, "srtPath": saved}
+
+        total_segments = len(segments)
+        preview = segments[:self._MAX_PREVIEW_SEGMENTS]
+        result = runner_result or {}
+        return {
+            "segments": preview,
+            "totalSegments": total_segments,
+            "previewLimit": self._MAX_PREVIEW_SEGMENTS,
+            "previewTruncated": total_segments > len(preview),
+            "srtPath": saved,
+            "trial": trial,
+            "truncated": bool(result.get("truncated")),
+            "duration": result.get("duration") or (_duration or 0),
+            "peaks": result.get("peaks") or [],
+        }
+
+    def vad_preview(self, opts: dict, progress_cb=None) -> dict:
+        """Dry-run segmentation on the first PREVIEW_MINUTES of the selected file.
+
+        No ASR, no model weights needed beyond the VAD session. The result is a
+        statistics dict the recognition page renders as red/yellow/green.
+        """
+        from longform_runner import vad_preview as _vp, PREVIEW_MINUTES
+
+        path = (opts or {}).get("path")
+        if not path or not Path(path).exists():
+            raise RuntimeError("請先選擇音檔，再進行切分預檢。")
+        _ff = str(self._resolve_ffmpeg() or "ffmpeg")
+        _st = self._settings_raw()
+        ceiling = getattr(type(self.engine), "max_chunk_secs", None)
+        if not isinstance(ceiling, int):
+            ceiling = 30
+        try:
+            want = int(_st.get("chunk_secs", 0) or 0)
+        except Exception:
+            want = 0
+        effective = ceiling if want <= 0 else max(self._CHUNK_FLOOR,
+                                                  min(want, ceiling))
+        _raw_thr = (opts or {}).get("vadThreshold")
+        if _raw_thr in (None, ""):
+            _raw_thr = _st.get("vad_threshold", 0.5)
+        try:
+            threshold = float(_raw_thr or 0.5)
+        except Exception:
+            threshold = 0.5
+        threshold = max(0.1, min(0.95, threshold))
+
+        self._emit("progress", {"pct": 0,
+                    "status": f"切分預檢：只分析前 {PREVIEW_MINUTES} 分鐘（不跑辨識）"})
+        cb = progress_cb or (lambda pct, status: self._emit(
+            "progress", {"pct": pct, "status": status}))
+        out = _vp(
+            audio_path=Path(path),
+            vad_sess=getattr(self.engine, "vad_sess", None),
+            ffmpeg=_ff,
+            threshold=threshold,
+            max_chunk_secs=effective,
+            minutes=int((opts or {}).get("minutes", PREVIEW_MINUTES) or
+                        PREVIEW_MINUTES),
+            progress_cb=cb,
+            cancel=self._cancel_event,
+        )
+        out["effectiveChunkSecs"] = effective
+        out["modelCeilingSecs"] = ceiling
+        self._emit("vad-preview", out)
+        return out
 
     def _resolve_ffmpeg(self):
         """解析 ffmpeg：優先採用設定中手動指定的 ffmpeg_path，否則自動偵測。

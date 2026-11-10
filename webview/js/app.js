@@ -114,9 +114,15 @@
         nSpeakers: $("#sel-spk").value,
         align: $("#sw-align").checked,
         hint: $("#hint-box").value.trim(),
+        trial: $("#sw-trial") ? $("#sw-trial").checked : false,
       });
-      renderResult(res.segments);
-      logLine("✓ 完成，共 " + res.segments.length + " 段" + (res.srtPath ? "，已輸出 " + res.srtPath : ""));
+      renderResult(res);
+      logLine("✓ 完成，共 " + (res.totalSegments ?? res.segments.length) + " 段" +
+        (res.srtPath ? "，已輸出 " + res.srtPath : ""));
+      if (res.previewTruncated) {
+        logLine(I18N.t("file.previewTruncated").replace("%1", res.previewLimit) + " " + res.srtPath);
+      }
+      if (res.trial) logLine("試跑模式：僅處理前 5 分鐘，字幕另存為 .trial.srt");
       $("#btn-open-dir").disabled = false;
       $("#btn-save-sub").disabled = false;
     } catch (err) {
@@ -141,6 +147,31 @@
       showProgress(pct, status);
     }
   });
+
+  // Capabilities arrive before a transcription starts. In long-audio streaming
+  // mode word-level alignment and diarization are unavailable, so disable the
+  // switches instead of silently ignoring checked boxes.
+  API.on("capabilities", (cap) => {
+    // A single streaming pipeline supplies every input; word-level alignment
+    // and diarization are not available on it yet.
+    ["#sw-align", "#sw-diar"].forEach((sel) => {
+      const el = $(sel);
+      if (!el) return;
+      el.disabled = true;
+      const lab = el.closest("label");
+      if (lab) lab.style.opacity = "0.45";
+    });
+    const note = $("#cap-note");
+    if (note) { note.hidden = false; note.textContent = cap.reason || ""; }
+    if ($("#seg-effective")) {
+      $("#seg-effective").textContent =
+        cap.effectiveChunkSecs + "s（模型上限 " + cap.modelCeilingSecs + "s）";
+    }
+    if ($("#seg-ram")) {
+      $("#seg-ram").textContent = (cap.estimatedRamMB / 1024).toFixed(1) + " GB";
+    }
+  });
+
   function showProgress(pct, status) {
     $("#progress").hidden = false;
     $("#prog-bar").style.width = pct + "%";
@@ -148,36 +179,33 @@
     if (status != null) $("#prog-status").textContent = status;
   }
 
-  // ════ Signature：真實波形 + 播放 + 分段標註（Suno 式）════
-  //   用 Web Audio decodeAudioData 解出真實峰值畫波形；<audio> 播放，
-  //   播放頭跟走、已播段標色；波形下方對齊時間軸的字幕區塊 + 字幕卡
-  //   隨播放高亮，皆可點選 seek —— 肉眼即可看字幕與音訊的對齊準確度。
+  // ════ Signature：波形 + 播放 + 分段標註（Suno 式）════
+  //   波形峰值由後端在串流 PCM 時增量算出（200 個數字），前端不再解碼整份音檔；
+  //   <audio> 負責播放，播放頭跟走、已播段標色；波形下方對齊時間軸的字幕區塊
+  //   與字幕卡隨播放高亮，皆可點選 seek。
   const WAVE_N = 200;
   let audioEl = null, audioUrl = null, waveDur = 0, curSegs = [];
 
-  async function renderResult(segments) {
+  async function renderResult(res) {
     $("#result").hidden = false;
+    const segments = res.segments || [];
     curSegs = segments;
-    _karaCache = null;                      // 新結果 → 重建卡拉OK字級（段落索引已變）
+    _karaCache = null;
     cleanupAudio();
 
-    const file = picked && (picked.file || (picked instanceof Blob ? picked : null));
-    let peaks = null;
-    waveDur = segments.length ? segments[segments.length - 1].end : 0;
+    // The backend builds the 200 waveform bars incrementally while streaming
+    // the PCM. Decoding the whole file here with decodeAudioData() used to
+    // allocate GBs in the WebView2 renderer and crash it with "Out of memory"
+    // right after a successful long-audio run.
+    let peaks = (res.peaks && res.peaks.length) ? res.peaks : null;
+    waveDur = res.duration || (segments.length ? segments[segments.length - 1].end : 0) || 60;
 
+    const file = picked && (picked.file || (picked instanceof Blob ? picked : null));
     if (file instanceof Blob) {
+      // <audio> decodes lazily / streams; it never materialises the full PCM.
       audioUrl = URL.createObjectURL(file);
       audioEl = new Audio(audioUrl);
-      try {                                   // 解碼取真實峰值（mp3/wav/m4a/webm…）
-        const ab = await file.arrayBuffer();
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const buf = await ctx.decodeAudioData(ab.slice(0));
-        waveDur = buf.duration || waveDur;
-        peaks = computePeaks(buf, WAVE_N);
-        ctx.close();
-      } catch (e) { peaks = null; }           // 不支援的格式 → 平波形，但仍可播
     }
-    waveDur = waveDur || 60;
 
     $("#wave-dur").textContent = fmtClock(waveDur);
     drawWave($("#wave"), peaks, segments, waveDur);
@@ -195,21 +223,6 @@
     host.style.scrollPaddingTop = (panel.offsetHeight + 12) + "px";
   }
   window.addEventListener("resize", syncStickyOffset);
-
-  // 真實峰值：每桶取絕對值最大，整體正規化
-  function computePeaks(buf, n) {
-    const ch = buf.getChannelData(0);
-    const block = Math.max(1, Math.floor(ch.length / n));
-    const peaks = [];
-    for (let i = 0; i < n; i++) {
-      let mx = 0;
-      const base = i * block;
-      for (let j = 0; j < block; j++) { const v = Math.abs(ch[base + j] || 0); if (v > mx) mx = v; }
-      peaks.push(mx);
-    }
-    const norm = Math.max(...peaks, 1e-4);
-    return peaks.map(p => p / norm);
-  }
 
   function drawWave(container, peaks, segments, dur) {
     const n = peaks ? peaks.length : WAVE_N;
@@ -1021,10 +1034,12 @@
     applyTheme(s.theme || "light");                 // 啟動即套用深/淺色
     $("#set-mirror").value = s.mirror || "";
     $("#set-ffmpeg").value = s.ffmpeg || "";
-    if (s.vad != null) { $("#set-vad").value = s.vad; $("#set-vad-val").textContent = (+s.vad).toFixed(2); }
+    if (s.vad != null && $("#seg-vad")) {
+      $("#seg-vad").value = s.vad; $("#seg-vad-val").textContent = (+s.vad).toFixed(2);
+    }
     // 每段最長秒數：0/未設 → 視為上限（slider 顯示 30，後端依模型夾低）
     const cs = (+s.chunkSecs > 0) ? +s.chunkSecs : 30;
-    if ($("#set-chunk")) { $("#set-chunk").value = cs; $("#set-chunk-val").textContent = cs + "s"; }
+    if ($("#seg-chunk")) { $("#seg-chunk").value = cs; $("#seg-chunk-val").textContent = cs + "s"; }
     // 介面語言：選單回填 + 套用 i18n（含目前視圖標題）
     const uiLang = s.uiLang || "繁體中文";
     if ([...$("#set-lang").options].some(o => o.value === uiLang)) $("#set-lang").value = uiLang;
@@ -1038,11 +1053,55 @@
   $("#set-scale").addEventListener("input", e => {
     const v = +e.target.value; $("#set-scale-val").textContent = v + "%"; applyScale(v); API.setSettings({ scale: v });
   });
-  $("#set-vad").addEventListener("input", e => {
-    const v = +e.target.value; $("#set-vad-val").textContent = v.toFixed(2); API.setSettings({ vad: v });
+  // 切分參數已移至識別頁；仍寫回同一組設定鍵，後端與 CLI 相容。
+  $("#seg-vad") && $("#seg-vad").addEventListener("input", e => {
+    const v = +e.target.value; $("#seg-vad-val").textContent = v.toFixed(2);
+    API.setSettings({ vad: v });
+    markPreviewStale();
   });
-  $("#set-chunk") && $("#set-chunk").addEventListener("input", e => {
-    const v = +e.target.value; $("#set-chunk-val").textContent = v + "s"; API.setSettings({ chunkSecs: v });
+  $("#seg-chunk") && $("#seg-chunk").addEventListener("input", e => {
+    const v = +e.target.value; $("#seg-chunk-val").textContent = v + "s";
+    API.setSettings({ chunkSecs: v });
+    markPreviewStale();
+  });
+
+  function markPreviewStale() {
+    const el = $("#seg-verdict");
+    if (el) { el.textContent = I18N.t("file.previewEmpty"); el.dataset.state = ""; }
+  }
+  function renderPreviewStat(p) {
+    const el = $("#seg-verdict"); if (!el) return;
+    if (!p || p.cancelled) { markPreviewStale(); return; }
+    const L = p.lengths || {};
+    const warn = p.verdict === "yellow";
+    el.dataset.state = warn ? "yellow" : "green";
+    el.innerHTML =
+      `<b>${I18N.t(warn ? "file.previewWarn" : "file.previewOk")}</b> · ` +
+      `p50 ${L.p50}s / p90 ${L.p90}s / p99 ${L.p99}s / max ${L.max}s · ` +
+      `超上限 ${(p.overLimitRatio * 100).toFixed(1)}% · ` +
+      `極短段 ${(p.shortRatio * 100).toFixed(1)}% · ` +
+      `靜音 ${(p.silenceRatio * 100).toFixed(0)}% · ` +
+      `${p.groupCount} 組 / 預計 ${p.estimatedAsrCallsPerHour} 次 ASR·每小時`;
+  }
+  API.on("vad-preview", renderPreviewStat);
+  $("#btn-vad-preview") && $("#btn-vad-preview").addEventListener("click", async () => {
+    if (!picked) return;
+    const btn = $("#btn-vad-preview");
+    btn.disabled = true; btn.dataset.label = btn.textContent;
+    btn.textContent = "預檢中…";
+    try {
+      const r = await API.vadPreview({
+        file: picked.file || picked,
+        vadThreshold: $("#seg-vad") ? $("#seg-vad").value : "",
+      });
+      renderPreviewStat(r);
+      logLine("✓ 切分預檢完成：" + (r.groupCount || 0) + " 組");
+    } catch (e) {
+      logLine("✕ 切分預檢失敗：" + (e.message || e));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = btn.dataset.label || I18N.t("file.previewRun");
+    }
   });
   // segmented 控制：點擊切換 + 回寫設定
   [["#set-format", "format"], ["#set-vocab", "vocab"], ["#set-theme", "theme"]].forEach(([sel, key]) => {

@@ -1,31 +1,44 @@
-name: 构建 Windows 发行包
+name: Build Windows Release
 
-# 本工作流为「一键发行包」改造新增，全部说明使用简体中文。
-# 产出：一个解压即可运行的 ZIP，内含单文件 QwenASR-WebView.exe。
-# 手动运行默认上传为 Actions 工件；勾选「同时创建 Release」可得到永久下载链接。
-# push 以 v 开头的 tag 时自动构建并创建 Release。
+# Comments are in English per the repository language convention.
+#
+# Output: a ZIP that runs after extraction, currently containing the onefile
+# QwenASR-WebView.exe (the packaging layout will change in Wave 3).
+#
+# Triggers:
+#   - Manual "Run workflow" uploads an Actions artifact; optionally create a
+#     permanent Release. This is the primary, deliberate build entry point.
+#   - Pushing a v* tag builds and creates a Release automatically.
+#
+# Runner economy:
+#   - No push-to-branch trigger at all: routine commits never build a 200 MB
+#     Windows artifact. Only a deliberate manual run or a version tag does.
+#   - `concurrency` groups runs by ref; cancel-in-progress is FALSE because
+#     cancelling a release build halfway leaves a broken/empty Release.
+#   - A second manual run on the same ref waits for the previous one instead
+#     of competing for the same tag and artifact name.
 
 on:
   workflow_dispatch:
     inputs:
       version_suffix:
-        description: '版本后缀（留空则使用 2.0.0-longform.<提交短码>）'
+        description: 'Version suffix (blank -> 2.0.0-longform.<short sha>)'
         required: false
         default: ''
       bundle_ffmpeg:
-        description: '随包附带 ffmpeg.exe（失败不阻断构建）'
+        description: 'Bundle ffmpeg.exe (failure does not block the build)'
         type: boolean
         default: true
       run_tests:
-        description: '打包前先跑回归测试'
+        description: 'Run regression tests before packaging'
         type: boolean
         default: true
       create_release:
-        description: '同时创建 GitHub Release（得到永久下载链接）'
+        description: 'Also create a GitHub Release (permanent download link)'
         type: boolean
         default: false
       release_tag:
-        description: 'Release 的 tag（手动触发且勾选创建 Release 时有效，留空自动生成）'
+        description: 'Release tag (manual + create_release only; blank = auto)'
         required: false
         default: ''
   push:
@@ -35,29 +48,33 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-windows-x64:
-    name: 构建 Windows x64 单文件 EXE 与 ZIP 包
+    name: Build Windows x64 EXE and distribution ZIP
     runs-on: windows-latest
     timeout-minutes: 90
 
-    # Windows runner 的 Python stdout 默认 cp1252，脚本里的简体中文 print 会
-    # 直接 UnicodeEncodeError（首次构建就栽在这里）。强制 UTF-8 覆盖全部步骤。
+    # Windows runner stdout defaults to cp1252; Chinese print() used to raise
+    # UnicodeEncodeError on the very first build. Force UTF-8 for every step.
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
 
     steps:
-      - name: 检出代码
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 准备 Python 3.11
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
 
-      - name: 计算版本号与提交短码
+      - name: Resolve version and short sha
         id: ver
         shell: bash
         env:
@@ -72,9 +89,10 @@ jobs:
           fi
           exit "$code"
 
-      - name: 安装运行与构建依赖
-        # requirements.txt 只列了运行期最小集合；WebView 打包还需要下列包
-        # （与 build_venv.bat / build_webview.bat 保持一致，且全程无 PyTorch）
+      - name: Install runtime and build dependencies
+        # requirements.txt is the minimal runtime set; packaging needs the
+        # extra list below (kept in sync with build_venv.bat / build_webview.bat,
+        # and deliberately free of PyTorch).
         shell: bash
         run: |
           python -m pip install --upgrade pip
@@ -84,29 +102,31 @@ jobs:
             soxr soundfile kaldi-native-fbank scipy tokenizers \
             bottle proxy_tools psutil
 
-      - name: 确认依赖就绪且无 PyTorch
+      - name: Verify dependencies and absence of PyTorch
         shell: bash
         run: |
-          python -c "import PyInstaller, openvino, onnxruntime, numpy, webview, opencc, kaldi_native_fbank, customtkinter; print('运行与构建依赖全部就绪')"
-          python -c "import importlib.util as u; print('torch 存在：', u.find_spec('torch') is not None)"
+          python -c "import PyInstaller, openvino, onnxruntime, numpy, webview, opencc, kaldi_native_fbank, customtkinter; print('All runtime and build dependencies ready')"
+          python -c "import importlib.util as u; print('torch present:', u.find_spec('torch') is not None)"
 
-      - name: 确认随包的 Silero VAD 模型
+      - name: Ensure bundled Silero VAD model
         shell: bash
         run: |
           if [ -f ov_models/silero_vad_v4.onnx ] && [ "$(stat -c %s ov_models/silero_vad_v4.onnx)" -gt 100000 ]; then
-            echo "仓库已提供 ov_models/silero_vad_v4.onnx"
+            echo "Repository already provides ov_models/silero_vad_v4.onnx"
           else
-            echo "仓库缺少 VAD 模型，尝试从上游下载……"
+            echo "VAD model missing; downloading from upstream..."
             python -c "from pathlib import Path; from downloader import _download_file, _VAD_URL; p=Path('ov_models'); p.mkdir(exist_ok=True); _download_file(_VAD_URL, p/'silero_vad_v4.onnx')"
           fi
-          python -c "from pathlib import Path; p=Path('ov_models/silero_vad_v4.onnx'); print('VAD 大小：', p.stat().st_size, 'bytes'); assert p.stat().st_size > 100000"
+          python -c "from pathlib import Path; p=Path('ov_models/silero_vad_v4.onnx'); print('VAD size:', p.stat().st_size, 'bytes'); assert p.stat().st_size > 100000"
 
-      - name: 打包前回归测试
+      - name: Regression tests before packaging
         if: ${{ inputs.run_tests != false }}
         shell: bash
         run: |
           set +e
           { python tests/make_fixture.py --minutes 0.5
+            python tests/test_wave1.py
+            python tests/test_wave15.py
             python tests/test_integration.py
             python tests/test_longform_runner.py --minutes 0.5 --skip-ffmpeg \
               --real-vad ov_models/silero_vad_v4.onnx
@@ -119,25 +139,25 @@ jobs:
           fi
           exit "$code"
 
-      - name: 下载可选 ffmpeg.exe
+      - name: Download optional ffmpeg.exe
         if: ${{ inputs.bundle_ffmpeg != false }}
         continue-on-error: true
         shell: bash
         run: python tools/fetch_ffmpeg.py --out ffmpeg/ffmpeg.exe
 
-      - name: 判断 ffmpeg 是否随包
+      - name: Detect bundled ffmpeg
         id: ff
         shell: bash
         run: |
           if [ -f ffmpeg/ffmpeg.exe ] && [ "$(stat -c %s ffmpeg/ffmpeg.exe)" -gt 1000000 ]; then
             echo "has=true" >> "$GITHUB_OUTPUT"
-            echo "随包附带 ffmpeg.exe"
+            echo "Bundling ffmpeg.exe"
           else
             echo "has=false" >> "$GITHUB_OUTPUT"
-            echo "不附带 ffmpeg.exe（WAV 不受影响，视频首次处理时自动下载）"
+            echo "No bundled ffmpeg.exe (WAV unaffected; video triggers auto-download)"
           fi
 
-      - name: 构建 EXE 并组装发行 ZIP
+      - name: Build EXE and assemble the distribution ZIP
         shell: bash
         run: |
           set +e
@@ -156,9 +176,10 @@ jobs:
           fi
           exit "$code"
 
-      - name: 校验发行包内容
-        # 重点确认长音频模块与动态 import 的模块确实进了 EXE，
-        # 否则程序启动正常、点到长音频才报 ImportError。
+      - name: Verify package contents
+        # Critical: confirm longform_runner and dynamically imported modules are
+        # actually inside the EXE, otherwise startup succeeds but long-audio
+        # mode fails with ImportError on first use.
         shell: bash
         run: |
           set +e
@@ -170,7 +191,7 @@ jobs:
           fi
           exit "$code"
 
-      - name: 上传构建工件
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: QwenASR-WebView-Windows-x64
@@ -178,43 +199,43 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: 创建 Release（可选）
+      - name: Create Release (optional)
         if: ${{ inputs.create_release == true || github.event_name == 'push' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'push' && github.ref_name || (inputs.release_tag != '' && inputs.release_tag || format('v{0}', steps.ver.outputs.version)) }}
-          name: QwenASR 长音频流式版 ${{ steps.ver.outputs.version }}
+          name: QwenASR Longform ${{ steps.ver.outputs.version }}
           body: |
-            ## Windows 解压即用版
+            ## Windows portable build
 
-            下载 `QwenASR-WebView_..._windows-x64.zip`，解压后双击
-            `QwenASR-WebView.exe` 即可启动，**无需安装 Python**。
+            Download `QwenASR-WebView_..._windows-x64.zip`, extract it and
+            double-click `QwenASR-WebView.exe`. **No Python installation needed.**
 
-            - 纯 CPU + OpenVINO INT8，不含 PyTorch / transformers，不需要 NVIDIA 显卡
-            - 已集成长音频流式模式：分段增量落盘、断点续跑、取消保留已完成字幕
-            - 包内含前端资源、Mel 滤波器、Silero VAD 模型
-            - **识别模型权重不内嵌**（0.6B 约 1.2GB / 1.7B 约 4.4GB）：
-              首次启动在「模型」页按需下载，国内可切 hf-mirror 镜像；
-              装好后即可完全离线使用
-            - 随包 ffmpeg：见包内「使用说明.txt」；WAV 输入不需要 ffmpeg
+            - Pure CPU + OpenVINO INT8, no PyTorch / transformers, no NVIDIA GPU
+            - Long-audio streaming: incremental writes, resume, cancel keeps subtitles
+            - Frontend assets, Mel filters and Silero VAD model are bundled
+            - **Recognition weights are NOT bundled** (0.6B ~1.2GB / 1.7B ~4.4GB):
+              download on demand from the Model page; hf-mirror is available
+              for mainland China networks. Fully offline afterwards.
+            - Bundled ffmpeg: see `使用说明.txt`; WAV input needs no ffmpeg
 
-            详细功能边界与目录说明见包内 `使用说明.txt` 与 `build_manifest.json`。
+            See `使用说明.txt` and `build_manifest.json` for details and limits.
           files: release_pkg/*.zip
           draft: false
           prerelease: false
 
-      - name: 写入下载摘要
+      - name: Write download summary
         shell: bash
         run: |
           {
-            echo "## 构建完成"
+            echo "## Build complete"
             echo ""
-            echo "- 版本：\`${{ steps.ver.outputs.version }}\`"
-            echo "- 随包 ffmpeg：\`${{ steps.ff.outputs.has }}\`"
-            echo "- 下载：Actions 页面的 **Artifacts → QwenASR-WebView-Windows-x64**"
+            echo "- Version: \`${{ steps.ver.outputs.version }}\`"
+            echo "- Bundled ffmpeg: \`${{ steps.ff.outputs.has }}\`"
+            echo "- Download: Actions -> Artifacts -> QwenASR-WebView-Windows-x64"
             if [ "${{ inputs.create_release == true || github.event_name == 'push' }}" = "true" ]; then
-              echo "- 永久下载：本仓库 **Releases** 页面"
+              echo "- Permanent link: this repository's Releases page"
             fi
             echo ""
-            echo "> 模型权重未内嵌，首次启动需按需下载，详见包内「使用说明.txt」。"
+            echo "> Recognition weights are not bundled; see 使用说明.txt."
           } >> "$GITHUB_STEP_SUMMARY"

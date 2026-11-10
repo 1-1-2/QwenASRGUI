@@ -92,13 +92,14 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span data-i18n="file.verify">字幕驗證</span>
           </button>
           <div class="sp"></div>
-          <select class="select" id="sel-lang" data-i18n-title="file.diar"><option value="" data-i18n="common.langAuto">語言 自動</option></select>
+          <select class="select" id="sel-lang" title="辨識語言"><option value="" data-i18n="common.langAuto">語言 自動</option></select>
           <label class="switch"><input type="checkbox" id="sw-diar" checked><span class="track"></span><span data-i18n="file.diar">說話者分離</span></label>
           <select class="select" id="sel-spk" title="人數">
             <option value="auto" data-i18n="common.spkAuto">人數 自動</option>
             <option>2</option><option>3</option><option>4</option><option>5</option><option>6</option>
           </select>
           <label class="switch"><input type="checkbox" id="sw-align" checked><span class="track"></span><span data-i18n="file.align">時間軸對齊</span></label>
+          <span id="cap-note" hidden style="font-size:12px;opacity:.75"></span>
         </div>
 
         <div class="hint-head">
@@ -106,6 +107,33 @@
           <button class="btn btn-ghost btn-sm" id="btn-load-txt" data-i18n="file.loadTxt">讀入 TXT…</button>
         </div>
         <textarea class="input" id="hint-box" data-i18n-ph="file.hintPh" placeholder="例如：本段為產品行銷 Podcast，會出現「轉換率」「漏斗」等行銷術語…"></textarea>
+
+        <!-- 切分參數：與「這份音檔怎麼切」有關的設定全部集中在識別頁 -->
+        <div class="card seg-panel" id="seg-panel">
+          <div class="hint-head">
+            <div class="l"><span class="t" data-i18n="file.segTitle">切分參數</span><span class="d" data-i18n="file.segDesc">數值越大切得越少、上下文越完整；不影響單段記憶體。</span></div>
+          </div>
+          <div class="row">
+            <div class="label"><div class="t" data-i18n="file.vad">語音偵測靈敏度（VAD）</div></div>
+            <input type="range" class="slider" id="seg-vad" min="0.30" max="0.80" step="0.01" value="0.50"><span class="slider-val" id="seg-vad-val">0.50</span>
+          </div>
+          <div class="row">
+            <div class="label"><div class="t" data-i18n="file.chunk">每段最長秒數</div></div>
+            <input type="range" class="slider" id="seg-chunk" min="5" max="30" step="1" value="30"><span class="slider-val" id="seg-chunk-val">30s</span>
+          </div>
+          <div class="seg-note" id="seg-note">
+            <span data-i18n="file.effective">目前生效</span>：<b id="seg-effective">—</b>
+            · <span data-i18n="file.ramHint">預估常駐記憶體</span>：<b id="seg-ram">—</b>
+            <div class="d" data-i18n="file.ramExtra">系統另計約 1–2 GB（WebView2 與檔案快取，可回收）</div>
+          </div>
+          <div class="row">
+            <button class="btn btn-ghost btn-sm" id="btn-vad-preview" data-i18n="file.previewRun">執行預檢</button>
+            <span class="d" data-i18n="file.preview">切分預檢（前 5 分鐘，不跑辨識）</span>
+          </div>
+          <div class="seg-verdict" id="seg-verdict" data-i18n="file.previewEmpty">尚未預檢。建議先跑一次，確認切分是否合理。</div>
+          <label class="switch"><input type="checkbox" id="sw-trial"><span class="track"></span><span data-i18n="file.trial">只試跑前 5 分鐘</span></label>
+          <div class="d" data-i18n="file.trialDesc">輸出的字幕另存為 .trial.srt，不影響正式任務。</div>
+        </div>
 
         <div class="progress" id="progress" hidden>
           <div class="meta"><span class="s" id="prog-status">辨識中 · 第 5/8 段</span><span class="p" id="prog-pct">68%</span></div>
@@ -324,10 +352,7 @@
             <input type="range" class="slider" id="set-scale" min="80" max="150" step="5" value="100"><span class="slider-val" id="set-scale-val">100%</span></div>
           <div class="row"><div class="label"><div class="t" data-i18n="set.format">輸出格式</div><div class="d" data-i18n="set.formatDesc">全域預設，影響單檔／批次／端點</div></div>
             <div class="seg" id="set-format"><button class="on" data-v="srt" data-i18n="set.fmtSrt">SRT 字幕</button><button data-v="txt" data-i18n="set.fmtTxt">純文字</button></div></div>
-          <div class="row"><div class="label"><div class="t" data-i18n="set.vad">語音偵測靈敏度（VAD）</div><div class="d" data-i18n="set.vadDesc">降低閾值可減少漏識（被當成空白的片段可能有聲音）；提高則減少假陽性。預設 0.50</div></div>
-            <input type="range" class="slider" id="set-vad" min="0.30" max="0.80" step="0.01" value="0.50"><span class="slider-val" id="set-vad-val">0.50</span></div>
-          <div class="row"><div class="label"><div class="t" data-i18n="set.chunk">每段最長秒數（字級對齊）</div><div class="d" data-i18n="set.chunkDesc">調短可減少長段歌詞／語音「段尾字級逐漸跑掉、換段才歸位」的漂移。實際上限依模型自動夾低（0.6B 30s、1.7B 10s）；CrispASR 走自身視窗，不受此設定影響。</div></div>
-            <input type="range" class="slider" id="set-chunk" min="5" max="30" step="1" value="30"><span class="slider-val" id="set-chunk-val">30s</span></div>
+          <div class="row"><div class="label"><div class="t" data-i18n="file.segTitle">切分參數</div><div class="d" data-i18n="set.segMoved">VAD 靈敏度、每段最長秒數、切分預檢與 5 分鐘試跑已移至「音檔」頁，與實際任務放在一起。</div></div></div>
           <div class="row"><div class="label"><div class="t" data-i18n="set.vocab">簡繁詞彙轉換</div><div class="d" data-i18n="set.vocabDesc">把模型輸出轉成在地用語</div></div>
             <div class="seg" id="set-vocab"><button data-v="off" data-i18n="set.vocabOff">關閉</button><button class="on" data-v="s2twp" data-i18n="set.vocabTW">台灣用語</button><button data-v="s2t" data-i18n="set.vocabStd">標準</button></div></div>
           <div class="row"><div class="label"><div class="t" data-i18n="set.mirror">HuggingFace 鏡像站</div><div class="d" data-i18n="set.mirrorDesc">下載模型較慢時可改用鏡像</div></div>

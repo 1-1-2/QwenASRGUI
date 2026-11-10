@@ -1,30 +1,36 @@
-"""长音频流式 Runner —— 替换「整段加载 + 末尾一次性写盘」的调度层。
+"""Streaming runner for long audio, replacing "load everything, write at the end".
 
-本文件为长音频改造新增模块，注释与文档统一使用简体中文。
+Target workload: 1-5 hour lectures / meeting recordings.
 
-解决的问题（面向 1~5 小时网课 / 会议录音）
-----------------------------------------
-1. 不再把整段音频读进内存：ffmpeg 流式输出 16k / mono / s16le PCM，
-   滚动缓冲只保留尚未吐出的语音组，常驻内存与文件长度无关。
-2. 不再把全部字幕攒到末尾才写：每完成一个语音组立刻 append 写 SRT 与
-   JSONL，中途崩溃、断电、取消，已产出的字幕全部保留。
-3. SQLite checkpoint 记录全局帧号与 SRT 序号，支持断点续跑。
-4. progress_cb(pct:int, status:str) 与 WebView 现有 SSE 契约完全一致，
-   前端零改动。
+What it changes
+---------------
+1. Never loads the whole file: ffmpeg streams 16 kHz / mono / s16le PCM and a
+   rolling buffer keeps only the speech groups not yet emitted, so resident
+   memory is independent of file length.
+2. Never buffers all subtitles until the end: each completed group is appended
+   to SRT and JSONL immediately. A crash, power loss or cancel keeps everything
+   produced so far.
+3. A SQLite checkpoint stores the global frame index, SRT index, a task
+   fingerprint and the VAD recurrent state, enabling exact resume.
+4. progress_cb(pct:int, status:str) matches the existing WebView SSE contract;
+   no frontend change is required.
 
-刻意不做的事
-------------
-* 不加并发。ASREngine.transcribe() 自带 self._lock 互斥锁，多线程只会
-  排队；多进程则每份进程各载一套 IR，内存峰值与锯齿叠加。固定单 worker。
-* 不改 OpenVINO 线程策略。PERFORMANCE_HINT / INFERENCE_NUM_THREADS 由
-  「模型」页的 CPU 执行绪设置控制，属于独立调优项。
-* 削平内存锯齿靠「段边界主动释放 + 峰值不随文件长度增长」，不靠调 OV。
+Deliberate non-goals
+--------------------
+* No concurrency. ASREngine.transcribe() holds self._lock, so extra threads only
+  queue; extra processes each load their own IR and multiply memory peaks.
+* No changes to OpenVINO thread policy (PERFORMANCE_HINT / INFERENCE_NUM_THREADS
+  are controlled from the Model page and are a separate tuning axis).
+* The memory sawtooth is flattened by releasing at group boundaries and keeping
+  the peak independent of file length, not by retuning OpenVINO.
 
-依赖：仅标准库 + numpy。VAD session 与 ASR engine 由调用方注入，便于测试。
+Dependencies: stdlib + numpy only. The VAD session and ASR engine are injected
+by the caller so the module can be tested without model weights.
 """
 
 from __future__ import annotations
 
+import base64
 import gc
 import json
 import os
@@ -44,6 +50,12 @@ SR = 16000
 VAD_CHUNK = 512                  # Silero VAD 固定输入：32ms / 帧
 READ_BYTES = 64 * 1024          # 每次读 2.048s PCM，避免几十万次小 read
 DEFAULT_MAX_CHUNK_SECS = 30     # 0.6B 上限；1.7B 请传 10
+
+# A five-minute sample is enough to judge both segmentation quality and
+# recognition accuracy, while being roughly twice as fast as a ten-minute one.
+TRIAL_MINUTES = 5
+PREVIEW_MINUTES = 5
+WAVE_BINS = 200                  # waveform bars rendered by the frontend
 
 _MIN_CH = 16                    # 最短语音段（帧）≈ 0.5s
 _PAD_CH = 5                     # 段前后各补 5 帧 ≈ 0.16s
@@ -91,12 +103,41 @@ def simple_lines(text: str, t0: float, t1: float) -> list[tuple[float, float, st
 
 # ───────────────────────── Checkpoint ─────────────────────────
 
-class Checkpoint:
-    """进度记录：已处理到的全局音频帧号 + 下一条 SRT 序号。
+# h and c are each (2, 1, 64) float32 -> 256 floats in total.
+_VAD_STATE_FLOATS = 2 * 2 * 1 * 64
 
-    优先 SQLite；若 SQLite 因权限、同步盘、热日志或锁冲突失败，自动降级为
-    JSON 文件（Windows + 杀毒软件 / OneDrive 目录下较常见）。两条路径始终
-    双写镜像，保证任何一次降级都不会丢进度。
+
+def encode_vad_state(h: np.ndarray, c: np.ndarray) -> str:
+    """Pack the VAD recurrent state into a base64 string for the checkpoint."""
+    flat = np.concatenate((np.asarray(h, dtype=np.float32).ravel(),
+                           np.asarray(c, dtype=np.float32).ravel()))
+    return base64.b64encode(flat.tobytes()).decode("ascii")
+
+
+def decode_vad_state(blob: str):
+    """Restore (h, c), or return None when the payload is missing/malformed."""
+    if not blob:
+        return None
+    try:
+        flat = np.frombuffer(base64.b64decode(blob), dtype=np.float32)
+        if flat.size != _VAD_STATE_FLOATS:
+            return None
+        half = _VAD_STATE_FLOATS // 2
+        return (flat[:half].reshape(2, 1, 64).copy(),
+                flat[half:].reshape(2, 1, 64).copy())
+    except Exception:
+        return None
+
+
+class Checkpoint:
+    """Progress record: frame index, SRT index, task fingerprint, VAD state.
+
+    SQLite is preferred; on permission / sync-folder / lock failures it falls
+    back to a JSON mirror (common on Windows with antivirus or OneDrive). Both
+    paths are always written so a downgrade never loses progress.
+
+    The fingerprint prevents resuming a half-old/half-new transcript after the
+    model, chunk length, VAD threshold, language or script setting changed.
     """
 
     def __init__(self, db_path: Path, task_id: str):
@@ -114,7 +155,17 @@ class Checkpoint:
                     next_frame INTEGER NOT NULL,
                     next_index INTEGER NOT NULL,
                     status TEXT NOT NULL,
-                    updated_at REAL NOT NULL)""")
+                    updated_at REAL NOT NULL,
+                    fingerprint TEXT NOT NULL DEFAULT '',
+                    vad_state TEXT NOT NULL DEFAULT '')""")
+                # Migrate databases created by earlier builds (safe to re-run).
+                cols = {row[1] for row in c.execute("PRAGMA table_info(progress)")}
+                if "fingerprint" not in cols:
+                    c.execute("ALTER TABLE progress ADD COLUMN "
+                              "fingerprint TEXT NOT NULL DEFAULT ''")
+                if "vad_state" not in cols:
+                    c.execute("ALTER TABLE progress ADD COLUMN "
+                              "vad_state TEXT NOT NULL DEFAULT ''")
                 c.commit()
             finally:
                 c.close()
@@ -122,7 +173,8 @@ class Checkpoint:
             self._use_sqlite = False
 
     def _conn(self):
-        # 每次操作独立连接并显式 close：`with conn` 只管事务不关连接。
+        # Use a fresh connection per operation and close it explicitly:
+        # `with conn` only manages the transaction, not the handle.
         return sqlite3.connect(str(self.db_path), timeout=30)
 
     def _json_all(self) -> dict:
@@ -135,15 +187,17 @@ class Checkpoint:
         d = self._json_all().get(self.task_id)
         return (int(d["next_frame"]), int(d["next_index"]), d["status"]) if d else (0, 1, "new")
 
-    def _json_save(self, frame, index, status):
+    def _json_save(self, frame, index, status, fingerprint, vad_state):
         d = self._json_all()
         d[self.task_id] = {"next_frame": int(frame), "next_index": int(index),
-                           "status": status}
+                           "status": status, "fingerprint": fingerprint or "",
+                           "vad_state": vad_state or ""}
         tmp = self.json_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(self.json_path)          # 原子替换，防止写一半崩
+        tmp.replace(self.json_path)          # atomic replace: never half-written
 
     def load(self) -> tuple[int, int, str]:
+        """Kept for compatibility: (next_frame, next_index, status)."""
         with self._lock:
             row = None
             if self._use_sqlite:
@@ -161,28 +215,55 @@ class Checkpoint:
                 return (row[0], row[1], row[2])
             return self._json_load()
 
-    def save(self, next_frame: int, next_index: int, status: str = "running"):
+    def load_meta(self) -> tuple[str, str]:
+        """Return (fingerprint, vad_state_blob) for this task."""
         with self._lock:
             if self._use_sqlite:
                 try:
                     c = self._conn()
                     try:
+                        row = c.execute(
+                            "SELECT fingerprint, vad_state FROM progress WHERE task_id=?",
+                            (self.task_id,)).fetchone()
+                        if row:
+                            return (row[0] or "", row[1] or "")
+                    finally:
+                        c.close()
+                except sqlite3.Error:
+                    self._use_sqlite = False
+            d = self._json_all().get(self.task_id) or {}
+            return (d.get("fingerprint", "") or "", d.get("vad_state", "") or "")
+
+    def save(self, next_frame: int, next_index: int, status: str = "running",
+             fingerprint: str | None = None, vad_state: str | None = None):
+        """Persist progress. None fingerprint/vad_state means "keep the old one"."""
+        with self._lock:
+            prev = self._json_all().get(self.task_id) or {}
+            fp = prev.get("fingerprint", "") if fingerprint is None else (fingerprint or "")
+            vs = prev.get("vad_state", "") if vad_state is None else (vad_state or "")
+            if self._use_sqlite:
+                try:
+                    c = self._conn()
+                    try:
                         c.execute("""INSERT INTO progress
-                                     (task_id,next_frame,next_index,status,updated_at)
-                                     VALUES(?,?,?,?,?)
+                                     (task_id,next_frame,next_index,status,updated_at,
+                                      fingerprint,vad_state)
+                                     VALUES(?,?,?,?,?,?,?)
                                      ON CONFLICT(task_id) DO UPDATE SET
                                        next_frame=excluded.next_frame,
                                        next_index=excluded.next_index,
                                        status=excluded.status,
-                                       updated_at=excluded.updated_at""",
+                                       updated_at=excluded.updated_at,
+                                       fingerprint=excluded.fingerprint,
+                                       vad_state=excluded.vad_state""",
                                   (self.task_id, int(next_frame), int(next_index),
-                                   status, time.time()))
+                                   status, time.time(), fp, vs))
                         c.commit()
                     finally:
                         c.close()
                 except sqlite3.Error:
                     self._use_sqlite = False
-            self._json_save(next_frame, next_index, status)
+            self._json_save(next_frame, next_index, status, fp, vs)
 
 
 # ───────────────────────── PCM 源 ─────────────────────────
@@ -268,7 +349,7 @@ def pcm_stream(path: Path, ffmpeg: str = "ffmpeg", start_sec: float = 0.0):
 
 
 class ArrayPcmStream:
-    """离线 / 测试用：把 numpy 数组按块喂进来，完全绕开 ffmpeg。"""
+    """Offline / test source: feed a numpy array in chunks, bypassing ffmpeg."""
     def __init__(self, audio: np.ndarray, start_sec: float = 0.0):
         self.audio = np.asarray(audio[int(start_sec * SR):], dtype=np.float32)
         self.pos = 0
@@ -280,8 +361,86 @@ class ArrayPcmStream:
             self.pos += step
 
 
+def limited_pcm_stream(source, max_samples: int | None):
+    """Stop a PCM generator after `max_samples` samples.
+
+    Used by the five-minute trial run and the five-minute VAD preview. Cutting
+    the generator (instead of seeking inside ffmpeg) keeps the WAV fallback and
+    ArrayPcmStream on exactly the same code path.
+    """
+    if max_samples is None or max_samples <= 0:
+        yield from source
+        return
+    remaining = int(max_samples)
+    for pcm in source:
+        arr = np.asarray(pcm, dtype=np.float32)
+        if remaining <= 0:
+            break
+        if len(arr) > remaining:
+            yield arr[:remaining]
+            return
+        yield arr
+        remaining -= len(arr)
+
+
+class PeakBins:
+    """Incrementally build a 200-bar waveform while PCM is being streamed.
+
+    The frontend used to call decodeAudioData() on the entire file just to draw
+    200 bars, decoding a 5-hour lecture into GBs of PCM in the WebView2
+    renderer and causing an "Out of memory" crash after the run completed.
+    Storing one peak per second (18 000 floats for 5 h, ~72 KB) and resampling
+    at the end removes that whole-file allocation.
+    """
+
+    def __init__(self, bins: int = WAVE_BINS):
+        self.bins = int(bins)
+        self._per_second: list[float] = []
+        self._sample_in_second = 0
+        self._cur = 0.0
+        self.total_samples = 0
+
+    def feed(self, pcm: np.ndarray) -> None:
+        arr = np.asarray(pcm, dtype=np.float32)
+        self.total_samples += len(arr)
+        if arr.size == 0:
+            return
+        # Cheap block max; splitting per second keeps the loop vectorised.
+        mx = float(np.abs(arr).max())
+        self._cur = max(self._cur, mx)
+        self._sample_in_second += len(arr)
+        while self._sample_in_second >= SR:
+            self._per_second.append(self._cur)
+            self._sample_in_second -= SR
+            self._cur = 0.0
+
+    def to_bars(self) -> list[float]:
+        """Return `bins` normalised bars in [0, 1]."""
+        if self._cur > 0 and self._sample_in_second > 0:
+            self._per_second.append(self._cur)
+            self._cur = 0.0
+            self._sample_in_second = 0
+        if not self._per_second:
+            return []
+        n = len(self._per_second)
+        out = []
+        for i in range(self.bins):
+            a, b = i * n // self.bins, max(i * n // self.bins + 1,
+                                           (i + 1) * n // self.bins)
+            out.append(max(self._per_second[a:b]))
+        norm = max(max(out), 1e-4)
+        return [round(x / norm, 4) for x in out]
+
+    @property
+    def duration(self) -> float:
+        return self.total_samples / SR
+
+
 def probe_duration(path, ffmpeg: str = "ffmpeg") -> float | None:
-    """探测音频总时长（秒）。失败返回 None，只影响进度百分比显示。"""
+    """Return the total duration in seconds, or None on failure.
+
+    A None result only degrades progress reporting; it never blocks a run.
+    """
     if str(path).lower().endswith(".wav"):
         try:
             with wave.open(str(path), "rb") as w:
@@ -294,10 +453,25 @@ def probe_duration(path, ffmpeg: str = "ffmpeg") -> float | None:
     except Exception:
         pass
     try:
-        r = subprocess.run(
-            [ffmpeg, "-v", "error", "-i", str(path), "-f", "null", "-"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
-        m = re.findall(rb"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", r.stderr)
+        # Hide the console window on Windows. Without CREATE_NO_WINDOW /
+        # STARTUPINFO this probe flashes a black cmd box on every task start;
+        # ffmpeg_utils.py already uses the same guard.
+        kw = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
+              "stdin": subprocess.DEVNULL, "timeout": 30}
+        if sys.platform == "win32":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+            si.wShowWindow = 0  # SW_HIDE
+            kw["startupinfo"] = si
+        # The old `-v error -f null -` both suppressed the info-level
+        # "Duration:" line and decoded the whole file (hours for a lecture).
+        # Giving no output file makes ffmpeg print the input header and exit
+        # immediately, so probing stays fast regardless of file length.
+        cmd = [ffmpeg, "-hide_banner", "-i", str(path)]
+        r = subprocess.run(cmd, **kw)
+        out = (r.stdout or b"") + (r.stderr or b"")
+        m = re.findall(rb"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", out)
         if m:
             h, mi, s = m[0]
             return int(h) * 3600 + int(mi) * 60 + float(s)
@@ -306,10 +480,120 @@ def probe_duration(path, ffmpeg: str = "ffmpeg") -> float | None:
     return None
 
 
-# ───────────────────────── 主 Runner ─────────────────────────
+# ───────────────────────── VAD preview ─────────────────────────
+
+def vad_preview(audio_path=None, pcm_source=None, vad_sess=None,
+                ffmpeg: str = "ffmpeg", threshold: float = 0.5,
+                max_chunk_secs: int = DEFAULT_MAX_CHUNK_SECS,
+                minutes: int = PREVIEW_MINUTES,
+                progress_cb=None, cancel: threading.Event | None = None) -> dict:
+    """Dry-run the segmentation on the first `minutes` of audio, without ASR.
+
+    Reuses the exact segmentation constants and VAD feed logic of
+    LongformRunner so the preview predicts real behaviour. Returns a compact
+    statistics dict the UI can turn into red/yellow/green indicators.
+    """
+    if vad_sess is None:
+        raise ValueError("vad_sess is required for VAD preview")
+    emit = progress_cb or (lambda pct, status: None)
+    cancel = cancel or threading.Event()
+    limit_samples = int(minutes * 60 * SR)
+    stream = (pcm_source if pcm_source is not None else
+              pcm_stream(Path(audio_path), ffmpeg, 0.0))
+    stream = limited_pcm_stream(stream, limit_samples)
+
+    h = np.zeros((2, 1, 64), dtype=np.float32)
+    c = np.zeros((2, 1, 64), dtype=np.float32)
+    sr_arr = np.array(SR, dtype=np.int64)
+    carry = np.empty(0, dtype=np.float32)
+    frame = 0
+    in_sp, s0 = False, 0
+    speech_frames = 0
+    raw: list[list[int]] = []          # frame intervals, same as the runner
+    last_pct = -1
+
+    for pcm in stream:
+        if cancel.is_set():
+            return {"cancelled": True}
+        carry = np.concatenate((carry, np.asarray(pcm, dtype=np.float32)))
+        n_frames = len(carry) // VAD_CHUNK
+        for i in range(n_frames):
+            fr = carry[i * VAD_CHUNK:(i + 1) * VAD_CHUNK]
+            out, h, c = vad_sess.run(
+                None, {"input": fr[np.newaxis, :].astype(np.float32),
+                       "h": h, "c": c, "sr": sr_arr})
+            active = float(out[0, 0]) >= threshold
+            if active:
+                speech_frames += 1
+            if active and not in_sp:
+                s0, in_sp = frame, True
+            elif not active and in_sp:
+                if frame - s0 >= _MIN_CH:
+                    raw.append([max(0, s0 - _PAD_CH), frame + _PAD_CH])
+                in_sp = False
+            frame += 1
+        # No audio has to be retained here: drop every consumed frame and keep
+        # only the sub-frame remainder, so memory stays O(1).
+        carry = carry[n_frames * VAD_CHUNK:]
+        pct = int(frame * VAD_CHUNK / SR / (minutes * 60) * 100)
+        if pct != last_pct and pct % 10 == 0:
+            emit(min(100, pct), f"切分預檢 {pct}%")
+            last_pct = pct
+        if frame * VAD_CHUNK >= limit_samples:
+            break
+
+    if in_sp and frame - s0 >= _MIN_CH:
+        raw.append([max(0, s0 - _PAD_CH), frame])
+
+    merged: list[list[int]] = []
+    for s, e in raw:
+        if merged and s - merged[-1][1] <= _MERGE_CH:
+            merged[-1][1] = e
+        else:
+            merged.append([s, e])
+    lengths = sorted((e - s) * VAD_CHUNK / SR for s, e in merged)
+
+    total_sec = frame * VAD_CHUNK / SR
+
+    def pct_at(q: float) -> float:
+        return round(lengths[min(len(lengths) - 1, int(len(lengths) * q))], 2) \
+            if lengths else 0.0
+
+    over = sum(1 for x in lengths if x > max_chunk_secs)
+    short = sum(1 for x in lengths if x < 0.5)
+    asr_calls = sum(max(1, -(-int(x) // max_chunk_secs)) for x in lengths)
+    return {
+        "cancelled": False,
+        "previewSeconds": round(total_sec, 2),
+        "previewMinutes": minutes,
+        "totalFrames": frame,
+        "groupCount": len(lengths),
+        "lengths": {
+            "p50": pct_at(0.50), "p90": pct_at(0.90),
+            "p99": pct_at(0.99), "max": round(lengths[-1], 2) if lengths else 0.0,
+        },
+        "overLimitRatio": round(over / len(lengths), 4) if lengths else 0.0,
+        "shortRatio": round(short / len(lengths), 4) if lengths else 0.0,
+        "silenceRatio": round(1 - speech_frames / frame, 4) if frame else 1.0,
+        "estimatedAsrCalls": asr_calls,
+        "estimatedAsrCallsPerHour": (round(asr_calls * 3600 / total_sec, 1)
+                                     if total_sec > 0 else 0),
+        "maxChunkSecs": max_chunk_secs,
+        "threshold": threshold,
+        "verdict": ("yellow" if (lengths and (
+            over / len(lengths) > 0.05 or
+            pct_at(0.90) > 0.8 * max_chunk_secs or
+            short / len(lengths) > 0.10)) else "green"),
+    }
+
+
+# ───────────────────────── Main runner ─────────────────────────
 
 class LongformRunner:
-    """流式分段 + 增量落盘 + 断点续跑 + 取消。单 worker，无并发。"""
+    """Streaming segmentation + incremental writes + resume + cancel.
+
+    Single worker by design; see the module docstring for the rationale.
+    """
 
     def __init__(self, engine, vad_sess, out_srt, work_dir,
                  ffmpeg: str = "ffmpeg",
@@ -319,10 +603,12 @@ class LongformRunner:
                  context: str | None = None,
                  line_splitter=None,
                  task_id: str = "default",
+                 fingerprint: str = "",
                  gc_every: int = 0,
                  vad_threshold: float = 0.5):
         if vad_sess is None:
             raise ValueError("缺少 VAD session：请传入 engine.vad_sess")
+        self.fingerprint = fingerprint or ""
         self.engine = engine
         self.vad_sess = vad_sess
         self.out_srt = Path(out_srt)
@@ -365,11 +651,33 @@ class LongformRunner:
         return index + 1
 
     def run(self, audio_path, pcm_source=None, total_sec: float | None = None,
-            resume: bool = True) -> dict:
+            resume: bool = True, limit_sec: float | None = None) -> dict:
+        """Run the streaming pipeline.
+
+        `limit_sec` truncates the PCM source after that many seconds (used for
+        the five-minute trial run). It is an absolute offset from the start of
+        the file, so a resumed run subtracts the already-consumed `start_sec`.
+        """
+        # A trial run must never share the checkpoint / output of a full run.
+        if limit_sec:
+            resume = False
         next_frame, next_index, status = self.ckpt.load() if resume else (0, 1, "new")
-        if status == "done":
+        saved_fp, saved_vad = self.ckpt.load_meta() if resume else ("", "")
+
+        # A mismatched fingerprint means the model / chunk length / language /
+        # script / VAD threshold changed. Resuming would silently produce a
+        # half-old half-new transcript, so restart from the beginning instead.
+        if resume and saved_fp and saved_fp != self.fingerprint:
+            self._emit(0, "任务参数已变更（模型/段长/语言/简繁/阈值等），从头开始以免字幕混排")
+            next_frame, next_index, status, saved_vad = 0, 1, "new", ""
+            resume = False
+            self.ckpt.save(0, 1, "running", fingerprint=self.fingerprint,
+                           vad_state="")
+
+        if status == "done" and not limit_sec:
             return {"status": "done", "srt": str(self.out_srt),
-                    "segments": next_index - 1, "resumed": True}
+                    "segments": next_index - 1, "resumed": True,
+                    "peaks": [], "duration": 0.0, "truncated": False}
         self._init_outputs(next_index)
 
         start_sec = next_frame * VAD_CHUNK / SR
@@ -377,7 +685,19 @@ class LongformRunner:
         stream = (pcm_source if pcm_source is not None else
                   pcm_stream(Path(audio_path), self.ffmpeg, start_sec))
         if total_sec is None and audio_path is not None:
+            self._emit(0, "正在探测音频时长…")
             total_sec = probe_duration(audio_path, self.ffmpeg)
+            if total_sec:
+                self._emit(0, f"音频时长 {total_sec / 60:.1f} 分钟，采用流式分段")
+        truncated = bool(limit_sec and (total_sec or 0) > limit_sec)
+        if limit_sec:
+            remaining = max(0, int(limit_sec * SR) - int(start_sec * SR))
+            stream = limited_pcm_stream(stream, remaining)
+            total_sec = min(total_sec or limit_sec, limit_sec)
+            self._emit(0, f"试跑模式：只处理前 {limit_sec / 60:.0f} 分钟")
+        self.ckpt.save(next_frame, next_index, "running",
+                       fingerprint=self.fingerprint, vad_state=saved_vad)
+        peaks = PeakBins()
 
         # ── 滚动状态 ──────────────────────────────────────────────
         carry = np.empty(0, dtype=np.float32)   # 尚未吐出的样本
@@ -386,6 +706,11 @@ class LongformRunner:
         frame = next_frame                      # 全局帧号（时间轴基准）
         h = np.zeros((2, 1, 64), dtype=np.float32)
         c = np.zeros((2, 1, 64), dtype=np.float32)
+        # Restore the VAD recurrent state so resume does not lose the speech
+        # group straddling the breakpoint (previously up to one group < 30 s).
+        restored = decode_vad_state(saved_vad) if resume else None
+        if restored is not None:
+            h, c = restored
         sr_arr = np.array(SR, dtype=np.int64)
         in_sp, s0 = False, 0
         raw: list[tuple[int, int]] = []
@@ -397,22 +722,27 @@ class LongformRunner:
         keep_limit = int((self.max_secs + _TAIL_SEC + 2.0) * SR)
 
         def emit_group(gs_f: int, ge_f: int) -> int:
-            """把一组语音切成 ≤max_secs 子段，逐段 ASR + 即刻落盘。
+            """Split one speech group into <=max_secs chunks, transcribe and
+            append each result immediately.
 
-            返回该组结束的全局样本号，供调用方裁剪 carry。
+            Cancellation is deliberately NOT checked inside this loop: a group
+            is written atomically, so a resume can rewind to its start without
+            duplicating half-written subtitles. The main loop checks the cancel
+            flag at group boundaries instead.
+
+            Returns the global sample index where the group ends, used to trim
+            the rolling buffer.
             """
             nonlocal seg_index, group_count
             g_a = gs_f * VAD_CHUNK
             g_b = ge_f * VAD_CHUNK + tail
             a = max(0, g_a - base)
             b = min(len(carry), g_b - base)
-            if b - a < SR // 2:                 # < 0.5s 丢弃
+            if b - a < SR // 2:                 # drop fragments < 0.5 s
                 return g_b
             samples = carry[a:b]
             cur = 0
             while cur < len(samples):
-                if self.cancel.is_set():
-                    raise Cancelled()
                 nxt = min(len(samples), cur + max_samples)
                 chunk = np.ascontiguousarray(samples[cur:nxt], dtype=np.float32)
                 text = (self.engine.transcribe(
@@ -435,6 +765,7 @@ class LongformRunner:
             for pcm in stream:
                 if self.cancel.is_set():
                     raise Cancelled()
+                peaks.feed(pcm)
                 carry = np.concatenate((carry, np.asarray(pcm, dtype=np.float32)))
                 n_frames = (len(carry) - read_ptr) // VAD_CHUNK
 
@@ -473,8 +804,11 @@ class LongformRunner:
                     base += cut
                     read_ptr = max(0, read_ptr - cut)
 
-                # 长静音时不让 carry 无限增长（只在无待吐组时裁）
-                if not ready and not raw and len(carry) > keep_limit:
+                # Trim the rolling buffer only when no speech group is open.
+                # An earlier version also trimmed while `in_sp` was True, which
+                # silently dropped the beginning of a long uninterrupted speech
+                # segment (e.g. a lecture with no pauses for several minutes).
+                if not ready and not raw and not in_sp and len(carry) > keep_limit:
                     drop = len(carry) - keep_limit
                     carry = carry[drop:]
                     base += drop
@@ -484,7 +818,9 @@ class LongformRunner:
                     done_sec = frame * VAD_CHUNK / SR
                     pct = int(done_sec / total_sec * 100) if total_sec else 0
                     self._emit(pct, f"已处理 {done_sec / 60:.1f} 分钟 · {group_count} 段")
-                    self.ckpt.save(frame, seg_index, "running")
+                    self.ckpt.save(frame, seg_index, "running",
+                                   fingerprint=self.fingerprint,
+                                   vad_state=encode_vad_state(h, c))
 
             # 文件结束：收尾当前语音段
             if in_sp and frame - s0 >= _MIN_CH:
@@ -499,14 +835,38 @@ class LongformRunner:
                 emit_group(gs, ge)
 
         except Cancelled:
-            self.ckpt.save(frame, seg_index, "paused")
-            self._emit(0, "已取消，进度已保存，可再次启动续跑")
+            # Rewind to the start of any speech group detected but not yet
+            # written. Everything already appended belongs to earlier groups,
+            # so resuming from here reproduces an uninterrupted run byte-for-byte
+            # instead of losing or duplicating the group straddling the stop.
+            pending: list[int] = []
+            if in_sp:
+                pending.append(s0)
+            if raw:
+                pending.append(min(s for s, _ in raw))
+            resume_frame = min(pending) if pending else frame
+            if resume_frame < frame:
+                self._emit(0, "正在回退到当前语音段起点，保证续跑不丢字…")
+            # A rewind re-reads the group, so VAD restarts from a clean state;
+            # an exact-boundary pause keeps the recurrent state instead.
+            vad_blob = "" if resume_frame < frame else encode_vad_state(h, c)
+            self.ckpt.save(resume_frame, seg_index, "paused",
+                           fingerprint=self.fingerprint, vad_state=vad_blob)
+            done_sec = frame * VAD_CHUNK / SR
+            pct = int(done_sec / total_sec * 100) if total_sec else 0
+            # Keep the bar where it stopped; a paused task is not a 0 % task.
+            self._emit(pct, f"已取消，进度已保存（{pct}%），可再次启动续跑")
             return {"status": "paused", "srt": str(self.out_srt),
-                    "segments": seg_index - 1, "next_frame": frame,
-                    "groups": group_count, "frames": frame}
+                    "segments": seg_index - 1, "next_frame": resume_frame,
+                    "groups": group_count, "frames": frame,
+                    "peaks": peaks.to_bars(), "duration": peaks.duration,
+                    "truncated": truncated}
 
-        self.ckpt.save(frame, seg_index, "done")
+        self.ckpt.save(frame, seg_index, "done",
+                       fingerprint=self.fingerprint, vad_state="")
         self._emit(100, f"完成 · 共 {seg_index - 1} 条字幕")
         return {"status": "done", "srt": str(self.out_srt),
                 "segments": seg_index - 1, "next_frame": frame,
-                "groups": group_count, "frames": frame}
+                "groups": group_count, "frames": frame,
+                "peaks": peaks.to_bars(), "duration": peaks.duration,
+                "truncated": truncated}

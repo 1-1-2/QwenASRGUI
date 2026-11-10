@@ -127,14 +127,16 @@ UI.txt
 !Readme/webview/*.jpg
 !Readme/webview/*.png
 
-# ── 长音频流式改造新增（简体中文）──────────────────────
-# 测试脚本与公开测试素材需要进版控，覆盖上面的 test_*.py / *.wav 全局忽略
+# ── Test scripts and public-domain fixtures ---------------------------------
+# These override the global test_*.py / *.wav ignores above.
 !tests/test_longform_runner.py
 !tests/test_integration.py
 !tests/make_fixture.py
+!tests/test_wave1.py
+!tests/test_wave15.py
 !tests/fixtures/sources/*.wav
 
-# 生成物与断点状态不入库
+# Generated artifacts and checkpoint state are never committed.
 tests/fixtures/longform_*.wav
 longform_state/
 tests/_tmp/

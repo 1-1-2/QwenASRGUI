@@ -24,11 +24,12 @@
   status               核心／模型／加速版本就緒狀況
   profiles             可用的用途 profile 清單
 
-長音頻流式模式（新增，簡體中文說明）
-------------------------------------
-  transcribe 可用 --longform 強制啟用流式分段（音頻時長 ≥ longform_minutes
-  設定值時也會自動啟用）。該模式逐段增量落盤並記錄斷點，中途中斷後以同一
-  檔案再次執行即可續跑；加 --no-resume 則從頭重跑。詳見 docs/长音频流式方案.md。
+串流模式與試跑
+----------------
+  所有輸入（長短皆然）統一走流式分段：逐段增量落盤並記錄斷點，中途中斷後
+  以同一檔案再次執行即可續跑；加 --no-resume 則從頭重跑。
+  --trial 只處理前 5 分鐘，輸出另存為 .trial.srt，不影響正式任務的斷點。
+  --longform 保留為相容旗標（已無實際效果）。詳見 docs/开发计划.md。
 
 `apply` 存在的理由：讓 Agent 修字幕時「只准改 text」。若直接把整份 SRT 交給
 模型重寫，時間戳很容易被順手改壞且難以察覺；改成回填 index → 時間軸在結構上
@@ -178,6 +179,7 @@ def cmd_transcribe(args) -> int:
                     "align": not args.no_align,
                     # 长音频流式改造新增（简体中文）
                     "longform": bool(getattr(args, "longform", False)),
+                    "trial": bool(getattr(args, "trial", False)),
                     "longform_resume": not getattr(args, "no_resume", False),
                 }, progress_cb=lambda pct, msg: _log(f"  {pct:3d}%  {msg}"))
             except Exception as e:
@@ -379,11 +381,14 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--diarize", action="store_true", help="啟用說話者分離")
     t.add_argument("--speakers", type=int, help="說話者人數（留空＝自動）")
     t.add_argument("--no-align", action="store_true", help="關閉字級時間軸對齊")
-    # 以下为长音频流式改造新增（简体中文）
+    # All inputs now share the streaming pipeline (comments stay in English
+    # for new code; existing Traditional Chinese help strings are untouched).
     t.add_argument("--longform", action="store_true",
-                   help="强制启用长音频流式模式：分段增量落盘、支持断点续跑（默认按时长自动启用）")
+                   help="保留相容：所有輸入现已统一走流式分段，此旗標無實際效果")
+    t.add_argument("--trial", action="store_true",
+                   help="只試跑前 5 分鐘，輸出 .trial.srt，不影響正式斷點")
     t.add_argument("--no-resume", action="store_true",
-                   help="长音频模式忽略已有断点，从头重新转写")
+                   help="忽略已有断点，从头重新转写")
     t.set_defaults(func=cmd_transcribe)
 
     a = sub.add_parser("apply", parents=[common], help="把校正過的 segments JSON 寫回字幕（保留時間軸）")

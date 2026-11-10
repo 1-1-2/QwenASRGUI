@@ -96,10 +96,27 @@
     async pickFile() { return null; },            // 瀏覽器環境一律用 <input type=file>
     async loadHintTxt() { return null; },
 
-    // opts: {file, language, diarize, nSpeakers, align, hint}
+    // opts: {file, language, diarize, nSpeakers, align, hint, trial}
     async transcribe(opts) {
       if (MODE === "web") return webTranscribe(opts);
       return mockTranscribe(opts);
+    },
+    // Dry-run segmentation on the first 5 minutes. No ASR is executed.
+    async vadPreview(opts) {
+      if (MODE !== "web") return mockVadPreview(opts);
+      if (!opts || !opts.file) throw new Error("請先選擇檔案");
+      const fd = new FormData();
+      fd.append("file", opts.file, opts.file.name);
+      if (opts.vadThreshold) fd.append("vad_threshold", String(opts.vadThreshold));
+      const r = await fetch(withKey("/api/vad-preview"), {
+        method: "POST", body: fd, headers: authHeaders(),
+      });
+      if (!r.ok) {
+        let msg = "HTTP " + r.status;
+        try { msg = (await r.json()).error?.message || msg; } catch {}
+        throw new Error(msg);
+      }
+      return r.json();
     },
     async cancel() {
       if (MODE === "web") { try { await apiPost("/api/cancel", {}); } catch {} return true; }
@@ -226,6 +243,7 @@
     fd.append("diarize", opts.diarize ? "1" : "0");
     if (opts.nSpeakers && opts.nSpeakers !== "auto") fd.append("n_speakers", String(opts.nSpeakers));
     if (opts.hint) fd.append("hint", opts.hint);
+    if (opts.trial) fd.append("trial", "1");
     emit("progress", { pct: 3, status: "上傳中…" });
     const r = await fetch(withKey("/api/transcribe"), { method: "POST", body: fd, headers: authHeaders() });
     if (!r.ok) {
@@ -382,7 +400,27 @@
       await sleep(420);
       emit("progress", { pct, status });
     }
-    return { segments: MOCK.segments, srtPath: "subtitles/B.srt" };
+    return {
+      segments: MOCK.segments, totalSegments: MOCK.segments.length,
+      previewLimit: 200, previewTruncated: false,
+      srtPath: "subtitles/B.srt", trial: false, truncated: false,
+      duration: 31.0,
+      peaks: Array.from({ length: 200 }, (_, i) =>
+        Math.round((0.25 + 0.7 * Math.abs(Math.sin(i / 7))) * 1000) / 1000),
+    };
+  }
+  async function mockVadPreview() {
+    emit("progress", { pct: 50, status: "切分預檢 50%（展示模式）" });
+    await sleep(300);
+    return {
+      cancelled: false, previewSeconds: 300, previewMinutes: 5,
+      totalFrames: 9375, groupCount: 42,
+      lengths: { p50: 4.2, p90: 8.6, p99: 11.4, max: 12.1 },
+      overLimitRatio: 0.024, shortRatio: 0.048, silenceRatio: 0.31,
+      estimatedAsrCalls: 42, estimatedAsrCallsPerHour: 504,
+      maxChunkSecs: 10, threshold: 0.5,
+      effectiveChunkSecs: 10, modelCeilingSecs: 10, verdict: "green",
+    };
   }
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 

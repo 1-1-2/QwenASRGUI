@@ -169,7 +169,7 @@ def main() -> int:
     r.check("断点目录已建立", ckpt_dir.exists(),
             str(ckpt_dir) if ckpt_dir.exists() else "未生成（Runner 未触发）")
 
-    # ── 2. 按时长自动启用（换个路径，避免命中上一条的 done 断点）──
+    # ── 2. 统一流式：不再按时长判定（换个路径，避免命中上一条的 done 断点）──
     wav2 = tmp / "course_auto.wav"
     with wave.open(str(wav2), "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
@@ -180,8 +180,8 @@ def main() -> int:
     with mock.patch("longform_runner.probe_duration", return_value=3600.0):
         res2 = be2.transcribe({"path": str(wav2), "name": "auto.wav"},
                               progress_cb=lambda p, s: None)
-    r.check("长音频自动判定生效", bool(res2.get("segments")) and be2.engine.calls > 0,
-            f"时长探测返回 3600s 时应自动走流式路径；"
+    r.check("统一流式路径生效", bool(res2.get("segments")) and be2.engine.calls > 0,
+            f"无论时长都应走流式路径；"
             f"segments={len(res2.get('segments') or [])} calls={be2.engine.calls} "
             f"srt={res2.get('srtPath')}")
 

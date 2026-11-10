@@ -227,6 +227,8 @@ class WebViewServer:
                         return self._json(server.backend.toggle_tunnel(act == "start"))
                     if path == "/api/transcribe":
                         return self._transcribe()
+                    if path == "/api/vad-preview":
+                        return self._vad_preview()
                     if path == "/api/cancel":
                         return self._json({"ok": server.backend.cancel()})
                     if path == "/api/open-output":
@@ -300,45 +302,81 @@ class WebViewServer:
                 finally:
                     server.hub.unsubscribe(q)
 
-            # ── 轉錄（multipart 上傳）─────────────────────────
-            def _transcribe(self):
+            # ── multipart 上傳（轉錄與切分預檢共用）────────────
+            def _receive_upload(self):
+                """Write the upload straight to a temp file and free all copies.
+
+                The upload is a full copy of a possibly multi-GB lecture.
+                Dropping `body` / `parts` / `data` before the multi-hour run
+                starts removes the three-full-copy baseline that used to stay
+                resident for the entire transcription.
+                """
                 from api_server import _parse_multipart
                 ctype = self.headers.get("Content-Type", "")
                 if "multipart/form-data" not in ctype or "boundary=" not in ctype:
-                    return self._err(400, "需以 multipart/form-data 上傳 file")
+                    return None, None, self._err(400, "需以 multipart/form-data 上傳 file")
                 boundary = ctype.split("boundary=", 1)[1].strip().strip('"').encode()
                 n = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(n)
                 fields, files = _parse_multipart(body, boundary)
                 if "file" not in files or not files["file"][1]:
-                    return self._err(400, "缺少 file 或內容為空")
+                    del body, fields, files
+                    return None, None, self._err(400, "缺少 file 或內容為空")
                 filename, data = files["file"]
 
                 tmp_dir = Path(tempfile.mkdtemp(prefix="asr_web_"))
                 ext = Path(filename).suffix or ".wav"
                 in_path = tmp_dir / ("upload" + ext)
                 in_path.write_bytes(data)
-
                 opts = {
                     "path": str(in_path),
-                    "name": filename,        # 原始上傳檔名 → 輸出字幕用它命名、落 subtitles/
+                    "name": filename,
                     "language": (fields.get("language") or "").strip() or None,
                     "diarize": (fields.get("diarize", "") or "").lower() in ("1", "true", "on", "yes"),
                     "nSpeakers": fields.get("n_speakers", ""),
                     "align": (fields.get("align", "1") or "").lower() in ("1", "true", "on", "yes"),
                     "hint": fields.get("hint", ""),
+                    "trial": (fields.get("trial", "") or "").lower() in ("1", "true", "on", "yes"),
+                    "vadThreshold": fields.get("vad_threshold", ""),
                 }
+                del body, fields, files, data
+                try:
+                    import gc
+                    gc.collect()
+                except Exception:
+                    pass
+                return tmp_dir, opts, None
+
+            def _cleanup_upload(self, tmp_dir):
+                if not tmp_dir:
+                    return
+                try:
+                    import shutil
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+            def _transcribe(self):
+                tmp_dir, opts, err = self._receive_upload()
+                if err is not None:
+                    return err
                 try:
                     result = server.backend.transcribe(
                         opts, progress_cb=lambda pct, status:
                         server.hub.publish("progress", {"pct": pct, "status": status}))
                     return self._json(result)
                 finally:
-                    try:
-                        import shutil
-                        shutil.rmtree(tmp_dir, ignore_errors=True)
-                    except Exception:
-                        pass
+                    self._cleanup_upload(tmp_dir)
+
+            def _vad_preview(self):
+                tmp_dir, opts, err = self._receive_upload()
+                if err is not None:
+                    return err
+                try:
+                    result = server.backend.vad_preview(opts)
+                    return self._json(result)
+                finally:
+                    self._cleanup_upload(tmp_dir)
 
         self._httpd = ThreadingHTTPServer((self.host, self._want_port), _Handler)
         self.port = self._httpd.server_address[1]      # 取得實際綁定的埠（port=0 時）

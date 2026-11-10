@@ -1,66 +1,119 @@
-name: 长音频流式方案 CI
+name: Longform Runner CI
 
-# 本工作流为长音频改造新增，注释统一使用简体中文。
-# 只跑调度层的回归测试：不需要 OpenVINO 权重，也不需要 Windows WebView2。
+# Comments are in English per the repository language convention.
+# Only the scheduling-layer regression tests run here: no OpenVINO weights,
+# no Windows WebView2 runtime required.
+#
+# Runner economy:
+#   - `paths` filters keep docs-only / image-only commits from starting a run.
+#   - `concurrency` cancels an in-progress run when a newer commit lands on
+#     the same ref, so rapid successive pushes consume at most one runner.
+#   - push is limited to `main`; feature branches are covered by pull_request,
+#     which avoids the classic "push + PR" double run on the same commit.
+#   - `[skip ci]` in the commit message suppresses the job entirely.
+#   - `workflow_dispatch` is kept as the explicit manual trigger.
 
 on:
   push:
     branches: [main]
+    paths:
+      - '**.py'
+      - 'tests/**'
+      - 'requirements*.txt'
+      - 'tools/**'
+      - '.github/workflows/ci.yml'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '**.py'
+      - 'tests/**'
+      - 'requirements*.txt'
+      - 'tools/**'
+      - '.github/workflows/ci.yml'
   workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Fixture length in minutes (default 4.9)'
+        required: false
+        default: '4.9'
+      skip_ffmpeg:
+        description: 'Skip installing ffmpeg (exercise the stdlib WAV fallback)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   longform-test:
-    name: 长音频流式 Runner 回归测试
+    name: Longform runner regression
     runs-on: ubuntu-latest
+    if: >-
+      ${{ !contains(github.event.head_commit.message || '', '[skip ci]') &&
+          github.event.pull_request.draft != true }}
+    env:
+      FIXTURE_MINUTES: ${{ inputs.minutes || '4.9' }}
     steps:
-      - name: 检出代码
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 准备 Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 安装最小依赖
-        # 测试只用到 numpy；ffmpeg 用于验证真实流式解码路径
+      - name: Install minimal dependencies
+        # Tests only need numpy; ffmpeg validates the real streaming decode path.
         run: python -m pip install --upgrade pip numpy
 
-      - name: 安装 ffmpeg
-        # ubuntu-latest 不保证预装，显式安装以确保走真实 ffmpeg 流式路径
+      - name: Install ffmpeg
+        if: ${{ inputs.skip_ffmpeg != true }}
+        # ubuntu-latest does not guarantee ffmpeg; install explicitly.
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
 
-      - name: 打印运行环境
+      - name: Print environment
         run: |
           python -c "import sys; print('Python', sys.version)"
           if command -v ffmpeg >/dev/null 2>&1; then
             ffmpeg -version | head -1
           else
-            echo "ffmpeg 未安装（WAV 输入会走标准库回退路径）"
+            echo "ffmpeg absent; WAV input will use the stdlib fallback"
           fi
 
-      - name: 语法检查
+      - name: Syntax check
         run: |
           python -m compileall -q \
             longform_runner.py webview_backend.py cli_mode.py \
-            tests/make_fixture.py tests/test_longform_runner.py tests/test_integration.py
+            tests/make_fixture.py tests/test_longform_runner.py \
+            tests/test_integration.py tests/test_wave1.py tests/test_wave15.py
 
-      - name: 生成几分钟的公开测试音频
-        # 素材已随仓库提交，离线拼接，不联网、不需要 token
-        run: python tests/make_fixture.py --minutes 4.9
+      - name: Wave 1 regression (duration probe / fingerprint / VAD resume)
+        # Self-contained: generates its own WAV, no fixture or model needed.
+        run: python tests/test_wave1.py
 
-      - name: 运行后端集成测试
+      - name: Wave 1.5 regression (streaming / peaks / preview / pagination)
+        run: python tests/test_wave15.py
+
+      - name: Generate public-domain test audio
+        # Fixtures are committed and concatenated offline; no network, no token.
+        run: python tests/make_fixture.py --minutes "$FIXTURE_MINUTES"
+
+      - name: Backend integration tests
         run: |
           set +e
           python tests/test_integration.py > /tmp/integration.log 2>&1
           code=$?
           cat /tmp/integration.log
           if [ "$code" -ne 0 ]; then
-            # 逐行 ::error:: 会被 GitHub 每步 10 条的上限截断，故整份日志
-            # 用 base64 塞进单条 annotation，便于远程排错时完整还原。
+            # Per-line ::error:: is capped at 10 annotations per step, so ship
+            # the whole log in one base64 annotation for remote debugging.
             echo "::error title=integration-log-b64::$(base64 -w0 /tmp/integration.log)"
           fi
           exit "$code"
 
-      - name: 运行长音频流式测试（含真实 ffmpeg 流式解码）
-        run: python tests/test_longform_runner.py --minutes 4.9
+      - name: Longform runner tests (real ffmpeg streaming decode)
+        run: |
+          args="--minutes $FIXTURE_MINUTES"
+          if ! command -v ffmpeg >/dev/null 2>&1; then args="$args --skip-ffmpeg"; fi
+          python tests/test_longform_runner.py $args
