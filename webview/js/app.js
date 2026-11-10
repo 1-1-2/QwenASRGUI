@@ -71,11 +71,18 @@
         const badge = b.complete
           ? '<span class="chip" style="color:var(--ok,#1a7f45)">完整</span>'
           : `<span class="chip chip-muted">缺 ${b.total_count - b.present_count}/${b.total_count}</span>`;
-        const approx = b.size_hint ? ` <span class="chip chip-muted">約 ${esc(b.size_hint)}（估計）</span>` : "";
+        // models.json already writes size_hint as "约 1.2 GB". Wrapping that
+        // in another "約 …（估計）" produced "約 约 1.2 GB（估計）", so strip a
+        // leading 约/約 before formatting.
+        const hint = v => {
+          const s = String(v || "").trim().replace(/^[约約]\s*/, "");
+          return s ? `約 ${esc(s)}（估計）` : "";
+        };
+        const approx = b.size_hint ? ` <span class="chip chip-muted">${hint(b.size_hint)}</span>` : "";
         const files = b.files.map(f => {
           const size = f.size_bytes !== null && f.size_bytes !== undefined
             ? fmtBytes(f.size_bytes)
-            : (f.size_hint ? `約 ${esc(f.size_hint)}（估計）` : "大小未知");
+            : (f.size_hint ? hint(f.size_hint) : "大小未知");
           const sha = f.sha256_expected
             ? (f.sha256_ok === true ? "SHA256 ✓" : (f.sha256_ok === false ? "SHA256 ✗" : "SHA256 待驗證"))
             : "SHA256 未知";
@@ -251,12 +258,19 @@
     });
     const note = $("#cap-note");
     if (note) { note.hidden = false; note.textContent = cap.reason || ""; }
+    // Older / partial backends may omit these numbers. Without guards the UI
+    // used to render "undefineds" and "NaN GB", which looks like a broken build.
+    const eff = Number(cap.effectiveChunkSecs);
+    const ceil = Number(cap.modelCeilingSecs);
+    const ram = Number(cap.estimatedRamMB);
     if ($("#seg-effective")) {
       $("#seg-effective").textContent =
-        cap.effectiveChunkSecs + "s（模型上限 " + cap.modelCeilingSecs + "s）";
+        (Number.isFinite(eff) ? eff + "s" : "—") +
+        "（模型上限 " + (Number.isFinite(ceil) ? ceil + "s" : "—") + "）";
     }
     if ($("#seg-ram")) {
-      $("#seg-ram").textContent = (cap.estimatedRamMB / 1024).toFixed(1) + " GB";
+      $("#seg-ram").textContent = Number.isFinite(ram)
+        ? (ram / 1024).toFixed(1) + " GB" : "—";
     }
   });
 
