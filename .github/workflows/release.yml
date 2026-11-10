@@ -82,7 +82,7 @@ jobs:
           python -m pip install \
             pyinstaller pywebview pythonnet clr_loader certifi segno \
             soxr soundfile kaldi-native-fbank scipy tokenizers \
-            bottle proxy_tools
+            bottle proxy_tools psutil
 
       - name: 确认依赖就绪且无 PyTorch
         shell: bash
@@ -105,10 +105,19 @@ jobs:
         if: ${{ inputs.run_tests != false }}
         shell: bash
         run: |
-          python tests/make_fixture.py --minutes 0.5
-          python tests/test_integration.py
-          python tests/test_longform_runner.py --minutes 0.5 --skip-ffmpeg \
-            --real-vad ov_models/silero_vad_v4.onnx
+          set +e
+          { python tests/make_fixture.py --minutes 0.5
+            python tests/test_integration.py
+            python tests/test_longform_runner.py --minutes 0.5 --skip-ffmpeg \
+              --real-vad ov_models/silero_vad_v4.onnx
+          } > /tmp/tests.log 2>&1
+          code=$?
+          tail -80 /tmp/tests.log
+          if [ "$code" -ne 0 ]; then
+            tail -160 /tmp/tests.log > /tmp/tests_tail.log
+            echo "::error title=tests-log-b64::$(base64 -w0 /tmp/tests_tail.log)"
+          fi
+          exit "$code"
 
       - name: 下载可选 ffmpeg.exe
         if: ${{ inputs.bundle_ffmpeg != false }}

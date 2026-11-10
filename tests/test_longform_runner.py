@@ -289,7 +289,9 @@ def test_memory(r: Result, vad_factory):
     tracemalloc.stop()
 
     if not samples:
-        r.check("当前平台可读取 RSS", False, "无法采样，跳过内存断言")
+        # Windows 若未安装 psutil 就没有 /proc/self/statm 可用；这是「无法观测」
+        # 而不是「内存失控」，记跳过，不把整轮测试判为失败。
+        print("  当前平台无法读取 RSS（缺 psutil 且非 Linux），跳过内存断言")
         return
 
     swing = max(samples) - min(samples)
