@@ -302,6 +302,32 @@ def test_memory(r: Result, vad_factory):
             f"{py_peak/1024/1024:.1f} MiB（阈值 80）")
 
 
+def test_wav_fallback(r: Result, vad_factory):
+    """ffmpeg 不可用时，WAV 输入应走标准库 wave 流式回退，仍能完成转写。"""
+    print("\n[4] 无 ffmpeg 的 WAV 回退路径")
+    sys.path.insert(0, str(HERE))
+    from make_fixture import build
+    from longform_runner import pcm_stream
+
+    pcm, _ = build(0.2, seed=5)
+    wav = TMP / "fallback.wav"
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
+        w.writeframes(pcm.tobytes())
+
+    blocks = list(pcm_stream(wav, "__ffmpeg_not_installed__"))
+    r.check("WAV 回退能流式产出 PCM", len(blocks) > 1,
+            f"{len(blocks)} 块 / {sum(len(x) for x in blocks)/SR:.1f}s")
+
+    force_rmtree(TMP / "fallback_work")
+    runner = make_runner(TMP / "fallback_work", "fb", engine=MockEngine(),
+                         vad_sess=vad_factory(), ffmpeg="__ffmpeg_not_installed__")
+    res = runner.run(wav, total_sec=len(pcm) / SR)
+    spans, _ = parse_srt(TMP / "fb.srt")
+    r.check("无 ffmpeg 也能完成转写", res["status"] == "done" and len(spans) > 0,
+            f"{len(spans)} 条字幕")
+
+
 def test_real_vad(r: Result, onnx_path: Path):
     """真实 Silero VAD：验证分段参数与输入名契约。"""
     print(f"\n[3] 真实 Silero VAD ONNX：{onnx_path}")
@@ -337,6 +363,7 @@ def main() -> int:
     r = Result()
     test_basic(r, MockVAD, args.minutes, use_ffmpeg)
     test_memory(r, MockVAD)
+    test_wav_fallback(r, MockVAD)
     if args.real_vad:
         if args.real_vad.exists():
             test_real_vad(r, args.real_vad)

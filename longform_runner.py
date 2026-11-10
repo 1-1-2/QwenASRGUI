@@ -27,12 +27,15 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
+import wave
 from pathlib import Path
 
 import numpy as np
@@ -232,6 +235,38 @@ def ffmpeg_pcm_stream(path: Path, ffmpeg: str = "ffmpeg", start_sec: float = 0.0
                 pass
 
 
+def wav_pcm_stream(path: Path, start_sec: float = 0.0):
+    """WAV 专用流式读取（标准库 wave，逐块 yield）。
+
+    仅用于 16kHz / mono / s16le 的 WAV。ffmpeg 不可用时作为兜底，
+    保证纯 Python 环境也能跑长音频测试；其他格式仍需要 ffmpeg。
+    """
+    with wave.open(str(path), "rb") as w:
+        if (w.getframerate(), w.getnchannels(), w.getsampwidth()) != (SR, 1, 2):
+            raise ValueError(
+                "缺少 ffmpeg，且 WAV 不是 16kHz/mono/s16le；"
+                "请安装 ffmpeg 或先转换音频格式")
+        w.setpos(int(start_sec * SR))
+        frames_per_read = READ_BYTES // 2
+        while True:
+            raw = w.readframes(frames_per_read)
+            if not raw:
+                break
+            yield (np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0)
+
+
+def ffmpeg_available(ffmpeg: str) -> bool:
+    """判断 ffmpeg 可执行：支持 PATH 名称与绝对路径两种写法。"""
+    return bool(shutil.which(ffmpeg)) or os.path.isfile(ffmpeg)
+
+
+def pcm_stream(path: Path, ffmpeg: str = "ffmpeg", start_sec: float = 0.0):
+    """PCM 源分发：优先 ffmpeg；缺失且输入为 WAV 时回退到标准库流式读取。"""
+    if not ffmpeg_available(ffmpeg) and str(path).lower().endswith(".wav"):
+        return wav_pcm_stream(path, start_sec)
+    return ffmpeg_pcm_stream(path, ffmpeg, start_sec)
+
+
 class ArrayPcmStream:
     """离线 / 测试用：把 numpy 数组按块喂进来，完全绕开 ffmpeg。"""
     def __init__(self, audio: np.ndarray, start_sec: float = 0.0):
@@ -247,6 +282,12 @@ class ArrayPcmStream:
 
 def probe_duration(path, ffmpeg: str = "ffmpeg") -> float | None:
     """探测音频总时长（秒）。失败返回 None，只影响进度百分比显示。"""
+    if str(path).lower().endswith(".wav"):
+        try:
+            with wave.open(str(path), "rb") as w:
+                return w.getnframes() / w.getframerate()
+        except Exception:
+            pass
     try:
         import soundfile as sf
         return float(sf.info(str(path)).duration)
@@ -334,7 +375,7 @@ class LongformRunner:
         start_sec = next_frame * VAD_CHUNK / SR
         self._emit(0, f"从第 {start_sec / 60:.1f} 分钟续跑" if start_sec else "开始流式分段")
         stream = (pcm_source if pcm_source is not None else
-                  ffmpeg_pcm_stream(Path(audio_path), self.ffmpeg, start_sec))
+                  pcm_stream(Path(audio_path), self.ffmpeg, start_sec))
         if total_sec is None and audio_path is not None:
             total_sec = probe_duration(audio_path, self.ffmpeg)
 
