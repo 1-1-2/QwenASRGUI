@@ -70,6 +70,26 @@ HF_OFFICIAL = "https://huggingface.co"
 _MIRROR_BASE: str = ""   # 例："https://hf-mirror.com"
 
 
+# Optional hook: event_cb(kind, payload). Installed once by the WebView backend
+# so every download_* helper can report classified errors / source switches
+# to the UI without changing each individual signature.
+_DOWNLOAD_EVENT_CB = None
+
+
+def set_download_event_hook(cb):
+    """Install a module-wide event callback (or pass None to clear it)."""
+    global _DOWNLOAD_EVENT_CB
+    _DOWNLOAD_EVENT_CB = cb
+
+
+def _fire_download_event(kind: str, payload: dict):
+    if _DOWNLOAD_EVENT_CB is not None:
+        try:
+            _DOWNLOAD_EVENT_CB(kind, payload)
+        except Exception:
+            pass
+
+
 def set_mirror(base: str | None):
     """設定 HuggingFace 鏡像站台基底網址（如 'https://hf-mirror.com'）。
 
@@ -1038,77 +1058,151 @@ def full_verify(model_dir: Path, progress_cb=None) -> tuple[bool, str]:
 # 直接 HTTP 下載（斷點續傳）
 # ══════════════════════════════════════════════════════════════════════
 
-def _download_file(url: str, dest: Path, progress_cb=None):
+def _download_file(url: str, dest: Path, progress_cb=None,
+                   size_bytes: int | None = None,
+                   event_cb=None, retries: int = 3,
+                   timeout: float = 30.0):
+    """Download one file with resume, size fallback, retry and integrity probe.
+
+    progress_cb(done_bytes, total_bytes) is kept for backward compatibility.
+    ``size_bytes`` may come from models.json or a HEAD probe; it is only used
+    when the response omits Content-Length, so the progress bar never freezes.
+    ``event_cb(kind, payload)`` reports classified failures and source switches
+    to the UI (the old implementation used print(), invisible in a windowed EXE).
     """
-    下載單一檔案至 dest，支援斷點續傳（Resume）。
-    progress_cb(done_bytes: int, total_bytes: int)
-    """
+    import time as _time
+    from model_catalog import (check_disk, classify_error, file_problem,
+                               probe_remote_size)
+
+    if event_cb is None:
+        event_cb = _fire_download_event
+    dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    existing = dest.stat().st_size if dest.exists() else 0
+    url = _apply_mirror(url)
+    last_exc: BaseException | None = None
 
-    url = _apply_mirror(url)   # 套用鏡像站改寫（若有設定）
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
-    if existing > 0:
-        req.add_header("Range", f"bytes={existing}-")
+    for attempt in range(max(1, retries)):
+        existing = dest.stat().st_size if dest.exists() else 0
+        if size_bytes is None and existing == 0:
+            size_bytes = probe_remote_size(url)
+        warn = check_disk(dest, size_bytes)
+        if warn:
+            raise OSError(warn)
 
-    try:
-        resp = urllib.request.urlopen(req, timeout=30, context=_ssl_ctx())
-    except urllib.error.HTTPError as e:
-        if e.code == 416:
-            # 416 Range Not Satisfiable = 檔案已完整，直接視為成功
-            return
-        raise
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        if existing > 0:
+            req.add_header("Range", f"bytes={existing}-")
+        try:
+            resp = urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx())
+        except urllib.error.HTTPError as e:
+            if e.code == 416:      # already complete
+                return
+            last_exc = e
+            info = classify_error(e)
+            if info["code"] in ("http_server", "http_error") and attempt + 1 < retries:
+                _time.sleep(min(2 ** attempt, 4))
+                if event_cb:
+                    event_cb("download-retry", {"attempt": attempt + 1,
+                                                "code": info["code"],
+                                                "hint": info["hint"],
+                                                "file": dest.name})
+                continue
+            if event_cb:
+                event_cb("download-failure", {"code": info["code"],
+                                              "hint": info["hint"], "file": dest.name})
+            raise
+        except (urllib.error.URLError, OSError, TimeoutError) as e:
+            last_exc = e
+            info = classify_error(e)
+            if info["code"] in ("timeout", "network", "dns", "tls") and attempt + 1 < retries:
+                if event_cb:
+                    event_cb("download-retry", {"attempt": attempt + 1,
+                                                "code": info["code"],
+                                                "hint": info["hint"],
+                                                "file": dest.name})
+                _time.sleep(min(2 ** attempt, 4))
+                continue
+            if event_cb:
+                event_cb("download-failure", {"code": info["code"],
+                                              "hint": info["hint"], "file": dest.name})
+            raise
 
-    content_length = int(resp.headers.get("Content-Length", 0))
-    total = existing + content_length if content_length else 0
+        content_length = int(resp.headers.get("Content-Length", 0) or 0)
+        total = existing + content_length if content_length else (size_bytes or 0)
+        mode = "ab" if existing > 0 and resp.status == 206 else "wb"
+        if mode == "wb":
+            existing = 0
+        done = existing
+        try:
+            with open(dest, mode) as f:
+                while True:
+                    chunk = resp.read(1 << 16)   # 64 KB
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if progress_cb and total:
+                        progress_cb(done, total)
+        finally:
+            resp.close()
 
-    # 追加寫入（resume）或全新寫入
-    mode = "ab" if existing > 0 and resp.status == 206 else "wb"
-    if mode == "wb":
-        existing = 0
-
-    done = existing
-    with open(dest, mode) as f:
-        while True:
-            chunk = resp.read(1 << 16)   # 64 KB
-            if not chunk:
-                break
-            f.write(chunk)
-            done += len(chunk)
-            if progress_cb and total:
-                progress_cb(done, total)
-
-    resp.close()
+        problem = file_problem(dest)
+        if problem:
+            dest.unlink(missing_ok=True)
+            raise OSError(f"downloaded file rejected: {problem}")
+        return
+    if last_exc:
+        raise last_exc
 
 
 def _download_file_with_fallback(
     fname: str,
     dest: Path,
     progress_cb=None,
+    event_cb=None,
+    retries: int = 3,
+    size_bytes: int | None = None,
 ):
-    """
-    先嘗試主要 HF 來源，若連線失敗則自動切換至備用來源。
-    VAD 等非 HF 檔案（url 已為完整 URL）直接下載，不套用備援。
-    """
-    primary_url  = f"{_HF_BASE_PRIMARY}/{fname}"
-    fallback_url = f"{_HF_BASE_FALLBACK}/{fname}"
+    """Try the primary HF source, then the fallback source.
 
-    try:
-        _download_file(primary_url, dest, progress_cb)
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as primary_err:
-        # 主要來源失敗，切換備用
-        print(f"\n⚠ 主要來源失敗（{primary_err}），切換至備用來源…")
-        _download_file(fallback_url, dest, progress_cb)
+    Source switches are reported through ``event_cb`` instead of stdout so the
+    WebView UI can show them in the run log (H1).
+    """
+    from model_catalog import classify_error
+
+    if event_cb is None:
+        event_cb = _fire_download_event
+    urls = [f"{_HF_BASE_PRIMARY}/{fname}", f"{_HF_BASE_FALLBACK}/{fname}"]
+    last_exc: BaseException | None = None
+    for idx, url in enumerate(urls):
+        try:
+            _download_file(url, dest, progress_cb, size_bytes=size_bytes,
+                           event_cb=event_cb, retries=retries)
+            return
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError,
+                TimeoutError) as err:
+            last_exc = err
+            if idx + 1 < len(urls):
+                info = classify_error(err)
+                if event_cb:
+                    event_cb("download-source-switch", {
+                        "file": Path(dest).name,
+                        "from": urls[idx], "to": urls[idx + 1],
+                        "code": info["code"], "hint": info["hint"],
+                    })
+    assert last_exc is not None
+    raise last_exc
 
 
 # ══════════════════════════════════════════════════════════════════════
 # 批次下載所有模型
 # ══════════════════════════════════════════════════════════════════════
 
-def download_all(model_dir: Path, progress_cb=None):
+def download_all(model_dir: Path, progress_cb=None, event_cb=None):
     """
     下載所有缺少的模型至 model_dir。
     progress_cb(pct: float, msg: str)   pct ∈ [0, 1]
+    event_cb(kind, payload)             分類後的錯誤 / 來源切換事件（給 WebView）
     下載失敗時拋出例外。
     """
     ov_dir, vad_path = _get_paths(model_dir)
@@ -1149,9 +1243,11 @@ def download_all(model_dir: Path, progress_cb=None):
                 )
 
         if is_direct:
-            _download_file(fname_or_url, dest, progress_cb=_file_cb)
+            _download_file(fname_or_url, dest, progress_cb=_file_cb,
+                           event_cb=event_cb)
         else:
-            _download_file_with_fallback(fname_or_url, dest, progress_cb=_file_cb)
+            _download_file_with_fallback(fname_or_url, dest, progress_cb=_file_cb,
+                                         event_cb=event_cb)
 
         if progress_cb:
             progress_cb(base_pct + span_pct, f"✅ {fname}")

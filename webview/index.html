@@ -343,6 +343,23 @@
           <div>GPU 偵測由 <code style="font-family:var(--font-mono)">crispasr.exe --diagnostics</code> 進行；若未列出獨立顯示卡，請更新顯卡 / Vulkan 驅動後重試。</div>
         </div>
         </div><!-- /advanced-extra -->
+
+        <!-- ── Download center: one source of truth (models.json) ── -->
+        <div class="sec-title" style="margin-top:18px">下載中心 / Download center</div>
+        <div class="banner banner-info" id="catalog-note" style="margin-bottom:10px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+          <div>檔案大小與 SHA256 若顯示「未知」，代表尚未對遠端檔案實測驗證，不會用估計值冒充。括號中的約略值僅供參考，不用於進度計算。</div>
+        </div>
+        <div id="catalog-summary" style="font-size:13px;color:var(--ink-2);margin-bottom:8px">讀取中…</div>
+        <div class="model-load-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+          <button class="btn" id="btn-catalog-refresh">重新整理</button>
+          <button class="btn" id="btn-catalog-manifest">輸出下載清單 (.txt)</button>
+          <input class="select" id="catalog-import-dir" placeholder="手動下載的資料夾路徑" style="min-width:230px" />
+          <select class="select" id="catalog-import-bundle" style="min-width:210px"></select>
+          <button class="btn" id="btn-catalog-import">匯入並驗證</button>
+        </div>
+        <div id="catalog-msg" style="font-size:13px;margin-bottom:8px"></div>
+        <div id="catalog-list"></div>
       </section>
 
       <!-- ───── 設定 ───── -->

@@ -247,6 +247,72 @@ class WebBackend:
         self._lock = threading.Lock()
         self._seed_defaults()            # 首次啟動（無 backend）→ 種子預設模型
         self._apply_runtime_prefs()      # 啟動即套用持久化偏好（VAD/簡繁/鏡像/格式）
+        self._install_download_hook()    # classified download events → SSE / run log
+
+    # ── Model catalog, download manifest and offline import ───────────────
+    def _install_download_hook(self):
+        """Route downloader.py source switches / retries to the WebView UI."""
+        import downloader as _dl
+
+        def _hook(kind: str, payload: dict):
+            self._emit(kind, payload)
+            hint = payload.get("hint") or ""
+            name = payload.get("file") or ""
+            if kind == "download-source-switch":
+                self._st(f"下載來源切換：{name}（{payload.get('code', '')}）{hint}")
+            elif kind == "download-retry":
+                self._st(f"重試 {payload.get('attempt', 1)}：{name} {hint}")
+
+        try:
+            _dl.set_download_event_hook(_hook)
+        except Exception:
+            pass
+
+    def _catalog_root(self) -> Path:
+        s = self._settings_raw()
+        default = getattr(core, "_DEFAULT_MODEL_DIR", BASE_DIR / "ov_models")
+        return Path(s.get("model_dir", str(default)))
+
+    def get_model_catalog(self) -> dict:
+        """Return bundle/file status from models.json (never from guesses)."""
+        import model_catalog as mc
+        root = self._catalog_root()
+        doc = mc.load_catalog()
+        st = mc.catalog_status(root, doc)
+        st["mirror"] = self.get_settings().get("mirror", "")
+        return st
+
+    def export_download_manifest(self, bundle_ids=None) -> dict:
+        """Write a .txt download list with URLs, hashes and aria2c commands."""
+        import model_catalog as mc
+        root = self._catalog_root()
+        ids = list(bundle_ids or [])
+        doc = mc.load_catalog()
+        if ids:
+            for bid in ids:
+                mc.get_bundle(bid, doc)      # validates ids early
+        mirror = self.get_settings().get("mirror", "")
+        text = mc.build_manifest_text(root, ids, mirror, doc)
+        out_dir = Path(getattr(core, "OUTPUT_DIR", BASE_DIR / "subtitles"))
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            out_dir = BASE_DIR
+        path = out_dir / "模型下載清單.txt"
+        path.write_text(text, encoding="utf-8")
+        self._st(f"已輸出下載清單：{path}")
+        return {"ok": True, "path": str(path), "bytes": path.stat().st_size,
+                "bundle_count": len(ids) if ids else len(doc["bundles"])}
+
+    def import_local_model(self, src_dir: str, bundle_id: str) -> dict:
+        """Validate manually downloaded files and copy them into place."""
+        import model_catalog as mc
+        root = self._catalog_root()
+        doc = mc.load_catalog()
+        bundle = mc.get_bundle(bundle_id, doc)
+        result = mc.import_local_bundle(Path(src_dir), root, bundle)
+        self._st(f"匯入本地模型：{bundle_id} → {result['message']}")
+        return result
 
     # ── 首次啟動預設：1.7B Qwen on CRISPASR Q4（多數機器跑得動）─────────────
     def _seed_defaults(self):

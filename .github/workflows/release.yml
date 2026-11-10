@@ -127,6 +127,7 @@ jobs:
           { python tests/make_fixture.py --minutes 0.5
             python tests/test_wave1.py
             python tests/test_wave15.py
+            python tests/test_wave2.py
             python tests/test_integration.py
             python tests/test_longform_runner.py --minutes 0.5 --skip-ffmpeg \
               --real-vad ov_models/silero_vad_v4.onnx

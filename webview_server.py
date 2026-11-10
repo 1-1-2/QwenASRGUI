@@ -186,6 +186,8 @@ class WebViewServer:
                     return self._qr(urlparse(self.path).query)
                 if path == "/api/batch":
                     return self._json(server.backend.get_batch())
+                if path == "/api/model-catalog":
+                    return self._json(server.backend.get_model_catalog())
                 if path == "/api/events":
                     return self._sse()
                 if path.startswith("/api/"):
@@ -235,6 +237,13 @@ class WebViewServer:
                         return self._json({"ok": server.backend.open_output_dir()})
                     if path == "/api/check-update":
                         return self._json(server.backend.open_releases())
+                    if path == "/api/download-manifest":
+                        return self._json(server.backend.export_download_manifest(
+                            self._read_json_body().get("bundles")))
+                    if path == "/api/import-model":
+                        body = self._read_json_body()
+                        return self._json(server.backend.import_local_model(
+                            body.get("dir", ""), body.get("bundle", "")))
                     return self._err(404, "unknown api")
                 except Exception as e:
                     return self._err(500, str(e))

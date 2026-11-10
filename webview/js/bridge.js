@@ -93,6 +93,20 @@
       return MOCK.status;
     },
 
+    // Wave 2: model catalog / offline download list / local import.
+    async getModelCatalog() {
+      if (MODE !== "web") return MOCK.modelCatalog || { bundles: [], complete: [], incomplete: [] };
+      return apiGet("/api/model-catalog");
+    },
+    async exportDownloadManifest(bundles) {
+      if (MODE !== "web") return { ok: true, path: "(preview mode)", bytes: 0, bundle_count: 0 };
+      return apiPost("/api/download-manifest", { bundles: bundles || [] });
+    },
+    async importLocalModel(dir, bundle) {
+      if (MODE !== "web") return { ok: false, message: "preview mode" };
+      return apiPost("/api/import-model", { dir: dir || "", bundle: bundle || "" });
+    },
+
     async pickFile() { return null; },            // 瀏覽器環境一律用 <input type=file>
     async loadHintTxt() { return null; },
 

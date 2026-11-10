@@ -50,6 +50,7 @@ EXCLUDE_PY = {
 STATIC_DATA = [
     ("assets/icon.ico", "."),
     ("prompt_template.json", "."),
+    ("models.json", "."),          # Wave 2 catalog: read from EXE dir at runtime
     ("webview", "webview_assets"),
     ("ov_models/mel_filters.npy", "ov_models"),
     ("ov_models/silero_vad_v4.onnx", "ov_models"),
@@ -269,6 +270,7 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None) -> Path:
 def verify_archive(exe: Path) -> dict:
     """读取 PyInstaller CArchive 的目录表，确认关键动态导入模块确实进包。"""
     required = ["longform_runner.py", "downloader.py", "ffmpeg_utils.py",
+                "model_catalog.py", "models.json",
                 "webview_assets/index.html", "ov_models/silero_vad_v4.onnx",
                 "prompt_template.json"]
     result: dict = {"方式": "PyInstaller.archive.readers.CArchiveReader",

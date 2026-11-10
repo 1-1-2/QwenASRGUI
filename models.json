@@ -1,0 +1,594 @@
+{
+  "schema": 1,
+  "note": "Single source of truth for downloadable assets. size_bytes / sha256 are null when not verified against the real remote file; never substitute a guess. size_hint values are documentation estimates copied from the cited source line and are NOT suitable for progress math.",
+  "mirrors": {
+    "official": "https://huggingface.co",
+    "candidates": [
+      {
+        "id": "hf-mirror",
+        "base": "https://hf-mirror.com",
+        "verified": false,
+        "note": "community mirror; Hub API compatibility untested"
+      },
+      {
+        "id": "modelscope-hf",
+        "base": "https://www.modelscope.cn/hf_mirror",
+        "verified": false,
+        "note": "HF-compatible endpoint; path rules untested"
+      },
+      {
+        "id": "baai",
+        "base": "https://huggingface.baai.ac.cn",
+        "verified": false,
+        "note": "BAAI mirror; untested"
+      }
+    ]
+  },
+  "sources": {
+    "hf_06b_primary": {
+      "base": "https://huggingface.co/dseditor/Qwen3-ASR-0.6B-INT8_ASYM-OpenVINO/resolve/main",
+      "kind": "huggingface",
+      "mirrorable": true
+    },
+    "hf_06b_fallback": {
+      "base": "https://huggingface.co/Echo9Zulu/Qwen3-ASR-0.6B-INT8_ASYM-OpenVINO/resolve/main",
+      "kind": "huggingface",
+      "mirrorable": true
+    },
+    "hf_17b": {
+      "base": "https://huggingface.co/dseditor/Qwen3-ASR-1.7B-INT8_OpenVINO/resolve/main",
+      "kind": "huggingface",
+      "mirrorable": true
+    },
+    "hf_collection": {
+      "base": "https://huggingface.co/dseditor/Collection/resolve/main",
+      "kind": "huggingface",
+      "mirrorable": true
+    },
+    "hf_diar": {
+      "base": "https://huggingface.co/altunenes/speaker-diarization-community-1-onnx/resolve/main",
+      "kind": "huggingface",
+      "mirrorable": true
+    },
+    "hf_breeze": {
+      "base": "https://huggingface.co/phate334/Breeze-ASR-26-GGML/resolve/main",
+      "kind": "huggingface",
+      "mirrorable": true
+    },
+    "hf_tea": {
+      "base": "https://huggingface.co/dseditor/TEA-ASR-1.1-CrispASR-GGUF/resolve/main",
+      "kind": "huggingface",
+      "mirrorable": true
+    },
+    "hf_aligner_gguf": {
+      "base": "https://huggingface.co/cstr/qwen3-forced-aligner-0.6b-GGUF/resolve/main",
+      "kind": "huggingface",
+      "mirrorable": true
+    },
+    "hf_qwen17_gguf": {
+      "base": "https://huggingface.co/cstr/qwen3-asr-1.7b-GGUF/resolve/main",
+      "kind": "huggingface",
+      "mirrorable": true
+    },
+    "hf_qwen17_ja": {
+      "base": "https://huggingface.co/cstr/qwen3-asr-1.7b-ja-anime-GGUF/resolve/main",
+      "kind": "huggingface",
+      "mirrorable": true
+    },
+    "github_silero": {
+      "base": "https://github.com/snakers4/silero-vad/raw/v4.0/files",
+      "kind": "github",
+      "mirrorable": false
+    },
+    "github_crispasr": {
+      "base": "https://github.com/CrispStrobe/CrispASR/releases/download/v0.8.32",
+      "kind": "github",
+      "mirrorable": false
+    }
+  },
+  "bundles": [
+    {
+      "id": "qwen3_asr_0p6b_ov_int8",
+      "label": "Qwen3-ASR 0.6B · OpenVINO INT8",
+      "modes": [
+        "cpu-openvino-int8"
+      ],
+      "target_dir": "ov_models/qwen3_asr_int8",
+      "required_for": [
+        "default CPU transcription"
+      ],
+      "size_hint": "约 1.2 GB",
+      "size_hint_source": "build_release.py:173 / downloader.py:1196",
+      "provider": "dseditor (mirror: Echo9Zulu)",
+      "files": [
+        {
+          "name": "audio_encoder_model.bin",
+          "source": "hf_06b_primary",
+          "size_bytes": null,
+          "sha256": "d892464d9b6986719dd6e5c3962b880a2708d874c2c9bdead8958581be2dacb9",
+          "fallback_source": "hf_06b_fallback"
+        },
+        {
+          "name": "decoder_model.bin",
+          "source": "hf_06b_primary",
+          "size_bytes": null,
+          "sha256": "cc4363c401f5faf41e2bfcb4aea80c72144b8ea66d13ca5ca62cf49421a25778",
+          "fallback_source": "hf_06b_fallback"
+        },
+        {
+          "name": "thinker_embeddings_model.bin",
+          "source": "hf_06b_primary",
+          "size_bytes": null,
+          "sha256": "a7818fcbd77240fb8705bc47c2a15da98498056cdd419742b7685719b5dc2a44",
+          "fallback_source": "hf_06b_fallback"
+        },
+        {
+          "name": "audio_encoder_model.xml",
+          "source": "hf_06b_primary",
+          "size_bytes": null,
+          "sha256": null,
+          "fallback_source": "hf_06b_fallback"
+        },
+        {
+          "name": "thinker_embeddings_model.xml",
+          "source": "hf_06b_primary",
+          "size_bytes": null,
+          "sha256": null,
+          "fallback_source": "hf_06b_fallback"
+        },
+        {
+          "name": "decoder_model.xml",
+          "source": "hf_06b_primary",
+          "size_bytes": null,
+          "sha256": null,
+          "fallback_source": "hf_06b_fallback"
+        },
+        {
+          "name": "config.json",
+          "source": "hf_06b_primary",
+          "size_bytes": null,
+          "sha256": null,
+          "fallback_source": "hf_06b_fallback"
+        },
+        {
+          "name": "preprocessor_config.json",
+          "source": "hf_06b_primary",
+          "size_bytes": null,
+          "sha256": null,
+          "fallback_source": "hf_06b_fallback"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "source": "hf_06b_primary",
+          "size_bytes": null,
+          "sha256": null,
+          "fallback_source": "hf_06b_fallback"
+        },
+        {
+          "name": "vocab.json",
+          "source": "hf_06b_primary",
+          "size_bytes": null,
+          "sha256": null,
+          "fallback_source": "hf_06b_fallback"
+        },
+        {
+          "name": "merges.txt",
+          "source": "hf_06b_primary",
+          "size_bytes": null,
+          "sha256": null,
+          "fallback_source": "hf_06b_fallback"
+        }
+      ]
+    },
+    {
+      "id": "qwen3_asr_1p7b_ov_int8",
+      "label": "Qwen3-ASR 1.7B · OpenVINO INT8 (KV-cache)",
+      "modes": [
+        "cpu-openvino-int8"
+      ],
+      "target_dir": "ov_models/qwen3_asr_1p7b_kv_int8",
+      "required_for": [
+        "higher-accuracy Chinese transcription"
+      ],
+      "size_hint": "约 4.4 GB",
+      "size_hint_source": "build_release.py:174 (note: app.py:2239 says ~4.3 GB)",
+      "provider": "dseditor",
+      "chunk_limit_note": "audio_encoder exported with T=1000 → 10 s max chunk",
+      "files": [
+        {
+          "name": "audio_encoder_model.bin",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "thinker_embeddings_model.bin",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "decoder_prefill_kv_model.bin",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "decoder_kv_model.bin",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "audio_encoder_model.xml",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "thinker_embeddings_model.xml",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "decoder_prefill_kv_model.xml",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "decoder_kv_model.xml",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "prompt_template.json",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "config.json",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "tokenizer_config.json",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "vocab.json",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "merges.txt",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "preprocessor_config.json",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "chat_template.json",
+          "source": "hf_17b",
+          "size_bytes": null,
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "silero_vad_v4",
+      "label": "Silero VAD v4 · ONNX",
+      "modes": [
+        "all"
+      ],
+      "target_dir": "ov_models",
+      "required_for": [
+        "VAD segmentation"
+      ],
+      "size_hint": null,
+      "provider": "snakers4/silero-vad",
+      "files": [
+        {
+          "name": "silero_vad_v4.onnx",
+          "source": "github_silero",
+          "size_bytes": null,
+          "sha256": null,
+          "url_override": "https://github.com/snakers4/silero-vad/raw/v4.0/files/silero_vad.onnx"
+        }
+      ]
+    },
+    {
+      "id": "speaker_diarization",
+      "label": "Speaker diarization · ONNX",
+      "modes": [
+        "gpu-crispasr"
+      ],
+      "target_dir": "ov_models/diarization",
+      "optional": true,
+      "size_hint": "约 32 MB",
+      "size_hint_source": "webview_backend.py:897",
+      "provider": "altunenes",
+      "files": [
+        {
+          "name": "segmentation-community-1.onnx",
+          "source": "hf_diar",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "embedding_model.onnx",
+          "source": "hf_diar",
+          "size_bytes": null,
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "forced_aligner_chatllm",
+      "label": "ForcedAligner · chatllm bin",
+      "modes": [
+        "gpu-crispasr"
+      ],
+      "target_dir": "ov_models",
+      "optional": true,
+      "size_hint": "约 939 MB",
+      "size_hint_source": "downloader.py:190 / webview_backend.py:920",
+      "provider": "dseditor/Collection",
+      "files": [
+        {
+          "name": "qwen3-focedaligner-0.6b.bin",
+          "source": "hf_collection",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 939 MB",
+          "size_hint_source": "downloader.py:190"
+        }
+      ]
+    },
+    {
+      "id": "ffmpeg_windows",
+      "label": "ffmpeg · Windows",
+      "modes": [
+        "all"
+      ],
+      "target_dir": "ffmpeg",
+      "optional": true,
+      "size_hint": "约 100 MB",
+      "size_hint_source": "build_release.py:156",
+      "provider": "dseditor/Collection",
+      "files": [
+        {
+          "name": "ffmpeg.zip",
+          "source": "hf_collection",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 100 MB",
+          "size_hint_source": "build_release.py:156"
+        }
+      ]
+    },
+    {
+      "id": "breeze_asr_ggml",
+      "label": "Breeze-ASR-26 · GGML",
+      "modes": [
+        "gpu-crispasr"
+      ],
+      "target_dir": "ov_models",
+      "optional": true,
+      "provider": "phate334",
+      "variants": {
+        "q4": [
+          "ggml-model-q4_0.bin",
+          "约 889 MB"
+        ],
+        "q5": [
+          "ggml-model-q5_0.bin",
+          "约 1.08 GB"
+        ],
+        "q8": [
+          "ggml-model-q8_0.bin",
+          "约 1.66 GB"
+        ]
+      },
+      "files": [
+        {
+          "name": "ggml-model-q4_0.bin",
+          "source": "hf_breeze",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 889 MB",
+          "size_hint_source": "downloader.py:573-575"
+        },
+        {
+          "name": "ggml-model-q5_0.bin",
+          "source": "hf_breeze",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 1.08 GB",
+          "size_hint_source": "downloader.py:573-575"
+        },
+        {
+          "name": "ggml-model-q8_0.bin",
+          "source": "hf_breeze",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 1.66 GB",
+          "size_hint_source": "downloader.py:573-575"
+        }
+      ]
+    },
+    {
+      "id": "tea_asr_gguf",
+      "label": "TEA-ASR-1.1 · GGUF",
+      "modes": [
+        "gpu-crispasr"
+      ],
+      "target_dir": "ov_models",
+      "optional": true,
+      "provider": "dseditor",
+      "files": [
+        {
+          "name": "tea-asr-1.1-q8_0.gguf",
+          "source": "hf_tea",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 2.03 GB",
+          "size_hint_source": "downloader.py:782"
+        }
+      ]
+    },
+    {
+      "id": "aligner_gguf",
+      "label": "ForcedAligner 0.6B · GGUF",
+      "modes": [
+        "gpu-crispasr"
+      ],
+      "target_dir": "ov_models",
+      "optional": true,
+      "provider": "cstr",
+      "files": [
+        {
+          "name": "qwen3-forced-aligner-0.6b-q4_k.gguf",
+          "source": "hf_aligner_gguf",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 529 MB",
+          "size_hint_source": "downloader.py:831"
+        },
+        {
+          "name": "qwen3-forced-aligner-0.6b-q5_0.gguf",
+          "source": "hf_aligner_gguf",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 643 MB",
+          "size_hint_source": "downloader.py:832"
+        },
+        {
+          "name": "qwen3-forced-aligner-0.6b-q8_0.gguf",
+          "source": "hf_aligner_gguf",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 986 MB",
+          "size_hint_source": "downloader.py:833"
+        }
+      ]
+    },
+    {
+      "id": "qwen3_asr_1p7b_gguf",
+      "label": "Qwen3-ASR 1.7B · GGUF",
+      "modes": [
+        "gpu-crispasr"
+      ],
+      "target_dir": "ov_models",
+      "optional": true,
+      "provider": "cstr",
+      "files": [
+        {
+          "name": "qwen3-asr-1.7b-q4_k.gguf",
+          "source": "hf_qwen17_gguf",
+          "size_bytes": null,
+          "sha256": null
+        },
+        {
+          "name": "qwen3-asr-1.7b-q8_0.gguf",
+          "source": "hf_qwen17_gguf",
+          "size_bytes": null,
+          "sha256": null
+        }
+      ]
+    },
+    {
+      "id": "qwen3_asr_1p7b_ja_gguf",
+      "label": "Qwen3-ASR 1.7B · Japanese anime GGUF",
+      "modes": [
+        "gpu-crispasr"
+      ],
+      "target_dir": "ov_models",
+      "optional": true,
+      "provider": "cstr",
+      "files": [
+        {
+          "name": "qwen3-asr-1.7b-ja-anime-q4_k.gguf",
+          "source": "hf_qwen17_ja",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 1.33 GB",
+          "size_hint_source": "downloader.py:934"
+        },
+        {
+          "name": "qwen3-asr-1.7b-ja-anime-q8_0.gguf",
+          "source": "hf_qwen17_ja",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 2.51 GB",
+          "size_hint_source": "downloader.py:935"
+        }
+      ]
+    },
+    {
+      "id": "crispasr_core",
+      "label": "CrispASR runtime (Windows)",
+      "modes": [
+        "gpu-crispasr"
+      ],
+      "target_dir": "crispasr",
+      "optional": true,
+      "provider": "CrispStrobe/CrispASR v0.8.32",
+      "size_hint_source": "downloader.py:331-376",
+      "files": [
+        {
+          "name": "crispasr-windows-x86_64-vulkan.zip",
+          "source": "github_crispasr",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 34 MB",
+          "size_hint_source": "downloader.py:331-376"
+        },
+        {
+          "name": "crispasr-windows-x86_64-cuda.zip",
+          "source": "github_crispasr",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 690 MB",
+          "size_hint_source": "downloader.py:331-376"
+        },
+        {
+          "name": "crispasr-windows-x86_64-cuda13.zip",
+          "source": "github_crispasr",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 484 MB",
+          "size_hint_source": "downloader.py:331-376"
+        },
+        {
+          "name": "crispasr-windows-x86_64-cpu.zip",
+          "source": "github_crispasr",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 8 MB",
+          "size_hint_source": "downloader.py:331-376"
+        },
+        {
+          "name": "crispasr-windows-x86_64-cpu-legacy.zip",
+          "source": "github_crispasr",
+          "size_bytes": null,
+          "sha256": null,
+          "size_hint": "约 8 MB",
+          "size_hint_source": "downloader.py:331-376"
+        }
+      ]
+    }
+  ]
+}

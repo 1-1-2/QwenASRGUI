@@ -29,9 +29,96 @@
     $("#view-title").textContent = viewTitle(name);
     $("#view-ctx").textContent = "";
     if (name === "batch") renderBatch();
-    if (name === "model") renderModel();
+    if (name === "model") { renderModel(); renderDownloadCenter(); }
     if (name === "record") { enumerateMics(); refreshMicPerm(); }   // 列舉裝置 + 麥克風權限狀態
   }
+
+  /* ── Download center ──────────────────────────────────────────────────
+     Renders models.json status. Unknown byte sizes / hashes are shown as
+     "unknown" on purpose; size_hint values are estimates and never used for
+     progress math. */
+  function fmtBytes(v) {
+    if (v === null || v === undefined) return "未知";
+    if (v < 1024) return v + " B";
+    const u = ["KiB", "MiB", "GiB"];
+    let n = v, i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < 2);
+    return n.toFixed(1) + " " + u[i];
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  async function renderDownloadCenter() {
+    const host = $("#catalog-list");
+    if (!host) return;
+    const msg = $("#catalog-msg");
+    try {
+      const st = await API.getModelCatalog();
+      const bundles = st.bundles || [];
+      const incomplete = st.incomplete || [];
+      const summary = $("#catalog-summary");
+      if (summary) {
+        const mirrorTxt = st.mirror ? ("目前鏡像：" + st.mirror) : "目前鏡像：官方（未設定）";
+        summary.textContent = `${mirrorTxt} · 已完整 ${st.complete ? st.complete.length : 0}/${bundles.length} 組 · 待補 ${incomplete.length} 組 · 本機已佔用 ${fmtBytes(st.total_bytes_on_disk)} · 根目錄 ${st.model_root || ""}`;
+      }
+      const sel = $("#catalog-import-bundle");
+      if (sel) {
+        sel.innerHTML = bundles.map(b =>
+          `<option value="${esc(b.id)}">${esc(b.label)}</option>`).join("");
+      }
+      host.innerHTML = bundles.map(b => {
+        const badge = b.complete
+          ? '<span class="chip" style="color:var(--ok,#1a7f45)">完整</span>'
+          : `<span class="chip chip-muted">缺 ${b.total_count - b.present_count}/${b.total_count}</span>`;
+        const approx = b.size_hint ? ` <span class="chip chip-muted">約 ${esc(b.size_hint)}（估計）</span>` : "";
+        const files = b.files.map(f => {
+          const size = f.size_bytes !== null && f.size_bytes !== undefined
+            ? fmtBytes(f.size_bytes)
+            : (f.size_hint ? `約 ${esc(f.size_hint)}（估計）` : "大小未知");
+          const sha = f.sha256_expected
+            ? (f.sha256_ok === true ? "SHA256 ✓" : (f.sha256_ok === false ? "SHA256 ✗" : "SHA256 待驗證"))
+            : "SHA256 未知";
+          const state = f.present ? "✓" : ("✗ " + esc(f.problem || "missing"));
+          return `<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:12px;font-family:var(--font-mono)">
+            <span style="width:14px;color:${f.present ? "var(--ok,#1a7f45)" : "var(--warn,#b26a00)"}">${f.present ? "✓" : "✗"}</span>
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</span>
+            <span style="color:var(--ink-2)">${size}</span>
+            <span style="color:var(--ink-2);min-width:96px;text-align:right">${sha}</span>
+            <span style="color:var(--ink-2);min-width:150px;text-align:right">${f.present ? "" : state}</span>
+          </div>`;
+        }).join("");
+        return `<details style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:6px">
+          <summary style="cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center">
+            <span style="flex:1">${esc(b.label)}</span>${approx}${badge}
+          </summary>
+          <div style="margin-top:6px;color:var(--ink-2);font-size:12px">目標：${esc(b.target_dir)} · 來源：${esc(b.provider || "")}${b.optional ? " · 選用" : ""}</div>
+          ${files}
+        </details>`;
+      }).join("") || '<div style="color:var(--ink-2)">無資料</div>';
+    } catch (e) {
+      host.innerHTML = `<div style="color:var(--warn,#b26a00)">讀取失敗：${esc(e.message || e)}</div>`;
+    }
+  }
+  $("#btn-catalog-refresh") && $("#btn-catalog-refresh").addEventListener("click", renderDownloadCenter);
+  $("#btn-catalog-manifest") && $("#btn-catalog-manifest").addEventListener("click", async () => {
+    const msg = $("#catalog-msg");
+    try {
+      const r = await API.exportDownloadManifest([]);
+      if (msg) msg.textContent = `已輸出：${r.path}（${fmtBytes(r.bytes)}，${r.bundle_count} 組）`;
+    } catch (e) { if (msg) msg.textContent = "輸出失敗：" + (e.message || e); }
+  });
+  $("#btn-catalog-import") && $("#btn-catalog-import").addEventListener("click", async () => {
+    const msg = $("#catalog-msg");
+    const dir = ($("#catalog-import-dir") || {}).value || "";
+    const bundle = ($("#catalog-import-bundle") || {}).value || "";
+    if (!dir) { if (msg) msg.textContent = "請先填入手動下載的資料夾路徑"; return; }
+    try {
+      const r = await API.importLocalModel(dir, bundle);
+      if (msg) msg.textContent = r.ok ? `匯入完成：${r.message}（複製 ${r.copied} 檔）` : `匯入未通過：${r.message}`;
+      await renderDownloadCenter();
+    } catch (e) { if (msg) msg.textContent = "匯入失敗：" + (e.message || e); }
+  });
   $("#nav").addEventListener("click", e => {
     const btn = e.target.closest(".nav-item");
     if (btn) switchView(btn.dataset.view);

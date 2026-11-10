@@ -18,6 +18,8 @@ on:
     branches: [main]
     paths:
       - '**.py'
+      - 'models.json'
+      - 'webview/**'
       - 'tests/**'
       - 'requirements*.txt'
       - 'tools/**'
@@ -26,6 +28,8 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '**.py'
+      - 'models.json'
+      - 'webview/**'
       - 'tests/**'
       - 'requirements*.txt'
       - 'tools/**'
@@ -84,9 +88,15 @@ jobs:
       - name: Syntax check
         run: |
           python -m compileall -q \
-            longform_runner.py webview_backend.py cli_mode.py \
+            longform_runner.py webview_backend.py webview_server.py \
+            model_catalog.py downloader.py cli_mode.py \
             tests/make_fixture.py tests/test_longform_runner.py \
-            tests/test_integration.py tests/test_wave1.py tests/test_wave15.py
+            tests/test_integration.py tests/test_wave1.py \
+            tests/test_wave15.py tests/test_wave2.py
+
+      - name: Frontend syntax check
+        run: |
+          for f in webview/js/*.js; do node --check "$f"; done
 
       - name: Wave 1 regression (duration probe / fingerprint / VAD resume)
         # Self-contained: generates its own WAV, no fixture or model needed.
@@ -94,6 +104,10 @@ jobs:
 
       - name: Wave 1.5 regression (streaming / peaks / preview / pagination)
         run: python tests/test_wave15.py
+
+      - name: Wave 2 regression (catalog / L1 download / L2 manifest)
+        # Local HTTP server only; never touches Hugging Face or model weights.
+        run: python tests/test_wave2.py
 
       - name: Generate public-domain test audio
         # Fixtures are committed and concatenated offline; no network, no token.
