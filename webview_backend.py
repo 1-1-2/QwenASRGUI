@@ -713,7 +713,6 @@ class WebBackend:
                 "modelCeilingSecs": _ceiling,
                 "estimatedRamMB": _ram_mb,
                 "trial": trial,
-                "reason": "统一流式模式：词级时间轴与说话人分离暂不可用",
             })
             mins = (_duration or 0) / 60
             self._emit("progress", {"pct": 0, "status":

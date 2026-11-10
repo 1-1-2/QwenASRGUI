@@ -331,6 +331,32 @@ button { font-family: inherit; }
 .hint-head .l .d { font-size: 11.5px; color: var(--faint); }
 textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-height: 1.6; }
 
+/* 切分參數：與其他設定卡共用 .row 節奏，字級 / 行距 / 間距全部收斂到一組。
+   舊版把 .row、獨立 .d、.switch 直接堆在一起，沒有專門樣式，導致行距忽大忽小。 */
+.seg-panel .hint-head { margin: 0 0 4px; }
+.seg-panel .row { padding: 10px 2px; }
+.seg-panel .slider-val { min-width: 38px; }
+.seg-note {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px;
+  padding: 10px 2px; border-bottom: 1px solid var(--line);
+  font-size: 12px; line-height: 1.6; color: var(--ink-2);
+}
+.seg-note b { font-family: var(--font-mono); font-weight: 600; color: var(--ink); }
+.seg-note .dot { color: var(--faint); }
+.seg-note .d { font-size: 11.5px; line-height: 1.6; color: var(--faint); }
+.seg-actions {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 14px;
+  padding: 12px 2px 2px; min-height: 38px;
+}
+.seg-actions .switch { flex: 0 0 auto; }
+.seg-verdict {
+  font-size: 11.5px; line-height: 1.6; color: var(--faint);
+  margin-left: auto; text-align: right;
+}
+.seg-verdict[data-state="green"] { color: var(--ok, #1a7f45); }
+.seg-verdict[data-state="yellow"] { color: var(--warn, #b26a00); }
+.seg-verdict b { font-weight: 600; }
+
 /* 進度 */
 .progress { margin-top: 18px; }
 .progress .meta { display: flex; justify-content: space-between; font-size: 12.5px; margin-bottom: 6px; }

@@ -256,8 +256,10 @@
       const lab = el.closest("label");
       if (lab) lab.style.opacity = "0.45";
     });
+    // Text is a data-i18n node so it follows later language switches; the
+    // event only controls visibility (I18N.apply() refreshes the wording).
     const note = $("#cap-note");
-    if (note) { note.hidden = false; note.textContent = cap.reason || ""; }
+    if (note) { note.hidden = false; I18N.apply(note.parentElement || document); }
     // Older / partial backends may omit these numbers. Without guards the UI
     // used to render "undefineds" and "NaN GB", which looks like a broken build.
     const eff = Number(cap.effectiveChunkSecs);
@@ -1292,13 +1294,15 @@
     const L = p.lengths || {};
     const warn = p.verdict === "yellow";
     el.dataset.state = warn ? "yellow" : "green";
-    el.innerHTML =
-      `<b>${I18N.t(warn ? "file.previewWarn" : "file.previewOk")}</b> · ` +
-      `p50 ${L.p50}s / p90 ${L.p90}s / p99 ${L.p99}s / max ${L.max}s · ` +
-      `超上限 ${(p.overLimitRatio * 100).toFixed(1)}% · ` +
-      `極短段 ${(p.shortRatio * 100).toFixed(1)}% · ` +
-      `靜音 ${(p.silenceRatio * 100).toFixed(0)}% · ` +
-      `${p.groupCount} 組 / 預計 ${p.estimatedAsrCallsPerHour} 次 ASR·每小時`;
+    // One plain-language verdict on screen; the full distribution stays
+    // available on hover and in the run log instead of flooding the panel.
+    el.innerHTML = `<b>${I18N.t(warn ? "file.previewWarn" : "file.previewOk")}</b> · ` +
+                   `${p.groupCount || 0} 組 · 最長 ${L.max ?? "—"}s`;
+    el.title = `p50 ${L.p50}s / p90 ${L.p90}s / p99 ${L.p99}s / max ${L.max}s · ` +
+               `超上限 ${(p.overLimitRatio * 100).toFixed(1)}% · ` +
+               `極短段 ${(p.shortRatio * 100).toFixed(1)}% · ` +
+               `靜音 ${(p.silenceRatio * 100).toFixed(0)}% · ` +
+               `預計 ${p.estimatedAsrCallsPerHour} 次 ASR/小時`;
   }
   API.on("vad-preview", renderPreviewStat);
   $("#btn-vad-preview") && $("#btn-vad-preview").addEventListener("click", async () => {

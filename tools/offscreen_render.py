@@ -170,11 +170,10 @@ def main() -> int:
           // Deliberately omit the numeric fields first: a partial payload must
           // not paint "undefineds" / "NaN GB" into the settings hint.
           api._emit('capabilities', {streaming: true, align: false, diarize: false,
-                                     trial: false, reason: '字段缺失兜底验证'});
+                                     trial: false});
           api._emit('capabilities', {streaming: true, align: false, diarize: false,
                                      effectiveChunkSecs: 10, modelCeilingSecs: 10,
-                                     estimatedRamMB: 6144, trial: false,
-                                     reason: '统一流式模式：词级时间轴与说话人分离暂不可用'});
+                                     estimatedRamMB: 6144, trial: false});
           const segs = [];
           for (let i = 1; i <= 24; i++) {
             segs.push({index: i, start: (i-1)*12.5, end: i*12.5,
@@ -231,6 +230,17 @@ def main() -> int:
         check("partial payload never paints undefined/NaN",
               "undefined" not in eff and "NaN" not in eff and
               "undefined" not in ram and "NaN" not in ram)
+        note = page.locator("#cap-note").inner_text()
+        check("streaming note is i18n-driven, not Simplified-Chinese hardcoded",
+              "詞級時間軸" in note and "统一流式" not in note, note)
+        check("preview button and trial switch share one row",
+              abs(page.locator("#btn-vad-preview").bounding_box()["y"] -
+                  page.locator("#seg-panel .seg-actions .switch").bounding_box()["y"]) < 12,
+              str((page.locator("#btn-vad-preview").bounding_box()["y"],
+                   page.locator("#seg-panel .seg-actions .switch").bounding_box()["y"])))
+        check("segmentation panel copy is short",
+              len(page.locator("#seg-panel").inner_text()) < 220,
+              str(len(page.locator("#seg-panel").inner_text())))
 
         # Batch view: upload three files through the real file input.
         page.click('.nav-item[data-view="batch"]')
@@ -265,6 +275,9 @@ def main() -> int:
         shot("06_设置页_English.png")
         check("i18n switched to English",
               "Settings" in page.locator('.nav-item[data-view="settings"]').inner_text())
+        check("streaming note follows English",
+              "Word-level timing" in page.locator("#cap-note").inner_text(),
+              page.locator("#cap-note").inner_text())
 
         # Model page: download center should render from the catalog endpoint.
         page.click('.nav-item[data-view="model"]')

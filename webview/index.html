@@ -99,7 +99,7 @@
             <option>2</option><option>3</option><option>4</option><option>5</option><option>6</option>
           </select>
           <label class="switch"><input type="checkbox" id="sw-align" checked><span class="track"></span><span data-i18n="file.align">時間軸對齊</span></label>
-          <span id="cap-note" hidden style="font-size:12px;opacity:.75"></span>
+          <span id="cap-note" hidden data-i18n="file.streamingNote" style="font-size:12px;opacity:.75"></span>
         </div>
 
         <div class="hint-head">
@@ -111,7 +111,7 @@
         <!-- 切分參數：與「這份音檔怎麼切」有關的設定全部集中在識別頁 -->
         <div class="card seg-panel" id="seg-panel">
           <div class="hint-head">
-            <div class="l"><span class="t" data-i18n="file.segTitle">切分參數</span><span class="d" data-i18n="file.segDesc">數值越大切得越少、上下文越完整；不影響單段記憶體。</span></div>
+            <div class="l"><span class="t" data-i18n="file.segTitle">切分參數</span><span class="d" data-i18n="file.segDesc">切得越長，語句越完整。</span></div>
           </div>
           <div class="row">
             <div class="label"><div class="t" data-i18n="file.vad">語音偵測靈敏度（VAD）</div></div>
@@ -122,17 +122,16 @@
             <input type="range" class="slider" id="seg-chunk" min="5" max="30" step="1" value="30"><span class="slider-val" id="seg-chunk-val">30s</span>
           </div>
           <div class="seg-note" id="seg-note">
-            <span data-i18n="file.effective">目前生效</span>：<b id="seg-effective">—</b>
-            · <span data-i18n="file.ramHint">預估常駐記憶體</span>：<b id="seg-ram">—</b>
-            <div class="d" data-i18n="file.ramExtra">系統另計約 1–2 GB（WebView2 與檔案快取，可回收）</div>
+            <span data-i18n="file.effective">目前生效</span> <b id="seg-effective">—</b>
+            <span class="dot">·</span>
+            <span data-i18n="file.ramHint">記憶體</span> <b id="seg-ram">—</b>
+            <span class="d" data-i18n="file.ramExtra">（系統另計 1–2 GB）</span>
           </div>
-          <div class="row">
-            <button class="btn btn-ghost btn-sm" id="btn-vad-preview" data-i18n="file.previewRun">執行預檢</button>
-            <span class="d" data-i18n="file.preview">切分預檢（前 5 分鐘，不跑辨識）</span>
+          <div class="seg-actions">
+            <button class="btn btn-ghost btn-sm" id="btn-vad-preview" data-i18n="file.previewRun">切分預檢</button>
+            <label class="switch"><input type="checkbox" id="sw-trial"><span class="track"></span><span data-i18n="file.trial">試跑前 5 分鐘</span></label>
+            <span class="seg-verdict" id="seg-verdict" data-i18n="file.previewEmpty">尚未預檢</span>
           </div>
-          <div class="seg-verdict" id="seg-verdict" data-i18n="file.previewEmpty">尚未預檢。建議先跑一次，確認切分是否合理。</div>
-          <label class="switch"><input type="checkbox" id="sw-trial"><span class="track"></span><span data-i18n="file.trial">只試跑前 5 分鐘</span></label>
-          <div class="d" data-i18n="file.trialDesc">輸出的字幕另存為 .trial.srt，不影響正式任務。</div>
         </div>
 
         <!-- Two progress views coexist: time/segment ratio above, percentage
