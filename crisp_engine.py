@@ -32,6 +32,8 @@ import tempfile
 import threading
 from pathlib import Path
 
+import app_paths
+
 import numpy as np
 
 # 與 Qwen 路徑統一的字幕分行（字級時間軸 → 字幕行，全引擎共用）
@@ -53,10 +55,7 @@ def _opencc_config() -> str:
 # ── 共用常數 ──────────────────────────────────────────────────────────
 SAMPLE_RATE = 16000
 
-if getattr(sys, "frozen", False):
-    BASE_DIR = Path(sys.executable).parent
-else:
-    BASE_DIR = Path(__file__).parent
+BASE_DIR = app_paths.app_dir()   # user-data root; see app_paths.py
 
 # Windows：隱藏子程序主控台視窗（避免辨識時畫面閃爍）
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0

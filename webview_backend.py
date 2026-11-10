@@ -19,8 +19,12 @@ import traceback
 from pathlib import Path
 
 import app as core          # 重用 ASREngine / 常數 / 診斷函式（__main__ guard 保護）
+import app_paths
 
-BASE_DIR = Path(__file__).resolve().parent
+# Application directory for user data (settings / models / subtitles / checkpoints).
+# Deliberately not Path(__file__).parent: when frozen that points into the
+# bundled resource root (_internal/ in onedir), not beside the launcher.
+BASE_DIR = app_paths.app_dir()
 
 # ── 模型目錄：核心 → 模型 → (backend, settings patch)。──────────────────
 #   webview 自有目錄（不直接用 app._resolve_backend），因為它多了一個
@@ -1092,9 +1096,9 @@ class WebBackend:
     #   chatllm）。chatllm 的 main.exe --show_devices 未隨安裝包提供 → 改為後備：
     #   僅在 crispasr 不在、但機器上有 chatllm main.exe 時才用（向下相容）。
     def _crispasr_dir(self) -> Path:
-        # 用 core.BASE_DIR（frozen 時 = sys.executable 旁；非 webview_backend 的
-        # __file__，後者在 onefile 凍結後指向 _MEIPASS 暫存夾）→ 才找得到隨包
-        # 附帶／執行時下載到 exe 旁的 crispasr/ 核心。
+        # 用 core.BASE_DIR（frozen 时 = sys.executable 旁；別用 webview_backend 的
+        # __file__，冻结后它指向随包资源根：onefile 是 _MEIPASS 暂存夹，onedir 是
+        # _internal/）→ 才找得到随包附带／运行时下载到 exe 旁的 crispasr/ 核心。
         s = self._settings_raw()
         app_dir = getattr(core, "BASE_DIR", BASE_DIR)
         return Path(s.get("crispasr_dir", str(app_dir / "crispasr")))
@@ -1548,9 +1552,14 @@ class WebBackend:
             try:
                 if getattr(self.engine, "vad_sess", None) is not None:
                     return True
-                base = Path(getattr(core, "_MEIPASS", BASE_DIR)) if getattr(core, "_MEIPASS", None) else BASE_DIR
-                for p in (model_dir / "silero_vad_v4.onnx",
-                          BASE_DIR / "ov_models" / "silero_vad_v4.onnx"):
+                # Search the user model dir and the shipped resource root. The
+                # resource root is _internal/ in a onedir build and a temp dir in
+                # onefile; resource_path() resolves both without guessing.
+                cands = [model_dir / "silero_vad_v4.onnx",
+                         BASE_DIR / "ov_models" / "silero_vad_v4.onnx"]
+                if hasattr(core, "resource_path"):
+                    cands.append(Path(core.resource_path("ov_models", "silero_vad_v4.onnx")))
+                for p in cands:
                     if p.exists():
                         return True
             except Exception:

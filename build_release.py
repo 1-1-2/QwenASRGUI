@@ -1,4 +1,4 @@
-"""build_release.py — CI 专用：构建 WebView 单文件 EXE 并组装可直接解压运行的 ZIP 包。
+"""build_release.py — CI 专用：构建 WebView **onedir 分层**发行包（简体中文注释）。
 
 本文件为「一键发行包」改造新增，注释与产出说明统一使用简体中文。
 
@@ -7,20 +7,40 @@
 原脚本把路径写死在 ``F:\\AIStudio\\QwenASR`` 与本机 venv，GitHub Actions 上
 无法执行；更关键的是它手工列举 --add-data，遗漏了本次新增的
 ``longform_runner.py``。本项目大量模块是**函数内动态 import**（downloader、
-longform_runner、ffmpeg_utils……），PyInstaller 静态分析抓不到，靠的是把这些
-.py 用 --add-data 放进 _MEIPASS 根目录，运行时由标准 PathFinder 从那里加载。
+longform_runner、ffmpeg_utils……），PyInstaller 静态分析抓不到，只能靠
+``--hidden-import`` 或把 .py 当数据文件一起放进去，运行时由标准 PathFinder 加载。
 一旦漏列，EXE 启动时不会报错，点到对应功能才 ImportError —— 长音频模式就会
-这样静默失效。因此本脚本改为**自动扫描根目录所有 .py**，从结构上杜绝漏列。
+这样静默失效。因此本脚本**自动扫描根目录所有 .py**，从结构上杜绝漏列。
+
+为什么从 onefile 改成 onedir（Wave 3 / G2）
+------------------------------------------
+onefile 每次启动都要把约 200 MB 解压到 ``%TEMP%``，且每次更新都得整体替换。
+去掉 pythonnet（G1）之后，当年迫使 onefile 的 MOTW 失败链已经不存在，
+于是改为分层目录：
+
+    QwenASR-WebView.exe      启动器 + 运行时引导（内容稳定，SmartScreen 信誉可累积）
+    _internal/               全部依赖、原生库、Python 模块（由 PyInstaller 生成）
+    ov_models/ subtitles/ longform_state/ ffmpeg/   用户数据与外带资源
+
+用户数据一律留在 EXE 旁；只有**只读的随包资源**（models.json、前端、VAD、
+icon、prompt_template.json）放进 ``_internal/``。两者的区别由 ``app.py`` 的
+``resource_path()`` 统一表达，见 tests/test_layout.py。
+
+仍用 ``--add-data`` 把 .py 放进去而没有改用 ``--hidden-import`` 的原因：数据文件
+在 onedir 下是**实际文件**，出问题时能在 ``_internal/`` 里直接看到、比对、替换；
+``--hidden-import`` 进的是 PYZ，只能靠 pyi-archive_viewer 间接确认。代价是包里
+多存一份源码（约 1 MB），换来可自证。
 
 用法
 ----
-    python build_release.py --version 2.0.0-longform --sha abc1234
+    python build_release.py --version 2.0.0-onedir --sha abc1234
     python build_release.py --dry-run          # 只打印 PyInstaller 命令，不执行
 
 产物
 ----
-    dist/webview/QwenASR-WebView.exe
-    release_pkg/QwenASR-WebView/                 解压即用的目录
+    dist/webview/QwenASR-WebView/QwenASR-WebView.exe      PyInstaller onedir 输出
+    dist/webview/QwenASR-WebView/_internal/               分层依赖
+    release_pkg/QwenASR-WebView/                          解压即用的目录
     release_pkg/QwenASR-WebView_<ver>_windows-x64.zip
 """
 
@@ -73,7 +93,7 @@ HIDDEN_IMPORTS = [
     "crisp_engine", "subtitle_lines", "cli_mode", "version", "updater",
     "fa_aligner", "api_server", "endpoint_tab", "segno", "cf_tunnel",
     "proc_guard", "diarize", "audio_io", "processor_numpy", "downloader",
-    "ffmpeg_utils", "model_catalog", "longform_runner",
+    "ffmpeg_utils", "model_catalog", "longform_runner", "app_paths",
 ]
 
 # CPU + OpenVINO INT8 only. Exclude PyTorch / transformers, and the .NET
@@ -101,8 +121,11 @@ def py_sources() -> list[str]:
 
 
 def build_command(distpath: Path, resolve_deps: bool = True) -> list[str]:
+    # onedir: PyInstaller writes <distpath>/<APP_NAME>/ with the launcher on top
+    # and every dependency under _internal/. No --onefile: the 200 MB self
+    # extraction at every start is exactly what G2 removes.
     cmd = [sys.executable, "-m", "PyInstaller",
-           "--onefile", "--windowed", "--noconfirm",
+           "--onedir", "--windowed", "--noconfirm",
            "--name", APP_NAME,
            "--distpath", str(distpath),
            "--icon", str(ROOT / "assets/icon.ico"),
@@ -219,27 +242,48 @@ INT8 权重单份就有 1.2~4.4GB，内嵌会让安装包变成数 GB，且不�
 （1-1-2/QwenASRGUI）的 Releases 页面，不会再用上游包覆盖本版本。
 
 【目录】
-  QwenASR-WebView.exe   主程序（单文件，内含全部 Python 代码与前端资源）
+  QwenASR-WebView.exe   主程序（启动器，只负责拉起程序本体）
+  _internal\\             程序本体、依赖库与前端资源（请勿删除或单独移动）
   ffmpeg\\                可选，随附的 ffmpeg.exe
   ov_models\\             模型权重目录（首次启动时自动填充）
   subtitles\\             字幕输出目录
   longform_state\\        长音频断点与逐段记录（运行时生成）
+  settings.json          设置（运行时生成）
   build_manifest.json    本包的构建清单与依赖版本
   使用说明.txt           本文件
+
+【为什么是文件夹而不是单个 EXE】
+单文件版每次启动都要把约 200MB 解压到临时目录，更新时也要整包替换。
+分层目录版启动时不再解压，依赖稳定；你的设置、模型、字幕、断点全部留在
+上面这些顶层目录里，以后换新版只需要替换 QwenASR-WebView.exe 与
+_internal\\ 两项，其余照旧即可沿用。整个文件夹请一起移动或改名，
+不要只拷走 QwenASR-WebView.exe。
 """
+
+
+def onedir_output(distpath: Path) -> Path:
+    """PyInstaller --onedir 的产物目录：<distpath>/<APP_NAME>/。"""
+    return distpath / APP_NAME
 
 
 def make_package(version: str, sha: str, ffmpeg_exe: Path | None) -> Path:
     distpath = ROOT / "dist" / "webview"
-    exe = distpath / f"{APP_NAME}.exe"
+    produced = onedir_output(distpath)
+    exe = produced / f"{APP_NAME}.exe"
     if not exe.exists():
         raise FileNotFoundError(f"未找到构建产物：{exe}")
+    internal = produced / "_internal"
+    if not internal.is_dir():
+        raise FileNotFoundError(f"分层目录缺失：{internal}")
 
     stage = ROOT / "release_pkg" / APP_NAME
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
-    shutil.copy2(exe, stage / exe.name)
+
+    # Launcher on top, everything it needs under _internal/. Copies the whole
+    # onedir tree so a missing DLL shows up here instead of at first launch.
+    shutil.copytree(produced, stage, dirs_exist_ok=True)
 
     has_ffmpeg = False
     if ffmpeg_exe and Path(ffmpeg_exe).exists():
@@ -259,7 +303,9 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None) -> Path:
         "提交": sha,
         "构建时间": datetime.datetime.now().isoformat(timespec="seconds"),
         "平台": "windows-x64",
-        "打包方式": "PyInstaller onefile / windowed",
+        "打包方式": "PyInstaller onedir / windowed（分层：EXE 在根，依赖在 _internal/）",
+        "EXE 体积": exe.stat().st_size,
+        "_internal 体积": dir_size(internal),
         "随附 ffmpeg": has_ffmpeg,
         "随附 Python 源码": py_sources(),
         "静态资源": [src for src, _ in STATIC_DATA],
@@ -280,42 +326,44 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None) -> Path:
     return zip_path
 
 
-def verify_archive(exe: Path) -> dict:
-    """读取 PyInstaller CArchive 的目录表，确认关键动态导入模块确实进包。"""
-    required = ["longform_runner.py", "downloader.py", "ffmpeg_utils.py",
-                "model_catalog.py", "models.json",
-                "webview_assets/index.html", "ov_models/silero_vad_v4.onnx",
-                "prompt_template.json"]
-    result: dict = {"方式": "PyInstaller.archive.readers.CArchiveReader",
-                    "必需条目": required, "命中": [], "缺失": [], "状态": "未验证"}
-    try:
-        from PyInstaller.archive.readers import CArchiveReader
-        reader = CArchiveReader(str(exe))
-        toc = list(reader.toc.keys()) if hasattr(reader.toc, "keys") else list(reader.toc)
-        normalized = [str(x).replace("\\", "/") for x in toc]
-        for r in required:
-            hit = any(r in x or x.endswith(r) for x in normalized)
-            (result["命中"] if hit else result["缺失"]).append(r)
-        result["条目总数"] = len(normalized)
-        result["状态"] = "通过" if not result["缺失"] else "存在缺失"
-    except Exception as e:
-        # PyInstaller 版本差异可能让内部 API 不可用，退回官方命令行工具
-        first_err = f"{type(e).__name__}: {e}"
-        try:
-            p = subprocess.run(["pyi-archive_viewer", "-l", str(exe)],
-                               capture_output=True, text=True, timeout=120)
-            text = (p.stdout or "") + (p.stderr or "")
-            normalized = text.replace("\\", "/")
-            for r in required:
-                (result["命中"] if r in normalized else result["缺失"]).append(r)
-            result["方式"] = "pyi-archive_viewer -l"
-            result["状态"] = "通过" if not result["缺失"] else "存在缺失"
-            result["回退原因"] = first_err
-        except Exception as e2:
-            result["状态"] = (f"检查跳过（API: {first_err}；"
-                              f"命令行: {type(e2).__name__}: {e2}）")
-    return result
+def dir_size(path: Path) -> int:
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
 
+
+# Files that must exist inside the staged package for the build to be usable.
+# Paths are relative to the package root. The first entry proves the launcher
+# was produced; everything below proves the layered payload actually landed
+# under _internal/ (a onedir regression would otherwise surface as an
+# ImportError on first use, not at build time).
+REQUIRED_FILES = [
+    f"{APP_NAME}.exe",
+    "_internal/longform_runner.py",
+    "_internal/downloader.py",
+    "_internal/models.json",
+    "_internal/prompt_template.json",
+    "_internal/webview_assets/index.html",
+    "_internal/ov_models/silero_vad_v4.onnx",
+]
+
+
+def verify_onedir(stage: Path) -> dict:
+    """Assert the onedir package has a launcher plus its layered payload.
+
+    Replaces the old CArchive inspection: in onedir the payload is loose files,
+    so checking the filesystem is both simpler and stronger than parsing an
+    archive table.
+    """
+    result: dict = {"方式": "onedir 目录文件检查", "必需条目": REQUIRED_FILES,
+                    "命中": [], "缺失": [], "状态": "未验证"}
+    for rel in REQUIRED_FILES:
+        p = stage / rel
+        ok = p.is_file() and (rel.endswith(".exe") or p.stat().st_size > 0)
+        (result["命中"] if ok else result["缺失"]).append(rel)
+    internal = stage / "_internal"
+    result["_internal 文件数"] = (sum(1 for p in internal.rglob("*") if p.is_file())
+                                  if internal.is_dir() else 0)
+    result["状态"] = "通过" if not result["缺失"] else "存在缺失"
+    return result
 
 
 def _force_utf8():
@@ -360,35 +408,41 @@ def main() -> int:
         print("\n开始 PyInstaller 构建……")
         subprocess.run(cmd, check=True, cwd=str(ROOT))
 
-    exe = ROOT / "dist" / "webview" / f"{APP_NAME}.exe"
+    produced = onedir_output(ROOT / "dist" / "webview")
+    exe = produced / f"{APP_NAME}.exe"
     if not exe.exists():
         print(f"构建失败：未找到 {exe}")
         return 1
-    print(f"EXE 大小：{exe.stat().st_size / 1024 / 1024:.1f} MB")
-
-    archive = verify_archive(exe)
-    print("\n=== 包内容验证 ===")
-    print(f"  状态：{archive['状态']}  条目数：{archive.get('条目总数', '-')}")
-    if archive["缺失"]:
-        print("  缺失：", archive["缺失"])
-    if archive["命中"]:
-        print("  命中：", ", ".join(archive["命中"]))
+    print(f"启动器 EXE 大小：{exe.stat().st_size / 1024 / 1024:.1f} MB")
+    internal = produced / "_internal"
+    if internal.is_dir():
+        print(f"_internal 体积：{dir_size(internal) / 1024 / 1024:.1f} MB")
 
     ff = Path(args.ffmpeg) if args.ffmpeg else None
     zip_path = make_package(args.version, args.sha, ff)
     print(f"\n发行包：{zip_path}")
     print(f"大小：{zip_path.stat().st_size / 1024 / 1024:.1f} MB")
 
+    # 校验的是**最终要发出去的目录**，不是构建中间产物：分层漏文件只有在这里
+    # 才暴露得出来（onedir 没有 CArchive 目录表可读）。
+    verify = verify_onedir(ROOT / "release_pkg" / APP_NAME)
+    print("\n=== 包内容验证 ===")
+    print(f"  状态：{verify['状态']}  _internal 文件数：{verify['_internal 文件数']}")
+    if verify["缺失"]:
+        print("  缺失：", verify["缺失"])
+    if verify["命中"]:
+        print("  命中：", ", ".join(verify["命中"]))
+
     # 把验证结果也写进 manifest，便于 CI 断言
     stage_manifest = ROOT / "release_pkg" / APP_NAME / "build_manifest.json"
     data = json.loads(stage_manifest.read_text(encoding="utf-8"))
-    data["包内容验证"] = archive
+    data["包内容验证"] = verify
     stage_manifest.write_text(json.dumps(data, ensure_ascii=False, indent=2),
                               encoding="utf-8")
     (ROOT / "release_pkg" / "archive_verify.json").write_text(
-        json.dumps(archive, ensure_ascii=False, indent=2), encoding="utf-8")
+        json.dumps(verify, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    if archive["缺失"] and archive["状态"] == "存在缺失":
+    if verify["缺失"]:
         print("包内容存在缺失，构建判为失败")
         return 1
     return 0

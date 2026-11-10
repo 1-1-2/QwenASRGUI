@@ -16,6 +16,8 @@ import threading
 import tempfile
 import zipfile
 from pathlib import Path
+
+import app_paths
 from typing import Callable
 
 import customtkinter as ctk
@@ -49,10 +51,7 @@ def find_ffmpeg() -> Path | None:
         return Path(which)
 
     # 2. App 目錄下的 ffmpeg/ 子目錄（EXE 模式 or 原始碼模式）
-    if getattr(sys, "frozen", False):
-        base = Path(sys.executable).parent
-    else:
-        base = Path(__file__).parent
+    base = app_paths.app_dir()
     local = base / "ffmpeg" / "ffmpeg.exe"
     if local.exists():
         return local
@@ -71,11 +70,7 @@ def find_ffmpeg() -> Path | None:
 
 def get_default_ffmpeg_dest() -> Path:
     """回傳下載後的儲存目錄（<app_dir>/ffmpeg/ffmpeg.exe）。"""
-    if getattr(sys, "frozen", False):
-        base = Path(sys.executable).parent
-    else:
-        base = Path(__file__).parent
-    return base / "ffmpeg"
+    return app_paths.app_dir() / "ffmpeg"
 
 
 # ── 音訊提取 ──────────────────────────────────────────────────────────

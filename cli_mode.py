@@ -303,8 +303,8 @@ def cmd_status(args) -> int:
                        "items": [{"label": i["label"], "status": i["status"]}
                                  for i in c["items"]]}
                       for c in health.get("cores", [])],
-            # 路徑診斷：模型下載到哪、設定從哪讀。凍結成 EXE 後這幾條路徑最容易
-            # 與預期不符（BASE_DIR vs _MEIPASS），沒有它就只能猜。
+            # 路径诊断：模型下载到哪、设定从哪读。冻结后的路径最容易与预期不符
+            # （用户数据在启动器旁 vs 随包资源在 _internal/），没有它就只能猜。
             "paths": {
                 "settings":     str(_ORIG_SETTINGS or getattr(core, "SETTINGS_FILE", "")),
                 "settingsInUse": str(getattr(core, "SETTINGS_FILE", "")),

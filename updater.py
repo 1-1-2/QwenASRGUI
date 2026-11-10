@@ -29,6 +29,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+import app_paths
+
 import urllib.error
 import urllib.request
 
@@ -70,17 +72,15 @@ _UA = "Mozilla/5.0 (compatible; QwenASR-updater)"
 def is_frozen() -> bool:
     """是否為 PyInstaller 凍結的 EXE（只有凍結版才能自我更新）。
 
-    同時檢查 sys.frozen 與 sys._MEIPASS：正常凍結版兩者皆有，加 _MEIPASS
-    作為防禦，避免極少數環境 sys.frozen 未設時誤判為開發模式。
+    Both onefile and onedir builds set sys.frozen; _MEIPASS is kept as a
+    defensive fallback for the rare case where the bootloader skips it.
     """
-    return bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
+    return app_paths.is_frozen() or hasattr(sys, "_MEIPASS")
 
 
 def install_dir() -> Path:
-    """回傳安裝根目錄（凍結版＝EXE 所在資料夾）。"""
-    if is_frozen():
-        return Path(sys.executable).parent
-    return Path(__file__).parent
+    """安裝根目錄（凍結版＝啟動器所在資料夾；onedir 下即 _internal/ 的上一層）。"""
+    return app_paths.app_dir()
 
 
 def exe_name() -> str:

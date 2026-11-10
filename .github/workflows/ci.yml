@@ -94,7 +94,8 @@ jobs:
             tests/test_integration.py tests/test_wave1.py \
             tests/test_wave15.py tests/test_wave2.py \
             app_webview.py build_release.py version.py tests/test_wave34.py \
-            tests/test_postprocess.py postprocess.py
+            tests/test_postprocess.py postprocess.py app_paths.py \
+            tests/test_layout.py
 
       - name: Frontend syntax check
         run: |
@@ -110,6 +111,11 @@ jobs:
       - name: Wave 2 regression (catalog / L1 download / L2 manifest)
         # Local HTTP server only; never touches Hugging Face or model weights.
         run: python tests/test_wave2.py
+
+      - name: Wave 3 regression (onedir layered path resolution)
+        # Fakes sys.frozen/_MEIPASS and rebuilds the three layouts; asserts user
+        # data stays beside the launcher and shipped resources under _internal/.
+        run: python tests/test_layout.py
 
       - name: Wave 3/4 regression (window / persistence / live subtitles)
         # Pure static + mock Runner checks; no GUI, no .NET, no model weights.

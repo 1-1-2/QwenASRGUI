@@ -17,6 +17,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import app_paths
+
+import sys as _sys
+
 
 def _ssl_ctx() -> ssl.SSLContext:
     """建立 SSL Context，優先序：certifi bundle → 系統預設 → 不驗證（fallback）。
@@ -42,12 +46,11 @@ def _ssl_ctx() -> ssl.SSLContext:
     ctx.verify_mode    = ssl.CERT_NONE
     return ctx
 
-# ── 路徑（PyInstaller 凍結時指向 EXE 旁邊）────────────────────────────
-import sys as _sys
-if getattr(_sys, "frozen", False):
-    BASE_DIR = Path(_sys.executable).parent
-else:
-    BASE_DIR = Path(__file__).parent
+# ── 路徑 ─────────────────────────────────────────────────────────────
+# User data (downloaded weights, ffmpeg, crispasr) goes beside the launcher;
+# shared rule in app_paths.py. Never use __file__ here: in a frozen build it
+# points into _internal/ and downloads would be wiped by the next update.
+BASE_DIR = app_paths.app_dir()
 
 _DEFAULT_MODEL_DIR = BASE_DIR / "ov_models"
 

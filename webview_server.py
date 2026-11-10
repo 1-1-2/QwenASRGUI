@@ -31,22 +31,24 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+import app_paths
 from webview_backend import WebBackend
 
 
 def resolve_web_dir() -> Path:
-    """前端資產目錄：原始碼用專案 webview/；PyInstaller 凍結時用 _MEIPASS。
+    """Directory holding the front-end assets (index.html and friends).
 
-    凍結時刻意放在 `webview_assets/`，避免與 pywebview 套件本身的
-    `webview/` 目錄在 _internal/ 撞名混在一起（兩者皆名為 webview）。
+    Source tree: the repository's ``webview/``. Frozen: the assets are shipped
+    as ``webview_assets/`` inside the resource root (``_internal/`` in a onedir
+    build, the _MEIPASS temp dir in onefile). The rename is deliberate - the
+    pywebview package also owns a top-level ``webview/`` directory.
     """
-    if getattr(sys, "frozen", False):
-        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-        for name in ("webview_assets", "webview"):     # 優先乾淨的 webview_assets
-            d = base / name
-            if (d / "index.html").is_file():
-                return d
-        return base / "webview_assets"
+    for name in ("webview_assets", "webview"):
+        d = app_paths.resource_path(name)
+        if (d / "index.html").is_file():
+            return d
+    if app_paths.is_frozen():
+        return app_paths.resource_root() / "webview_assets"
     return Path(__file__).resolve().parent / "webview"
 
 

@@ -76,6 +76,9 @@ download_test_audio.py
 quantize_cpu.py
 REQ.txt
 setup.iss
+# tests/ 是回归测试的正规位置，不能跟着上面一条被忽略——否则新增的
+# tests/test_*.py 会被静默漏提交，CI 直接报「文件不存在」。
+!tests/test_*.py
 
 # ── 測試音檔 ─────────────────────────────────────────
 test_audio/

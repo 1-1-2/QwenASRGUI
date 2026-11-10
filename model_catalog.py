@@ -18,6 +18,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import app_paths
+
 _CATALOG_NAME = "models.json"
 _LFS_MAGIC = b"version https://git-lfs.github.com/spec/v1"
 _HTML_MAGICS = (b"<!doctype html", b"<html", b"<!DOCTYPE HTML")
@@ -37,23 +39,16 @@ class CatalogError(Exception):
 def catalog_path() -> Path:
     """Locate models.json.
 
-    In a PyInstaller onefile build, ``--add-data`` lands inside ``_MEIPASS``,
-    not next to the EXE. Both locations are checked so the catalog also works
-    in a future onedir layout where data files live beside the executable.
+    The catalog is a shipped read-only resource, so it resolves through
+    ``app_paths``: source tree in development, ``_internal/`` in a onedir
+    build, the _MEIPASS temp dir in onefile. A copy beside the launcher wins
+    over the bundled one - that is how a user repairs or overrides the
+    catalog without rebuilding (and how pre-G2 packages were laid out).
     """
-    import sys
-    if getattr(sys, "frozen", False):
-        candidates = []
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            candidates.append(Path(meipass) / _CATALOG_NAME)
-        candidates.append(Path(sys.executable).parent / _CATALOG_NAME)
-    else:
-        candidates = [Path(__file__).parent / _CATALOG_NAME]
-    for p in candidates:
-        if p.is_file():
-            return p
-    return candidates[0]
+    beside = app_paths.app_dir() / _CATALOG_NAME
+    if beside.is_file():
+        return beside
+    return app_paths.resource_path(_CATALOG_NAME)
 
 
 def load_catalog(path: Path | str | None = None, refresh: bool = False) -> dict:

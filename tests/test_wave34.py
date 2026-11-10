@@ -119,8 +119,12 @@ def main() -> int:
     r.check("HIDDEN_IMPORTS still includes model_catalog",
             '"model_catalog"' in br)
     r.check("models.json is packaged", '("models.json", ".")' in br)
-    r.check("CArchive verification includes models.json", '"models.json"' in br and
-            'required = [' in br)
+    # G2: onefile -> onedir layered layout. The build must ask PyInstaller for
+    # --onedir and verify the staged payload, not parse a CArchive table.
+    r.check("build uses --onedir and not --onefile",
+            '"--onedir"' in br and '"--onefile"' not in br)
+    r.check("verification checks the layered payload", "_internal/models.json" in br and
+            "def verify_onedir(" in br)
 
     print("\n[Wave 3 / G1] release notes reflect the new behaviour")
     import build_release as build_mod

@@ -23,6 +23,8 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import app_paths
+
 import numpy as np
 
 # ── 輸出語系旗標（由 app.py / app-gpu.py 切換時同步設定）──────────────
@@ -46,10 +48,7 @@ MAX_CHARS     = 20
 MIN_SUB_SEC   = 0.6
 GAP_SEC       = 0.08
 
-if getattr(sys, "frozen", False):
-    BASE_DIR = Path(sys.executable).parent
-else:
-    BASE_DIR = Path(__file__).parent
+BASE_DIR = app_paths.app_dir()   # user-data root; see app_paths.py
 
 # Windows 旗標：建立子程序時不彈出主控台視窗（防止辨識時畫面閃爍）
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0

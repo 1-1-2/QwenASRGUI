@@ -2,8 +2,9 @@ name: Build Windows Release
 
 # Comments are in English per the repository language convention.
 #
-# Output: a ZIP that runs after extraction, currently containing the onefile
-# QwenASR-WebView.exe (the packaging layout will change in Wave 3).
+# Output: a ZIP that runs after extraction, laid out as onedir (Wave 3 / G2):
+# QwenASR-WebView.exe on top plus _internal/ holding every dependency. The
+# launcher no longer unpacks ~200 MB to %TEMP% on each start.
 #
 # Triggers:
 #   - Manual "Run workflow" uploads an Actions artifact; optionally create a
@@ -128,6 +129,7 @@ jobs:
             python tests/test_wave1.py
             python tests/test_wave15.py
             python tests/test_wave2.py
+            python tests/test_layout.py
             python tests/test_integration.py
             python tests/test_longform_runner.py --minutes 0.5 --skip-ffmpeg \
               --real-vad ov_models/silero_vad_v4.onnx
@@ -158,7 +160,7 @@ jobs:
             echo "No bundled ffmpeg.exe (WAV unaffected; video triggers auto-download)"
           fi
 
-      - name: Build EXE and assemble the distribution ZIP
+      - name: Build onedir package and assemble the distribution ZIP
         shell: bash
         run: |
           set +e
@@ -178,9 +180,9 @@ jobs:
           exit "$code"
 
       - name: Verify package contents
-        # Critical: confirm longform_runner and dynamically imported modules are
-        # actually inside the EXE, otherwise startup succeeds but long-audio
-        # mode fails with ImportError on first use.
+        # Critical: confirm the launcher and its _internal/ payload are both in
+        # the staged folder. In onedir a missing module fails at first use, not
+        # at startup, so this is the build's hard gate.
         shell: bash
         run: |
           set +e

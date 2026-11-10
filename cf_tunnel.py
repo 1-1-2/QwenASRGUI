@@ -23,6 +23,8 @@ import threading
 import urllib.request
 from pathlib import Path
 
+import app_paths
+
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 _CF_URL = ("https://github.com/cloudflare/cloudflared/releases/latest/"
            "download/cloudflared-windows-amd64.exe")
@@ -30,9 +32,7 @@ _TRYCF_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 
 
 def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent
+    return app_paths.app_dir()
 
 
 def find_cloudflared() -> Path | None:

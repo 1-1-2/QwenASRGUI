@@ -69,6 +69,7 @@ from subtitle_lines import (
     write_transcript,
 )
 import subtitle_lines as _subs
+import app_paths                 # path rules shared by every module (see app_paths.py)
 
 def _resolve_backend(core: str, model_label: str):
     """(核心, 模型標籤) → (backend, 量化/尺寸)。三層選擇的中央映射。
@@ -107,15 +108,13 @@ def _ui_core_model(settings: dict):
     return "Qwen", ("Qwen3-ASR-1.7B INT8" if "1.7B" in sz else "Qwen3-ASR-0.6B")
 
 # ── 路徑 ──────────────────────────────────────────────
-# PyInstaller 凍結時，模型應放在 EXE 旁邊（非 _internal/）
-if getattr(sys, "frozen", False):
-    BASE_DIR = Path(sys.executable).parent
-else:
-    BASE_DIR = Path(__file__).parent
-# PyInstaller onefile 解壓的暫存資源根（_MEIPASS）：--add-data 進來的檔案在這裡，
-# 不在 EXE 旁。隨包附帶的小檔（如 silero_vad_v4.onnx）要從這裡找得到，否則凍結後
-# 在 BASE_DIR（EXE 旁）找不到 → VAD 載入失敗、模型永遠停在「載入 VAD…」。
-_MEIPASS_DIR = Path(getattr(sys, "_MEIPASS", "")) if getattr(sys, "frozen", False) else None
+# 規則只有一條，集中在 app_paths.py：使用者資料（設定、模型、字幕、斷點）一律放
+# 啟動器旁邊，隨包唯讀資源走 resource_root()。凍結後 __file__ 落在 _internal/
+# （onedir）或解壓暫存夾（onefile），**不能**再用 __file__ 當應用目錄，否則設定與
+# 模型會被寫進 _internal/，下次更新就沒了。
+BASE_DIR = app_paths.app_dir()
+resource_path = app_paths.resource_path
+user_path = app_paths.user_path
 _DEFAULT_MODEL_DIR = BASE_DIR / "ov_models"
 SETTINGS_FILE      = BASE_DIR / "settings.json"
 SRT_DIR            = BASE_DIR / "subtitles"
@@ -130,7 +129,7 @@ _BIN_PATH          = next(
 )
 SRT_DIR.mkdir(exist_ok=True)
 
-# ── 常數 ────────# 常數
+# ── 常數 ──────────────────────────────────────
 SAMPLE_RATE   = 16000
 VAD_CHUNK     = 512
 VAD_THRESHOLD = 0.5   # 可由設定頁調整（降低可減少掴字）
@@ -312,10 +311,11 @@ def _assign_ts(lines: list[str], g0: float, g1: float) -> list[tuple[float, floa
 
 
 def _find_vad_model(model_dir: Path | None = None) -> Path | None:
-    """尋找 Silero VAD ONNX：指定 model_dir → ov_models/ → GPUModel/ → _MEIPASS（打包）。
+    """尋找 Silero VAD ONNX：指定 model_dir → ov_models/ → GPUModel/ → 隨包資源。
 
-    凍結後隨包附帶的 silero_vad_v4.onnx 位於 _MEIPASS/ov_models（--add-data），
-    故必須把它納入搜尋，否則在 EXE 旁的 ov_models/ 找不到 → VAD 載入卡死。
+    隨包附帶的 silero_vad_v4.onnx 由 ``--add-data`` 放進 _internal/（onedir）或
+    _MEIPASS 暫存夾（onefile），因此經 ``resource_path()`` 查找；否則在使用者
+    EXE 旁的 ov_models/ 找不到 → VAD 載入卡死。
     """
     candidates: list[Path] = []
     if model_dir is not None:
@@ -326,10 +326,9 @@ def _find_vad_model(model_dir: Path | None = None) -> Path | None:
         GPU_MODEL_DIR / "silero_vad_v4.onnx",
         _DEFAULT_MODEL_DIR / "silero_vad.onnx",
         GPU_MODEL_DIR / "silero_vad.onnx",
+        resource_path("ov_models", "silero_vad_v4.onnx"),
+        resource_path("silero_vad_v4.onnx"),
     ]
-    if _MEIPASS_DIR is not None:
-        candidates += [_MEIPASS_DIR / "ov_models" / "silero_vad_v4.onnx",
-                       _MEIPASS_DIR / "silero_vad_v4.onnx"]
     for p in candidates:
         if p.exists():
             return p

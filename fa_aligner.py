@@ -15,6 +15,8 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+
+import app_paths
 from typing import Callable
 
 # chatllm 來源檔名沿用上游拼字（foced 非 forced），與 downloader 一致。
@@ -34,10 +36,8 @@ def _startup_info():
 
 
 def _base_dir() -> Path:
-    """App 根目錄（凍結時為 EXE 旁，否則為原始碼目錄）。"""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).parent
+    """App 根目錄（凍結時為啟動器旁，否則為原始碼目錄）。見 app_paths.py。"""
+    return app_paths.app_dir()
 
 
 def find_chatllm_dir() -> Path | None:

@@ -24,6 +24,8 @@ import json
 import numpy as np
 from pathlib import Path
 
+import app_paths
+
 # ══════════════════════════════════════════════════════════════════════
 # Mel 特徵提取（對齊 WhisperFeatureExtractor）
 # ══════════════════════════════════════════════════════════════════════
@@ -60,7 +62,9 @@ def _load_mel_filters(model_dir: Path | None = None) -> np.ndarray:
     if model_dir is not None:
         candidates.append(model_dir.parent / "mel_filters.npy")  # ov_models/mel_filters.npy
         candidates.append(model_dir / "mel_filters.npy")
-    candidates.append(Path(__file__).parent / "ov_models" / "mel_filters.npy")
+    # Shipped resource: beside the launcher in a source tree, under _internal/
+    # (_MEIPASS) when frozen.
+    candidates.append(app_paths.resource_path("ov_models", "mel_filters.npy"))
 
     for p in candidates:
         if p.exists():
@@ -204,7 +208,8 @@ class LightProcessor:
         if not tpl_path.exists():
             tpl_path = model_dir.parent.parent / "prompt_template.json"
         if not tpl_path.exists():
-            tpl_path = Path(__file__).parent / "prompt_template.json"
+            # Shipped resource, mirrors mel_filters.npy lookup above.
+            tpl_path = app_paths.resource_path("prompt_template.json")
         with open(tpl_path, "r", encoding="utf-8") as f:
             tpl = json.load(f)
 

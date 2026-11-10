@@ -28,6 +28,7 @@ import webbrowser
 from ctypes import wintypes
 from pathlib import Path
 
+import app_paths
 from proc_guard import setup_kill_on_close_job
 from webview_server import WebViewServer
 
@@ -161,16 +162,11 @@ def set_app_user_model_id():
 
 
 def _resolve_icon_path() -> Path | None:
-    """找出 icon.ico：開發模式在 assets/；凍結模式在 _MEIPASS／exe 旁。"""
-    cands = []
-    if getattr(sys, "frozen", False):
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            cands.append(Path(meipass) / "icon.ico")
-        cands.append(Path(sys.executable).parent / "icon.ico")
-    cands.append(Path(__file__).resolve().parent / "assets" / "icon.ico")
-    for c in cands:
-        if c and c.exists():
+    """Find icon.ico: assets/ in a source tree, resource root when frozen."""
+    for c in (app_paths.resource_path("icon.ico"),
+              app_paths.resource_path("assets", "icon.ico"),
+              Path(__file__).resolve().parent / "assets" / "icon.ico"):
+        if c.exists():
             return c
     return None
 
