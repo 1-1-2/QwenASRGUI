@@ -1,0 +1,43 @@
+name: 长音频流式方案 CI
+
+# 本工作流为长音频改造新增，注释统一使用简体中文。
+# 只跑调度层的回归测试：不需要 OpenVINO 权重，也不需要 Windows WebView2。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  longform-test:
+    name: 长音频流式 Runner 回归测试
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装最小依赖
+        # 测试只用到 numpy；ffmpeg 由 ubuntu-latest 镜像自带
+        run: python -m pip install --upgrade pip numpy
+
+      - name: 语法检查
+        run: |
+          python -m compileall -q \
+            longform_runner.py webview_backend.py cli_mode.py \
+            tests/make_fixture.py tests/test_longform_runner.py tests/test_integration.py
+
+      - name: 生成几分钟的公开测试音频
+        # 素材已随仓库提交，离线拼接，不联网、不需要 token
+        run: python tests/make_fixture.py --minutes 4.9
+
+      - name: 运行后端集成测试
+        run: python tests/test_integration.py
+
+      - name: 运行长音频流式测试（含真实 ffmpeg 流式解码）
+        run: python tests/test_longform_runner.py --minutes 4.9

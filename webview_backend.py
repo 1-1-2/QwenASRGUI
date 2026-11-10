@@ -12,6 +12,7 @@ ASREngine。不依賴 pywebview，也不依賴 HTTP —— 可被 webview_server
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import traceback
@@ -238,6 +239,7 @@ class WebBackend:
         self._load_err = None
         self._loading = False
         self._cancel = False
+        self._cancel_event = threading.Event()   # 长音频 Runner 使用的可等待取消信号
         self._server = None              # api_server.TranscribeServer（LAN 端點）
         self._tunnel = None              # cf_tunnel.CloudflareTunnel（對外臨時網址，延遲建立）
         self._on_event = on_event
@@ -583,6 +585,7 @@ class WebBackend:
         if not path or not Path(path).exists():
             raise RuntimeError("找不到音訊檔。")
         self._cancel = False
+        self._cancel_event.clear()   # 每次转写前复位，避免上次的取消影响本轮
 
         def _cb(i, total, msg):
             if progress_cb:
@@ -604,8 +607,27 @@ class WebBackend:
                 extract_audio_to_wav(audio_path, wav, ff)
                 audio_path, tmp_extra = wav, wav
 
-            want_align = bool(opts.get("align", True))
-            want_diar = bool(opts.get("diarize"))
+            # ── 新增（简体）：判定是否走长音频流式路径 ──────────────────────
+            # 原 process_file() 会整段加载音频、末尾一次性写盘，1 小时以上容易卡死
+            # 且崩溃即全部丢失。这里按「音频时长 ≥ 阈值」自动切换为流式路径；
+            # 也可用 opts["longform"] 或 CLI --longform 强制开启。
+            # 阈值来自 settings 的 longform_minutes，默认 20 分钟。
+            from longform_runner import probe_duration
+            _ff = str(self._resolve_ffmpeg() or "ffmpeg")
+            _duration = probe_duration(audio_path, _ff)
+            try:
+                _threshold_min = float(self._settings_raw().get("longform_minutes", 20) or 20)
+            except Exception:
+                _threshold_min = 20.0
+            use_longform = bool(opts.get("longform")) or (
+                _duration is not None and _duration >= _threshold_min * 60)
+            if use_longform:
+                self._emit("progress", {"pct": 0,
+                    "status": f"长音频流式模式（{(_duration or 0)/60:.0f} 分钟）：分段增量落盘，可断点续跑"})
+
+            # 流式路径暂不支持词级对齐 / 说话人分离，跳过对应模型下载以节省时间
+            want_align = False if use_longform else bool(opts.get("align", True))
+            want_diar = False if use_longform else bool(opts.get("diarize"))
 
             # ── 時間軸對齊（FA）：缺模型則按需下載（移植自 app.py 的協調層）──
             if want_align:
@@ -654,16 +676,52 @@ class WebBackend:
                     self.engine._last_segments_rich = None
                 except Exception:
                     pass
-                srt = self.engine.process_file(
-                    audio_path,
-                    progress_cb=_cb,
-                    language=_lang,
-                    context=(opts.get("hint") or "").strip() or None,
-                    diarize=want_diar,
-                    n_speakers=n_speakers,
-                    original_path=out_ref,
-                    out_format="srt",
-                )
+
+                if use_longform:
+                    # ── 新增（简体）：长音频流式路径 ──────────────────────
+                    # 单 worker 串行；ASREngine.transcribe() 自带互斥锁，多线程
+                    # 只会排队，多进程则各载一套 IR 反而放大内存与锯齿。
+                    from longform_runner import LongformRunner
+
+                    def _splitter(text, t0, t1):
+                        # 复用原版断句与时间轴分配，字幕质量与 process_file 一致
+                        return core._assign_ts(core._split_to_lines(text), t0, t1)
+
+                    task_id = hashlib.sha1(
+                        str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
+                    runner = LongformRunner(
+                        engine=self.engine,
+                        vad_sess=getattr(self.engine, "vad_sess", None),
+                        out_srt=out_ref.with_suffix(".srt"),
+                        work_dir=BASE_DIR / "longform_state",
+                        ffmpeg=_ff,
+                        progress_cb=progress_cb,   # Runner 用 (pct,status)，与原契约一致
+                        cancel=self._cancel_event,
+                        language=_lang,
+                        context=(opts.get("hint") or "").strip() or None,
+                        line_splitter=_splitter,
+                        task_id=task_id,
+                        max_chunk_secs=int(getattr(self.engine, "max_chunk_secs", 30)),
+                        vad_threshold=float(self._settings_raw().get("vad_threshold", 0.5) or 0.5),
+                    )
+                    result = runner.run(
+                        audio_path, total_sec=_duration,
+                        resume=bool(opts.get("longform_resume", True)))
+                    if result["status"] == "paused":
+                        raise RuntimeError(
+                            "已取消；已完成字幕已保存，再次启动同一文件可从断点续跑。")
+                    srt = runner.out_srt
+                else:
+                    srt = self.engine.process_file(
+                        audio_path,
+                        progress_cb=_cb,
+                        language=_lang,
+                        context=(opts.get("hint") or "").strip() or None,
+                        diarize=want_diar,
+                        n_speakers=n_speakers,
+                        original_path=out_ref,
+                        out_format="srt",
+                    )
         finally:
             if tmp_extra:
                 try:
@@ -788,6 +846,7 @@ class WebBackend:
 
     def cancel(self):
         self._cancel = True
+        self._cancel_event.set()   # 同步通知长音频流式 Runner，使其保存断点后退出
         return True
 
     def open_output_dir(self) -> bool:

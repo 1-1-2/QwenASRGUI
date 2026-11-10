@@ -356,6 +356,42 @@ ov_models/              # OpenVINO 模型 / VAD / Qwen GGUF / 說話者分離 ON
 
 ---
 
+## 长音频流式模式（新增，简体中文）
+
+> 本节为长音频改造新增，完整说明见 [`docs/长音频流式方案.md`](docs/长音频流式方案.md)。
+
+面向 1~5 小时的网课 / 会议录音。原实现会把整段音频读进内存、末尾一次性写盘，
+容易卡死且中途崩溃会丢失全部结果。改造后：
+
+- **流式读取**：ffmpeg 输出 16k/mono PCM，滚动缓冲只保留当前语音组，内存峰值与文件长度无关
+- **增量落盘**：每完成一个语音组立刻追加写 SRT 与 JSONL
+- **断点续跑**：相同文件再次开始自动从断点继续；取消也会保存已完成字幕
+- **自动启用**：音频时长 ≥ `longform_minutes`（默认 20 分钟）自动切换，无需改前端
+
+命令行可强制启用或重跑：
+
+```bash
+QwenASR-WebView.exe transcribe course.mp4 --longform --json
+QwenASR-WebView.exe transcribe course.mp4 --longform --no-resume -o course.srt
+```
+
+流式模式暂不支持词级时间轴（卡拉OK 逐字）、说话人分离与 ForcedAligner 精确对齐，
+这三项会回退为行级字幕；短音频（< 20 分钟）仍走原路径，功能不变。
+
+回归测试（不需要模型权重）：
+
+```bash
+python tests/make_fixture.py --minutes 4.9     # 离线生成几分钟测试音频
+python tests/test_integration.py               # 后端接线
+python tests/test_longform_runner.py            # 流式 Runner
+```
+
+测试音频由 5 段公开短音频离线拼接而成，来源与许可见
+[`tests/fixtures/SOURCES.md`](tests/fixtures/SOURCES.md)；仅用于调试管线，
+不是准确率评测集。
+
+---
+
 ## 授權
 
 本專案程式碼以 **MIT** 授權釋出。模型權重與第三方預編譯二進位依各自來源的授權條款。
