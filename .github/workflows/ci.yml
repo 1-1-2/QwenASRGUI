@@ -26,6 +26,11 @@ jobs:
         # 测试只用到 numpy；ffmpeg 由 ubuntu-latest 镜像自带
         run: python -m pip install --upgrade pip numpy
 
+      - name: 打印运行环境
+        run: |
+          python -c "import sys; print('Python', sys.version)"
+          ffmpeg -version 2>&1 | head -1
+
       - name: 语法检查
         run: |
           python -m compileall -q \
@@ -37,7 +42,14 @@ jobs:
         run: python tests/make_fixture.py --minutes 4.9
 
       - name: 运行后端集成测试
-        run: python tests/test_integration.py
+        run: |
+          set +e
+          python tests/test_integration.py 2>&1 | tee /tmp/integration.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            while IFS= read -r line; do echo "::error::$line"; done < /tmp/integration.log
+          fi
+          exit "$code"
 
       - name: 运行长音频流式测试（含真实 ffmpeg 流式解码）
         run: python tests/test_longform_runner.py --minutes 4.9
