@@ -54,23 +54,17 @@ jobs:
       - name: 计算版本号与提交短码
         id: ver
         shell: bash
-        run: |
-          python - <<'PY'
-          import os, re
-          src = open('version.py', encoding='utf-8').read()
-          m = re.search(r'^__version__\s*=\s*["\']([^"\']+)', src, re.M)
-          base = m.group(1) if m else '2.0.0'
-          sha = os.environ.get('GITHUB_SHA', 'local')[:7]
-          suffix = os.environ.get('INPUT_VERSION_SUFFIX', '').strip()
-          version = suffix if suffix else f'{base}-longform.{sha}'
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
-              f.write(f'version={version}\n')
-              f.write(f'sha={sha}\n')
-              f.write(f'base={base}\n')
-          print(f'版本：{version}  提交：{sha}')
-          PY
         env:
           INPUT_VERSION_SUFFIX: ${{ inputs.version_suffix }}
+        run: |
+          set +e
+          python tools/resolve_version.py > /tmp/ver.log 2>&1
+          code=$?
+          cat /tmp/ver.log
+          if [ "$code" -ne 0 ]; then
+            echo "::error title=version-log-b64::$(base64 -w0 /tmp/ver.log)"
+          fi
+          exit "$code"
 
       - name: 安装运行与构建依赖
         # requirements.txt 只列了运行期最小集合；WebView 打包还需要下列包
@@ -84,20 +78,10 @@ jobs:
             soxr soundfile kaldi-native-fbank scipy tokenizers \
             bottle proxy_tools
 
-      - name: 打印依赖版本
+      - name: 确认依赖就绪且无 PyTorch
         shell: bash
         run: |
-          python - <<'PY'
-          import importlib
-          for mod in ['PyInstaller','openvino','onnxruntime','numpy','webview',
-                      'opencc','kaldi_native_fbank','customtkinter']:
-              try:
-                  m = importlib.import_module(mod)
-                  print(f'  {mod:<24} {getattr(m, "__version__", "未知")}')
-              except Exception as e:
-                  print(f'  {mod:<24} 导入失败：{type(e).__name__}: {e}')
-          PY
-          echo "---- 确认未安装 PyTorch ----"
+          python -c "import PyInstaller, openvino, onnxruntime, numpy, webview, opencc, kaldi_native_fbank, customtkinter; print('运行与构建依赖全部就绪')"
           python -c "import importlib.util as u; print('torch 存在：', u.find_spec('torch') is not None)"
 
       - name: 确认随包的 Silero VAD 模型
@@ -141,38 +125,35 @@ jobs:
       - name: 构建 EXE 并组装发行 ZIP
         shell: bash
         run: |
+          set +e
           FF_ARG=""
           if [ "${{ steps.ff.outputs.has }}" = "true" ]; then
             FF_ARG="--ffmpeg ffmpeg/ffmpeg.exe"
           fi
           python build_release.py \
             --version "${{ steps.ver.outputs.version }}" \
-            --sha "${{ steps.ver.outputs.sha }}" $FF_ARG
+            --sha "${{ steps.ver.outputs.sha }}" $FF_ARG > /tmp/build.log 2>&1
+          code=$?
+          tail -120 /tmp/build.log
+          if [ "$code" -ne 0 ]; then
+            tail -200 /tmp/build.log > /tmp/build_tail.log
+            echo "::error title=build-log-b64::$(base64 -w0 /tmp/build_tail.log)"
+          fi
+          exit "$code"
 
       - name: 校验发行包内容
         # 重点确认长音频模块与动态 import 的模块确实进了 EXE，
         # 否则程序启动正常、点到长音频才报 ImportError。
         shell: bash
         run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          v = json.loads(Path('release_pkg/archive_verify.json').read_text(encoding='utf-8'))
-          print('包内容验证状态：', v['状态'])
-          print('命中：', v['命中'])
-          print('缺失：', v['缺失'])
-          assert v['状态'] in ('通过', '存在缺失'), \
-              f"包内容验证未能执行（PyInstaller 工具不可用）：{v['状态']}"
-          assert not v['缺失'], f"EXE 内缺少关键模块：{v['缺失']}"
-          m = json.loads(Path('release_pkg/QwenASR-WebView/build_manifest.json').read_text(encoding='utf-8'))
-          assert 'longform_runner.py' in m['随附 Python 源码'], '构建清单缺少 longform_runner.py'
-          zips = list(Path('release_pkg').glob('*.zip'))
-          assert len(zips) == 1, f'期望 1 个 ZIP，实际 {len(zips)}'
-          exe = Path('dist/webview/QwenASR-WebView.exe')
-          assert exe.stat().st_size > 20 * 1024 * 1024, 'EXE 体积异常，疑似构建不完整'
-          print(f'ZIP：{zips[0].name}  {zips[0].stat().st_size/1024/1024:.1f} MB')
-          print(f'EXE：{exe.stat().st_size/1024/1024:.1f} MB')
-          PY
+          set +e
+          python tools/verify_package.py > /tmp/verify.log 2>&1
+          code=$?
+          cat /tmp/verify.log
+          if [ "$code" -ne 0 ]; then
+            echo "::error title=verify-log-b64::$(base64 -w0 /tmp/verify.log)"
+          fi
+          exit "$code"
 
       - name: 上传构建工件
         uses: actions/upload-artifact@v4
