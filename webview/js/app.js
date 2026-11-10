@@ -247,15 +247,18 @@
   // mode word-level alignment and diarization are unavailable, so disable the
   // switches instead of silently ignoring checked boxes.
   API.on("capabilities", (cap) => {
-    // A single streaming pipeline supplies every input; word-level alignment
-    // and diarization are not available on it yet.
-    ["#sw-align", "#sw-diar"].forEach((sel) => {
-      const el = $(sel);
-      if (!el) return;
-      el.disabled = true;
-      const lab = el.closest("label");
-      if (lab) lab.style.opacity = "0.45";
-    });
+    // Word timing and speaker labels are optional post-processing, not
+    // discarded features. Only grey a switch when its model is genuinely
+    // absent; an omitted field leaves the control untouched (no "undefined").
+    [["#sw-align", cap.alignAvailable], ["#sw-diar", cap.diarAvailable]]
+      .forEach(([sel, available]) => {
+        const el = $(sel);
+        if (!el || available === undefined) return;
+        el.disabled = !available;
+        const lab = el.closest("label");
+        if (lab) lab.style.opacity = available ? "" : "0.45";
+        if (!available) lab.title = I18N.t("file.enrichMissing");
+      });
     // Text is a data-i18n node so it follows later language switches; the
     // event only controls visibility (I18N.apply() refreshes the wording).
     const note = $("#cap-note");

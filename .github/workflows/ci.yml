@@ -93,7 +93,8 @@ jobs:
             tests/make_fixture.py tests/test_longform_runner.py \
             tests/test_integration.py tests/test_wave1.py \
             tests/test_wave15.py tests/test_wave2.py \
-            app_webview.py build_release.py version.py tests/test_wave34.py
+            app_webview.py build_release.py version.py tests/test_wave34.py \
+            tests/test_postprocess.py postprocess.py
 
       - name: Frontend syntax check
         run: |
@@ -113,6 +114,10 @@ jobs:
       - name: Wave 3/4 regression (window / persistence / live subtitles)
         # Pure static + mock Runner checks; no GUI, no .NET, no model weights.
         run: python tests/test_wave34.py
+
+      - name: Enrichment regression (word timing / speakers / failure isolation)
+        # Mock aligner and diarization engine; SRT byte-identity is asserted.
+        run: python tests/test_postprocess.py
 
       - name: Generate public-domain test audio
         # Fixtures are committed and concatenated offline; no network, no token.

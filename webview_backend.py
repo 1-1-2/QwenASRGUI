@@ -702,18 +702,34 @@ class WebBackend:
                 or "1p7" in type(self.engine).__name__.lower()
             _ram_mb = 6000 if _is_1p7 else 2000
 
-            # Capabilities tell the UI what actually takes effect. In
-            # particular a 30 s setting is silently clamped to 10 s on 1.7B;
-            # make that visible instead of pretending the slider is free.
+            # Word timing and speaker labels are optional enrichments, not
+            # discarded features. Report both availability (is the model
+            # installed?) and whether this run actually applies them. A
+            # missing model degrades to plain subtitles, never to a failure.
+            _align_ok = bool(getattr(self.engine, "_fa_bin", None)
+                             or getattr(self.engine, "use_aligner", False))
+            _diar_ok = bool(getattr(getattr(self.engine, "diar_engine", None),
+                                    "ready", False))
+            _want_align = bool(opts.get("align"))
+            _want_diar = bool(opts.get("diarize"))
+            _align_active = _want_align and _align_ok
+            _diar_active = _want_diar and _diar_ok
             self._emit("capabilities", {
                 "streaming": True,
-                "align": False,
-                "diarize": False,
+                "alignAvailable": _align_ok,
+                "diarAvailable": _diar_ok,
+                "alignActive": _align_active,
+                "diarActive": _diar_active,
                 "effectiveChunkSecs": _effective,
                 "modelCeilingSecs": _ceiling,
                 "estimatedRamMB": _ram_mb,
                 "trial": trial,
             })
+            for _wanted, _ok, _label in ((_want_align, _align_ok, "词级时间轴"),
+                                          (_want_diar, _diar_ok, "说话人分离")):
+                if _wanted and not _ok:
+                    self._emit("status", {"message":
+                        f"{_label}模型未安装，本次跳过，字幕不受影响"})
             mins = (_duration or 0) / 60
             self._emit("progress", {"pct": 0, "status":
                 (f"试跑前 {TRIAL_MINUTES} 分钟 · " if trial else "") +
@@ -753,6 +769,7 @@ class WebBackend:
                 # holds a mutex, so extra threads only queue, while extra
                 # processes each load their own IR and multiply memory peaks.
                 from longform_runner import LongformRunner
+                from postprocess import StreamEnhancer, load_rich
 
                 def _splitter(text, t0, t1):
                     # Reuse the original line splitting / timestamp logic.
@@ -790,6 +807,29 @@ class WebBackend:
                 fingerprint = hashlib.sha1(
                     "|".join(_fp_parts).encode("utf-8")).hexdigest()[:16]
 
+                rich_path = out_srt.with_suffix(".rich.json")
+                # A stale enrichment file must never leak into a new run.
+                try:
+                    rich_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                _nsp = opts.get("nSpeakers")
+                try:
+                    _nsp = int(_nsp) if _nsp and str(_nsp) not in ("auto", "自動") else None
+                except (TypeError, ValueError):
+                    _nsp = None
+                enhancer = StreamEnhancer(
+                    engine=self.engine,
+                    rich_path=rich_path,
+                    language=_lang,
+                    enable_align=_align_active,
+                    enable_diar=_diar_active,
+                    n_speakers=_nsp,
+                    status_cb=lambda m: self._emit("status", {"message": m}),
+                    existing_jsonl=BASE_DIR / "longform_state" /
+                                   f"{task_id}.segments.jsonl",
+                )
+
                 runner = LongformRunner(
                     engine=self.engine,
                     vad_sess=getattr(self.engine, "vad_sess", None),
@@ -808,6 +848,7 @@ class WebBackend:
                     fingerprint=fingerprint,
                     max_chunk_secs=int(getattr(self.engine, "max_chunk_secs", 30)),
                     vad_threshold=float(_st.get("vad_threshold", 0.5) or 0.5),
+                    enhancer=enhancer,
                 )
                 result = runner.run(
                     audio_path, total_sec=_duration,
@@ -818,6 +859,12 @@ class WebBackend:
                         "已取消；已完成字幕已保存，再次启动同一文件可从断点续跑。")
                 srt = runner.out_srt
                 runner_result = result
+                # Enrichment is strictly best-effort: finalize() never raises
+                # and the SRT has already been written line by line.
+                try:
+                    enhancer.finalize(jsonl_path=runner.jsonl)
+                except Exception:
+                    pass
         finally:
             if tmp_extra:
                 try:
@@ -832,7 +879,12 @@ class WebBackend:
         # UI 永遠以記憶體中的 segments 渲染波形/字幕卡（需時間軸），故引擎固定產 SRT。
         # 但「輸出格式」設定決定使用者實際取得的存檔：選純文字 → 另寫 .txt、移除 .srt。
         # 優先用引擎的字級結構（含 words，驅動卡拉OK）；無則退回解析 SRT（行級）。
-        rich = getattr(self.engine, "_last_segments_rich", None)
+        # Prefer the streaming enrichment file (words + speakers). Fall back
+        # to the engine channel, then to plain SRT parsing. Every step is
+        # independent of the SRT, which is already safely on disk.
+        rich = load_rich(Path(str(srt)).with_suffix(".rich.json"))
+        if not rich:
+            rich = getattr(self.engine, "_last_segments_rich", None)
         segments = _rich_to_segments(rich) if rich else parse_srt_to_segments(srt)
         saved = str(srt)
         out_fmt = (self._settings_raw().get("output_format", "srt") or "srt").lower()

@@ -375,8 +375,14 @@ QwenASR-WebView.exe transcribe course.mp4 --longform --json
 QwenASR-WebView.exe transcribe course.mp4 --longform --no-resume -o course.srt
 ```
 
-流式模式暂不支持词级时间轴（卡拉OK 逐字）、说话人分离与 ForcedAligner 精确对齐，
-这三项会回退为行级字幕；短音频（< 20 分钟）仍走原路径，功能不变。
+所有長度的音訊都走同一條串流路徑，不再分長短兩套邏輯。字級時間軸
+（卡拉OK 逐字）與說話人分離是**選用增強**，掛在串流管道現有的 PCM chunk 上，
+失敗只記一條提示、不影響已寫入的 SRT；模型未安裝時會在模型頁提示下載。
+詳見 `docs/架構說明.md` §3.2。
+
+另：1.7B 的 INT8 IR 在匯出時把 audio_encoder 固定為 `T=1000`（10 秒），
+所以「每段最長秒數」會被夾到 10 秒；這不是記憶體限制，也無法用執行期
+開關放寬，詳見 `docs/架構說明.md` §3.1。
 
 回归测试（不需要模型权重）：
 

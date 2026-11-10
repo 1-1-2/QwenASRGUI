@@ -608,7 +608,7 @@ class LongformRunner:
                  fingerprint: str = "",
                  gc_every: int = 0,
                  vad_threshold: float = 0.5,
-                 detail_cb=None, segment_cb=None):
+                 detail_cb=None, segment_cb=None, enhancer=None):
         if vad_sess is None:
             raise ValueError("缺少 VAD session：请传入 engine.vad_sess")
         self.fingerprint = fingerprint or ""
@@ -635,6 +635,9 @@ class LongformRunner:
         # pass progress_cb keep working unchanged.
         self.detail_cb = detail_cb
         self.segment_cb = segment_cb
+        # Optional best-effort enrichment (word timing / speakers). The runner
+        # only forwards the PCM chunk; failures are contained in the enhancer.
+        self.enhancer = enhancer
         self._seg_batch: list[dict] = []
         self._last_seg_flush = 0.0
         self._start_wall = time.monotonic()
@@ -812,6 +815,14 @@ class LongformRunner:
                 t1 = (base + a + nxt) / SR
                 lines = (self.line_splitter(text, t0, t1) if self.line_splitter
                          else simple_lines(text, t0, t1))
+                # Enrich before the chunk leaves scope: aligner / embedding
+                # reuse this exact buffer, so there is no second decode pass.
+                if self.enhancer is not None:
+                    try:
+                        self.enhancer.on_group(chunk, t0, t1, text, lines,
+                                               start_index=seg_index)
+                    except Exception:
+                        pass
                 for s, e, line in lines:
                     seg_index = self._append(seg_index, s, e, line)
                 group_count += 1

@@ -171,9 +171,17 @@ def main() -> int:
           // not paint "undefineds" / "NaN GB" into the settings hint.
           api._emit('capabilities', {streaming: true, align: false, diarize: false,
                                      trial: false});
-          api._emit('capabilities', {streaming: true, align: false, diarize: false,
-                                     effectiveChunkSecs: 10, modelCeilingSecs: 10,
-                                     estimatedRamMB: 6144, trial: false});
+          // Models absent -> switches are greyed out with an explanation.
+          api._emit('capabilities', {streaming: true, alignAvailable: false,
+                                     diarAvailable: false, alignActive: false,
+                                     diarActive: false});
+          // Models present -> switches become usable again. This replaces the
+          // old assertion that they were permanently disabled in streaming mode.
+          api._emit('capabilities', {streaming: true, alignAvailable: true,
+                                     diarAvailable: true, alignActive: true,
+                                     diarActive: true, effectiveChunkSecs: 10,
+                                     modelCeilingSecs: 10, estimatedRamMB: 6144,
+                                     trial: false});
           const segs = [];
           for (let i = 1; i <= 24; i++) {
             segs.push({index: i, start: (i-1)*12.5, end: i*12.5,
@@ -218,9 +226,17 @@ def main() -> int:
         page.wait_for_timeout(350)
         capped = page.locator("#live-list > div").count()
         check("live subtitle DOM capped at 200", capped == 200, f"rows={capped}")
-        check("capabilities disabled unsupported switches",
+        check("enrichment switches re-enabled when models are available",
+              not page.locator("#sw-align").is_disabled() and
+              not page.locator("#sw-diar").is_disabled())
+        page.evaluate("""() => window.QwenAPI._emit('capabilities',
+          {streaming: true, alignAvailable: false, diarAvailable: false})""")
+        check("absent enrichment models grey the switches",
               page.locator("#sw-align").is_disabled() and
               page.locator("#sw-diar").is_disabled())
+        page.evaluate("""() => window.QwenAPI._emit('capabilities',
+          {streaming: true, alignAvailable: true, diarAvailable: true,
+           effectiveChunkSecs: 10, modelCeilingSecs: 10, estimatedRamMB: 6144})""")
         eff = page.locator("#seg-effective").inner_text()
         ram = page.locator("#seg-ram").inner_text()
         check("capabilities shows effective chunk / ceiling",
@@ -231,8 +247,9 @@ def main() -> int:
               "undefined" not in eff and "NaN" not in eff and
               "undefined" not in ram and "NaN" not in ram)
         note = page.locator("#cap-note").inner_text()
-        check("streaming note is i18n-driven, not Simplified-Chinese hardcoded",
-              "詞級時間軸" in note and "统一流式" not in note, note)
+        check("streaming note is i18n-driven and describes optional enhancement",
+              "可選增強" in note and "失敗不影響字幕" in note and
+              "此模式暫不提供" not in note, note)
         check("preview button and trial switch share one row",
               abs(page.locator("#btn-vad-preview").bounding_box()["y"] -
                   page.locator("#seg-panel .seg-actions .switch").bounding_box()["y"]) < 12,
@@ -276,7 +293,7 @@ def main() -> int:
         check("i18n switched to English",
               "Settings" in page.locator('.nav-item[data-view="settings"]').inner_text())
         check("streaming note follows English",
-              "Word-level timing" in page.locator("#cap-note").inner_text(),
+              "Failures never affect subtitles" in page.locator("#cap-note").inner_text(),
               page.locator("#cap-note").inner_text())
 
         # Model page: download center should render from the catalog endpoint.
