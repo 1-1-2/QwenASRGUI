@@ -107,7 +107,7 @@ jobs:
             tools/verify_package.py tests/test_verify_package.py \
             tests/test_launcher_stdio.py tests/test_webview_bundle.py \
             tests/test_openvino_slim.py cluster_core.py tests/test_cluster.py \
-            tools/smoke_test.py
+            tools/smoke_test.py tests/test_release_env.py tools/gh_download.py
 
       - name: Frontend syntax check
         run: |
@@ -119,6 +119,12 @@ jobs:
 
       - name: Wave 1.5 regression (streaming / peaks / preview / pagination)
         run: python tests/test_wave15.py
+
+      - name: Release-environment import chain (no tkinter / customtkinter / scipy)
+        # 本地等价于「打包版能不能起来」：把发行包刻意不带的库全部封掉，
+        # 再 import 启动器的整条依赖链。2026-11-11 的两次启动崩溃都能在
+        # 这里提前复现，不必等 Windows 构建。
+        run: python tests/test_release_env.py
 
       - name: Clustering / resampling regression (self-written vs SciPy)
         # 本次瘦身的前提：cluster_core 与 scipy 输出逐位一致、频域重采样

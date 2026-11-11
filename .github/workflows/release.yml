@@ -165,6 +165,7 @@ jobs:
           run_suite "webview_bundle" python tests/test_webview_bundle.py
           run_suite "openvino_slim" python tests/test_openvino_slim.py
           run_suite "cluster" python tests/test_cluster.py
+          run_suite "release_env" python tests/test_release_env.py
           echo "----- last 120 lines of /tmp/tests.log -----"
           tail -120 /tmp/tests.log
           if [ -n "$failed" ]; then

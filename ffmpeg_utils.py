@@ -20,7 +20,15 @@ from pathlib import Path
 import app_paths
 from typing import Callable
 
-import customtkinter as ctk
+# customtkinter 只在「Tk 版的下載對話框」裡用到。WebView 版（打包發行）
+# 只用本模組的純函式（find_ffmpeg / download_ffmpeg ...），一旦頂層 import
+# customtkinter，PyInstaller 就會把 tkinter + customtkinter + tcl/tk 全收進
+# 包裡，而發行包又刻意 EXCLUDE 了 tkinter —— 結果 webview_backend →
+# ffmpeg_utils 這一條匯入鏈斷掉，啟動直接失敗。故改為惰性匯入。
+try:                                    # 仅 Tk 版需要；WebView 版没有也无所谓
+    import customtkinter as ctk         # noqa: F401
+except Exception:                       # pragma: no cover - 打包版会走到这里
+    ctk = None
 
 # ── 影片副檔名集合 ──────────────────────────────────────────────────
 VIDEO_EXTS = {
@@ -113,7 +121,18 @@ def extract_audio_to_wav(
 
 # ── 下載對話框 ────────────────────────────────────────────────────────
 
-class FFmpegDownloadDialog(ctk.CTkToplevel):
+def _tk_toplevel():
+    """取 CTkToplevel 作为基类；没有 Tk 栈时退化为 object（类定义不报错）。
+
+    关键点：基类必须在「定义类的时候」求值，所以不能写成 `ctk and ctk.CTkToplevel`。
+    仅当真的实例化对话框（Tk 界面点击下载）时才要求 ctk 存在。
+    """
+    if ctk is None:
+        return object
+    return ctk.CTkToplevel
+
+
+class FFmpegDownloadDialog(_tk_toplevel()):
     """一鍵下載 ffmpeg essentials 的進度對話框。
 
     使用方式
