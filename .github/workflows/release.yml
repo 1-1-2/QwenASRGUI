@@ -166,6 +166,7 @@ jobs:
           run_suite "openvino_slim" python tests/test_openvino_slim.py
           run_suite "cluster" python tests/test_cluster.py
           run_suite "release_env" python tests/test_release_env.py
+          run_suite "smoke_selftest" python tests/test_smoke_selftest.py
           echo "----- last 120 lines of /tmp/tests.log -----"
           tail -120 /tmp/tests.log
           if [ -n "$failed" ]; then

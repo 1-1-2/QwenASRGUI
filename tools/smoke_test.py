@@ -75,11 +75,6 @@ def read_log(path: Path) -> str:
         return ""
 
 
-def tail(text: str, n: int = 25) -> str:
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    return "\n".join("      " + ln[:200] for ln in lines[-n:])
-
-
 def kill_tree(proc: subprocess.Popen) -> None:
     """连子进程一起收掉：启动器会派生 Edge、crispasr.exe 等。"""
     if proc.poll() is not None:
@@ -98,33 +93,77 @@ def kill_tree(proc: subprocess.Popen) -> None:
         pass
 
 
-# 诊断用：在包内 _internal 里「去掉 tkinter 相关模块」再导入启动器的依赖链。
-# 打包版缺哪个模块，这里一次就能看出来，不必反复等 20 分钟的 Windows 构建。
+# ── 诊断 ────────────────────────────────────────────────────────────────
+# 只在失败时跑：用包内自带的依赖（_internal）把启动器的依赖链逐个 import 一遍，
+# 一次看出「到底缺哪个模块」，不必反复等 20 分钟的 Windows 构建。
+#
+# 两个坑，都踩过：
+#   1. 不能用 `python -I`：隔离模式会忽略 sys.path 注入，所有模块一律
+#      ModuleNotFoundError，诊断等于没跑（2026-11-11 就白跑了一轮）。
+#   2. 光看谁失败没用 —— 一次运行只会暴露「最先断的那一环」，修掉它才轮到下一个。
+#      所以每个模块都在**独立子进程**里导入。
 DIAG = r"""
 import os, sys, traceback
-here = sys.argv[1]
-sys.path.insert(0, here)
-for name in ("tkinter", "customtkinter"):
-    sys.modules[name] = None
+host = r"{host}"
+internal = r"{internal}"
+# Windows 的扩展模块（.pyd）要能找到同目录的 DLL；_internal 里有 python311.dll
+if hasattr(os, "add_dll_directory") and os.path.isdir(internal):
+    try:
+        os.add_dll_directory(internal)
+    except OSError:
+        pass
+# 包内依赖优先，其次是宿主解释器的 stdlib / site-packages
+sys.path.insert(0, host)
+sys.path.insert(1, internal)
 os.environ["QWENASR_WEBVIEW_BUILD"] = "1"
-out = []
-for mod in ("webview_server", "webview_backend", "app", "ffmpeg_utils"):
+# 发行包刻意不带的，按「已缺失」处理 —— 与 exe 里的真实情况一致
+for name in ("tkinter", "customtkinter", "darkdetect", "scipy"):
+    sys.modules[name] = None
+
+chain = ("app_paths", "webview_server", "webview_backend", "app",
+         "ffmpeg_utils", "audio_io", "downloader", "ui_text")
+for mod in chain:
     try:
         __import__(mod)
-        out.append("OK   " + mod)
-    except Exception:
+        print("OK   " + mod)
+    except BaseException:
         tb = traceback.format_exc().strip().splitlines()
-        out.append("FAIL " + mod + " -> " + " | ".join(tb[-6:]))
-print("\n=== DIAG-IMPORT ===")
-print("\n".join(out))
+        # 只留真正有信息量的行：异常类型 + 报错位置
+        keep = [ln.strip() for ln in tb if ln.startswith("  File")][-3:]
+        keep.append(tb[-1] if tb else "")
+        print("FAIL " + mod + " -> " + " | ".join(keep))
 """
 
 
-def diagnose_imports(exe_dir: Path, internal: Path) -> None:
-    """用包内自带的 Python 环境跑一遍导入，定位真正的缺失模块。"""
-    fi = subprocess.run([sys.executable, "-I", "-c", DIAG, str(internal)],
-                        capture_output=True, text=True, timeout=180)
-    print((fi.stdout or "") + (fi.stderr or "")[-1500:])
+def diagnose_imports(exe_dir: Path) -> None:
+    """用包内的依赖逐个 import 启动器依赖链，定位真正缺失的模块。"""
+    code = DIAG.format(host=str(exe_dir), internal=str(exe_dir / "_internal"))
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP")}
+    print("  宿主解释器：" + sys.executable)
+    try:
+        p = subprocess.run([sys.executable, "-c", code], cwd=str(exe_dir),
+                           capture_output=True, text=True, timeout=240, env=env)
+    except subprocess.TimeoutExpired:
+        print("  诊断超时")
+        return
+    out = (p.stdout or "").strip()
+    print(out if out else "(无输出)")
+    if p.returncode != 0 and p.stderr:
+        print("  诊断进程 stderr：" + (p.stderr or "")[-600:])
+
+
+def dump_log_errors(text: str, limit: int = 12) -> None:
+    """把启动器日志里凡是带「异常/缺模块/失败」的行按时间顺序列出来。
+
+    这里不做判定（判定只看后果：端口有没有绑上、进程有没有活着），
+    只是把线索摆出来，省去翻整篇日志。
+    """
+    keys = ("Traceback", "Error", "No module named", "RuntimeError",
+            "TypeError", "Exception", "失敗", "失败", "無法", "无法")
+    hits = [ln.strip() for ln in text.splitlines() if any(k in ln for k in keys)]
+    for ln in hits[:limit]:
+        print("      " + ln[:220])
 
 
 class Checker:
@@ -202,17 +241,17 @@ def main() -> int:
     logs = log_dir()
     launch_log = logs / "launcher.log"
     crash_log = logs / "crash.log"
-    for p in (launch_log, crash_log):
-        try:
-            p.unlink()
-        except OSError:
-            pass
+    result_file = logs / "selftest.json"
 
+    def clean_logs():
+        for p in (launch_log, crash_log, result_file):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+    clean_logs()
     print("\n  [1/3] --selftest")
-    try:
-        (logs / "selftest.json").unlink()
-    except OSError:
-        pass
     # windowed exe 没有控制台：stdout/stderr 都被启动器换成日志替身，
     # 且启动器关窗走 os._exit，等待管道会挂死 —— 所以固定超时，结果看文件。
     try:
@@ -220,41 +259,43 @@ def main() -> int:
                               timeout=120).returncode
     except subprocess.TimeoutExpired:
         code = -1
-    result_file = logs / "selftest.json"
     m = None
     try:
         m = json.loads(result_file.read_text(encoding="utf-8"))
     except Exception:
         m = None
-    text = read_log(launch_log)
+    selftest_log = read_log(launch_log)
     if not c.check("selftest 退出码为 0", code == 0, f"code={code}"):
-        print(tail(text))
+        dump_log_errors(selftest_log)
         return 1
     if not c.check("selftest 写出了结果文件", m is not None, str(result_file)):
-        print(tail(text))
+        dump_log_errors(selftest_log)
         return 1
     c.check("selftest ok=true", m.get("ok") is True, str(m.get("ok")))
-    # server=skipped 是「GUI 依赖没进包」的形态，正是 2026-11-11 那次崩溃
+    # server=skipped 是「GUI 依赖没进包」的形态，正是 2026-11-11 那次崩溃。
+    # 注意：这里不靠日志文本判定 —— 修好后导入链一旦通，启动器仍可能把
+    # 一个【已处理的】旧告警写进日志（例如另一进程/另一包留下的痕迹），
+    # 按文本判会假红。真正的判据是下面这一步的后果：端口有没有绑上。
     c.check("server 已实测（非 skipped）", m.get("server") == "measured",
             str(m.get("serverSkipReason") or m.get("server")))
+    if c.failed:
+        dump_log_errors(selftest_log)
 
     # ── 3) 真正启动一次 GUI ───────────────────────────────────────────────
     print("\n  [2/3] 启动 GUI")
-    for p in (launch_log, crash_log):
-        try:
-            p.unlink()
-        except OSError:
-            pass
+    clean_logs()
 
     proc = subprocess.Popen([str(exe)], cwd=str(exe_dir))
     url_ok = False
+    url = ""
     deadline = time.time() + args.wait
     while time.time() < deadline:
         if proc.poll() is not None:
             break
         t = read_log(launch_log)
-        if re.search(r"http://127\.0\.0\.1:\d+", t):
-            url_ok = True
+        mm = re.search(r"http://127\.0\.0\.1:\d+", t)
+        if mm:
+            url_ok, url = True, mm.group(0)
             break
         time.sleep(0.5)
 
@@ -262,14 +303,22 @@ def main() -> int:
     text = read_log(launch_log)
     c.check("进程启动后没有立即退出", alive,
             "" if alive else f"exit={proc.returncode}")
-    c.check("已绑定本地端口并打印地址", url_ok, "" if url_ok else f"等待 {args.wait:.0f}s 未出现")
+    c.check("已绑定本地端口并打印地址", url_ok, url or f"等待 {args.wait:.0f}s 未出现")
     c.check("未产生 crash.log", not crash_log.exists(),
             read_log(crash_log)[:300] if crash_log.exists() else "")
-    # 缺 tkinter 等可选 GUI 依赖时，代码里可能有 messagebox 弹窗 —— CI 的
-    # runner 是无交互桌面，弹窗会直接卡死。日志里出现弹窗痕迹就判失败。
-    c.check("启动过程没有报缺模块",
-            "No module named" not in text,
-            next((ln for ln in text.splitlines() if "No module named" in ln), "")[:160])
+
+    # 端口通了就等于「WebView 后端确实起来了」—— 这比在日志里找
+    # 「No module named」可靠：后者会被历史告警、无关的可选依赖干扰。
+    health_ok = False
+    if url_ok:
+        import urllib.request
+        try:
+            with urllib.request.urlopen(url + "/health", timeout=10) as resp:
+                health_ok = resp.status == 200
+        except Exception as exc:
+            health_ok = False
+            text += f"\n[smoke] /health 探测失败：{type(exc).__name__}: {exc}"
+    c.check("/health 返回 200（后端已就绪）", health_ok)
 
     # 再多等两秒：有些崩溃发生在窗口创建之后
     if alive:
@@ -287,11 +336,11 @@ def main() -> int:
     if c.failed:
         print("\n=== 包内导入诊断（定位真实缺失模块）===")
         try:
-            diagnose_imports(exe_dir, exe_dir / "_internal")
+            diagnose_imports(exe_dir)
         except Exception as exc:
             print(f"  诊断本身失败：{type(exc).__name__}: {exc}")
-        print(f"\n启动器日志尾部（{launch_log}）：")
-        print(tail(text))
+        print(f"\n启动器日志里的异常行（{launch_log}）：")
+        dump_log_errors(text, 20)
         print(f"\n结果：{len(c.failed)} 项失败 → {', '.join(c.failed)}")
         print("❌ 冒烟测试未通过")
         return 1

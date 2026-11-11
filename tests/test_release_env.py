@@ -17,6 +17,7 @@ scipy 全部封掉（它们是发布包刻意不带的），然后 import 启动
 from __future__ import annotations
 
 import os
+import ast
 import subprocess
 import sys
 import textwrap
@@ -54,6 +55,11 @@ PROBE = textwrap.dedent('''
 
 # 启动器（含 GUI 进程）实际需要导入的模块；ffmpeg_utils / api_server / audio_io
 # 是最容易被忽略的间接依赖（它们过去在顶层 import tkinter）。
+#
+# 这份清单必须等于「起得来」所需的全部模块。它曾经少了 ffmpeg_utils —— 于是
+# 本地模拟全绿，真机上启动器却死在 webview_backend → ffmpeg_utils。现在由
+# tests/test_launcher_stdio.py 反向校验：解析 app_webview.py 的完整 import 闭包
+# 逐个子查，谁被漏掉就直接报名字。
 CHAIN = [
     "app_paths", "proc_guard", "single_instance",
     "webview_server", "webview_backend",
@@ -62,6 +68,9 @@ CHAIN = [
     "longform_runner", "crisp_engine", "batch_queue", "subtitle_lines",
     "subtitle_extras", "run_log", "version", "updater", "ui_text",
     "endpoint_tab", "model_tab", "batch_tab", "subtitle_editor", "setting",
+    # 下面这些过去靠「静态可追踪 / hidden-import」被收进包，从没进过这份清单。
+    # 它们缺了同样会让启动器起来，所以一并纳入模拟。
+    "cf_tunnel", "chatllm_engine", "fa_aligner", "postprocess", "processor_numpy",
 ]
 
 
@@ -76,6 +85,49 @@ class Result:
     @property
     def ok(self):
         return all(self.items)
+
+
+LOCAL_MODULES = {p.stem for p in ROOT.glob("*.py")}       # 项目自己的模块
+
+
+def import_closure(entry: str = "app_webview.py") -> set[str]:
+    """从入口文件出发，把「项目内模块」的 import 闭包算出来（含动态 def 内导入）。
+
+    PyInstaller 也是这么看代码的（静态分析），差别在于它会把找到的全打包；
+    我们只用这份闭包检查测试清单有没有漏。
+    """
+    seen: set[str] = set()
+    stack = [Path(entry).stem]
+    while stack:
+        mod = stack.pop()
+        if mod in seen or mod not in LOCAL_MODULES:
+            continue
+        seen.add(mod)
+        py = ROOT / f"{mod}.py"
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                names = [node.module.split(".")[0]]
+                names += [a.name for a in node.names]     # from x import y 里的 y
+            for nm in names:
+                if nm in LOCAL_MODULES and nm not in seen:
+                    stack.append(nm)
+    return seen
+
+
+def missing_from_chain() -> tuple[list[str], set[str]]:
+    """CHAIN 是否覆盖了启动器的全部项目内依赖。"""
+    closure = import_closure()
+    # app_webview 是入口本身，不需要「import 一次」来验证；app-gpu 是 Tk 版入口，
+    # 发行包刻意不带。其余全要覆盖。
+    allowed = {"app-gpu", "app_webview"}
+    return sorted(closure - set(CHAIN) - allowed), closure
 
 
 def run_probe(mods: list[str]) -> tuple[list, str]:
@@ -119,7 +171,6 @@ def main() -> int:
             f"{len(tk_failed)}/{len(tk_only)} 失败（预期）")
 
     # 4) 源码守卫：不允许再出现 ffmpeg_utils 那种顶层 customtkinter
-    import ast
     offenders = []
     for py in sorted(ROOT.glob("*.py")):
         if py.name in ("app-gpu.py", "app.py"):
@@ -144,6 +195,17 @@ def main() -> int:
     offenders = [o for o in offenders if o.split(":")[0] not in allowed_files]
     r.check("发行链上的模块不再顶层 import tkinter/customtkinter/scipy",
             not offenders, "; ".join(offenders[:3]))
+
+    # 5) 反向校验：清单本身必须覆盖启动器的整条 import 闭包。
+    #
+    # 为什么需要「反向」这一条：上面几步只能验「我在清单里列的模块都能导入」。
+    # 如果清单本身漏了某个模块（ffmpeg_utils 就是这么漏的 —— 那时它已经写在
+    # CHAIN 里了，漏的是更早的一版），模拟就会全绿而真机必崩。所以这里改成
+    # 从 app_webview.py 出发把项目内模块的 import 闭包算出来，跟 CHAIN 对差集，
+    # 少一个就报名字。
+    missing, closure = missing_from_chain()
+    r.check("CHAIN 覆盖 app_webview 的完整 import 闭包", not missing,
+            "未覆盖：" + ", ".join(missing[:6]) + f"（闭包共 {len(closure)} 个）")
 
     passed = sum(r.items)
     print(f"\n结果：{passed}/{len(r.items)} 项通过")

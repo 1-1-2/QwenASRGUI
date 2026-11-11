@@ -107,7 +107,8 @@ jobs:
             tools/verify_package.py tests/test_verify_package.py \
             tests/test_launcher_stdio.py tests/test_webview_bundle.py \
             tests/test_openvino_slim.py cluster_core.py tests/test_cluster.py \
-            tools/smoke_test.py tests/test_release_env.py tools/gh_download.py
+            tools/smoke_test.py tests/test_release_env.py tools/gh_download.py \
+            tests/test_smoke_selftest.py
 
       - name: Frontend syntax check
         run: |
@@ -125,6 +126,11 @@ jobs:
         # 再 import 启动器的整条依赖链。2026-11-11 的两次启动崩溃都能在
         # 这里提前复现，不必等 Windows 构建。
         run: python tests/test_release_env.py
+
+      - name: Smoke-test harness self check
+        # 冒烟测试是发布的最后一闸。它自己判错就是「假绿放行坏包」或
+        # 「假红逼人绕闸」，所以它的诊断/判定逻辑也要有测试。
+        run: python tests/test_smoke_selftest.py
 
       - name: Clustering / resampling regression (self-written vs SciPy)
         # 本次瘦身的前提：cluster_core 与 scipy 输出逐位一致、频域重采样
