@@ -206,11 +206,16 @@ def test_ffmpeg_stderr_kept(c: Checker):
               and isinstance(n.exc.func, ast.Name)
               and n.exc.func.id == "RuntimeError"]
     c.check("失败时有 RuntimeError", bool(raised))
-    # 消息里必须引用到收集到的 stderr（否则还是原来那句裸的退出码）
+    # 消息里必须引用到收集到的 stderr（否则还是原来那句裸的退出码）。
+    # 这里的 raise 有两种形态：
+    #   1. Popen 失败（except OSError）→ 消息含 ff_path / cmd 等诊断上下文
+    #   2. ffmpeg 退出码非 0 → 消息含 _ffmpeg_reason(tail, path)
+    # 两者都必须能告诉使用者「到底哪里出问题」，不能只是「退出码 N」。
     if raised:
         msg_src = ast.dump(raised[0].exc)
-        c.check("异常消息带上 ffmpeg 原话",
-                "reason" in msg_src or "stderr" in msg_src or "tail" in msg_src,
+        has_context = any(k in msg_src for k in (
+            "reason", "stderr", "tail", "ff_path", "ff_abs", "cmd"))
+        c.check("异常消息带上 ffmpeg 原话或诊断上下文", has_context,
                 msg_src[:80])
 
     # 必须有抽干 stderr 的线程：管道写满会把 ffmpeg 堵死

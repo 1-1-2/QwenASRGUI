@@ -42,10 +42,17 @@
   --shadow-sm: 0 1px 2px rgba(20,20,30,.05);
   --shadow:    0 1px 2px rgba(20,20,30,.04), 0 6px 18px rgba(20,20,30,.06);
 
-  /* ── 字體 ────────────────────────────────── */
-  --font-ui:   "Noto Sans TC", "Microsoft JhengHei", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-disp: "Space Grotesk", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
-  --font-mono: "Space Mono", "JetBrains Mono", "Consolas", "Microsoft JhengHei", monospace;
+  /* ── 字體 ──────────────────────────────────
+     純系統字體棧：不依賴任何外網字體（Google Fonts 在國內訪問不了，
+     而 <link rel="stylesheet"> 是渲染阻塞資源，加載不出來會白屏 20+ 秒）。
+     原先的 "Noto Sans TC" / "Space Grotesk" / "Space Mono" 是 Google Fonts
+     字體名，未下載時只會回退到系統字體，留著只是無意義的回退鏈。 */
+  --font-ui:   system-ui, -apple-system, "Segoe UI", "Microsoft YaHei",
+               "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;
+  --font-disp: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei",
+               "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", Consolas, "Courier New",
+               "Microsoft YaHei", monospace;
 
   --side-w: 104px;   /* 状态文案（模型已就緒 / Ready）需在一行内放下 */
 }

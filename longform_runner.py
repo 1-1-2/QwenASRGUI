@@ -292,7 +292,40 @@ def ffmpeg_pcm_stream(path: Path, ffmpeg: str = "ffmpeg", start_sec: float = 0.0
     kw = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
     if sys.platform == "win32":
         kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    proc = subprocess.Popen(cmd, **kw)
+    try:
+        proc = subprocess.Popen(cmd, **kw)
+    except OSError as e:
+        # Popen 失败（PermissionError / FileNotFoundError / 其他 OS 错误）。
+        # 关键：**这些错都发生在「启动子进程」这一步，不是「读文件」**。
+        # 仅凭错误文本无法区分成因，这里把诊断所需的全部上下文打出来。
+        ff_path = cmd[0]
+        try:
+            ff_abs = str(Path(ff_path).resolve())
+        except Exception:
+            ff_abs = str(ff_path)
+        try:
+            ff_exists = Path(ff_path).is_file()
+        except Exception:
+            ff_exists = "unknown"
+        try:
+            ff_mode = oct(Path(ff_path).stat().st_mode) if ff_exists is True else "n/a"
+        except Exception:
+            ff_mode = "n/a"
+        raise RuntimeError(
+            f"无法启动 ffmpeg 子进程：{type(e).__name__}: {e}\n"
+            f"ffmpeg 路径：{ff_abs}\n"
+            f"ffmpeg 存在：{ff_exists}\n"
+            f"ffmpeg 权限：{ff_mode}\n"
+            f"当前工作目录：{os.getcwd()}\n"
+            f"命令行：{' '.join(str(c) for c in cmd)}\n"
+            "Popen 失败通常来自：\n"
+            "  - ffmpeg 不存在（路径错 / 没下载 / PATH 没配）\n"
+            "  - ffmpeg 所在目录没有「执行」权限\n"
+            "  - Windows 受控文件夹访问（Controlled Folder Access）拦截\n"
+            "  - AppLocker / WDAC / Smart App Control 策略阻止\n"
+            "  - 杀毒软件 / EDR 阻止 CreateProcess\n"
+            "请把以上信息一并反馈给开发者，便于定位。"
+        ) from e
     # stderr 必须持续抽干：管道写满（Windows 约 4 KB）后 ffmpeg 会阻塞，
     # 表现为「转换卡住不动」，比报错更难查。读线程只留尾部若干行。
     tail: collections.deque[str] = collections.deque(maxlen=8)

@@ -1072,12 +1072,20 @@ class WebBackend:
                 cancel=self._cancel_event,
             )
         except PermissionError as e:
-            # Windows 上杀软扫描 %TEMP% 会锁定上传的临时文件，ffmpeg 读它时
-            # 撞上 WinError 5。这里翻译成人话，否则前端只显示「拒绝访问」。
+            # Windows 上 WinError 5（拒绝访问）的成因很多：exe 所在目录无执行
+            # 权限、AppLocker/WDAC 策略、受控文件夹访问、安全软件拦截子进程…
+            # 不能一概归咎于「杀软扫描文件」，那会误导使用者去关杀软却毫无作用。
+            # 这里只描述事实 + 给诊断线索。
             raise RuntimeError(
                 f"无法读取音频文件：{e}\n"
-                "这是杀毒软件（Windows Defender 等）正在扫描文件导致的。\n"
-                "请稍等几秒后重试，或将文件所在目录加入杀毒软件白名单。"
+                f"文件路径：{path}\n"
+                f"使用的 ffmpeg：{_ff}\n"
+                "WinError 5（拒绝访问）可能来自：\n"
+                "  - ffmpeg 这个可执行文件所在目录没有「执行」权限\n"
+                "  - Windows 的受控文件夹访问（Controlled Folder Access）拦截\n"
+                "  - 杀毒软件 / EDR 阻止了 ffmpeg 子进程的创建\n"
+                "  - AppLocker / WDAC / Smart App Control 策略阻止\n"
+                "请把「文件路径」与「使用的 ffmpeg」一并反馈给开发者，便于定位。"
             ) from e
         out["effectiveChunkSecs"] = effective
         out["modelCeilingSecs"] = ceiling

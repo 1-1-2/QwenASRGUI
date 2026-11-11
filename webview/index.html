@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>聲音辨識小工具</title>
 <link rel="icon" type="image/png" href="favicon.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<!-- 字体：改用系统字体栈，不依赖任何外网（Google Fonts 在国内访问不了，
+     且 <link rel="stylesheet"> 是渲染阻塞资源，加载不出来会白屏 20+ 秒）。
+     优先级：系统 UI 字体 → 平台默认无衬线 → monospace 兜底。 -->
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>

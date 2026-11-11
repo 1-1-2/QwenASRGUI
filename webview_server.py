@@ -308,13 +308,17 @@ class WebViewServer:
                                            server.batch_queue.clear_finished()})
                     return self._err(404, "unknown api")
                 except PermissionError as e:
-                    # Windows Defender / 杀软扫描文件时会锁定它，导致 ffmpeg 或
-                    # Python 的 open() 撞上 WinError 5。str(e) 只有「拒绝访问」，
-                    # 这里补上用户能理解的上下文。
+                    # WinError 5（拒绝访问）的成因很多，不能一概归咎于「杀软
+                    # 扫描文件」—— 那会误导使用者去关掉杀软却毫无作用。
+                    # 这里只描述事实、给出诊断线索。
                     return self._err(500, (
-                        f"文件访问被拒绝：{e}\n"
-                        "这是杀毒软件（Windows Defender 等）正在扫描文件导致的。\n"
-                        "请稍等几秒后重试，或将文件所在目录加入杀毒软件白名单。"
+                        f"操作被拒绝：{e}\n"
+                        "WinError 5（拒绝访问）可能来自：\n"
+                        "  - 当前账号对目标目录/文件没有相应权限\n"
+                        "  - Windows 的受控文件夹访问（Controlled Folder Access）拦截\n"
+                        "  - 杀毒软件 / EDR 阻止了进程创建或文件读写\n"
+                        "  - AppLocker / WDAC / Smart App Control 策略阻止\n"
+                        "请把完整错误消息反馈给开发者，便于定位。"
                     ))
                 except Exception as e:
                     return self._err(500, str(e))
@@ -410,19 +414,25 @@ class WebViewServer:
                 try:
                     in_path.write_bytes(data)
                 except PermissionError as e:
-                    # Windows Defender / 杀软扫描 %TEMP% 时会锁定新建的文件，
-                    # write_bytes 撞上 WinError 5。这里必须说清楚是临时目录的
-                    # 问题，否则前端只显示「[WinError 5] 拒绝访问」，用户以为
-                    # 是原始文件的问题。
+                    # Windows：WinError 5 的成因很多（exe 所在目录无执行权限、
+                    # AppLocker/WDAC 策略、受控文件夹访问、安全软件拦截子进程…）。
+                    # **不能一概归咎于杀软扫描** —— 那会误导使用者去关掉杀软、
+                    # 加白名单，结果什么都没变。这里只描述事实、给出诊断线索。
                     try:
                         import shutil as _sh
                         _sh.rmtree(tmp_dir, ignore_errors=True)
                     except Exception:
                         pass
                     return None, None, self._err(500, (
-                        f"无法写入临时文件（{tmp_dir}）：{e}\n"
-                        "这是杀毒软件（Windows Defender 等）正在扫描 %TEMP% 导致的。\n"
-                        "请稍等几秒后重试，或将 %TEMP% 目录加入杀毒软件白名单。"
+                        f"无法写入临时文件：{e}\n"
+                        f"临时目录：{tmp_dir}\n"
+                        f"目标文件：{in_path}\n"
+                        "WinError 5（拒绝访问）可能来自：\n"
+                        "  - 当前账号对该目录没有「写入」权限\n"
+                        "  - Windows 的受控文件夹访问（Controlled Folder Access）拦截\n"
+                        "  - 杀毒软件 / EDR 阻止了本进程创建文件\n"
+                        "  - 磁盘空间不足或文件系统错误\n"
+                        "请把「临时目录」一并反馈给开发者，便于定位。"
                     ))
                 except OSError as e:
                     try:
@@ -431,8 +441,10 @@ class WebViewServer:
                     except Exception:
                         pass
                     return None, None, self._err(500, (
-                        f"无法写入临时文件（{tmp_dir}）：{e}\n"
-                        "请检查磁盘空间是否充足，或 %TEMP% 目录是否有写入权限。"
+                        f"无法写入临时文件：{e}\n"
+                        f"临时目录：{tmp_dir}\n"
+                        f"目标文件：{in_path}\n"
+                        "请检查磁盘空间是否充足、目录是否有写入权限。"
                     ))
                 opts = {
                     "path": str(in_path),
