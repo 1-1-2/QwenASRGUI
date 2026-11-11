@@ -43,8 +43,9 @@ except ImportError as _exc:      # --selftest must work without GUI deps
     # 靜默吞掉，一路走到 main() 才在 WebViewServer(...) 炸成
     #   TypeError: 'NoneType' object is not callable
     # —— 真正的凶手（少了哪個模組）完全看不到。故匯入期就寫進日誌。
+    # 刻意走 stderr：--selftest 的 stdout 是契約 JSON，任何雜訊都不能摻進去。
     try:
-        print(f"[app_webview] 無法匯入 webview_server：{_exc}")
+        print(f"[app_webview] 無法匯入 webview_server：{_exc}", file=sys.stderr)
     except Exception:
         pass
 
