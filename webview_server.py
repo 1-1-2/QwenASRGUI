@@ -155,11 +155,19 @@ class WebViewServer:
                 self._json({"error": {"message": msg}}, code)
 
             def _read_json_body(self) -> dict:
-                n = int(self.headers.get("Content-Length", 0))
-                if not n:
+                # Wave 11：非 multipart 的請求體在 do_POST 開頭已統一讀進
+                # self._post_body。這裡只解析、不再讀 socket —— 否則
+                # 「不讀 body 的路由」（例如 /api/batch/start）會把前端送的
+                # `{}` 留在 keep-alive 連線裡，殘留位元組被當成下一個請求行，
+                # 讓緊接著的 GET /api/batch 得到 501 Unsupported method。
+                raw = getattr(self, "_post_body", None)
+                if raw is None:
+                    n = int(self.headers.get("Content-Length", 0) or 0)
+                    raw = self.rfile.read(n) if n else b""
+                if not raw:
                     return {}
                 try:
-                    return json.loads(self.rfile.read(n).decode("utf-8"))
+                    return json.loads(raw.decode("utf-8"))
                 except Exception:
                     return {}
 
@@ -233,6 +241,23 @@ class WebViewServer:
                 path = urlparse(self.path).path
                 if not self._check_host():        # 所有 POST 皆為 /api，一律驗證
                     return
+                # Wave 11（佇列狀態 bug 的真正根因）：HTTP/1.1 keep-alive 下，
+                # 客戶端送的 `{}`（apiPost 一律帶 body）若不被讀走，會殘留在
+                # 連線裡，被伺服器當成「下一個請求」的方法行 → 501。
+                # 曾在真機復現：POST /api/batch/start 後緊接的 GET /api/batch
+                # 得到 501，前端 getBatch() 降級成 items:[]，整個佇列被清空，
+                # 只剩 worker 推回來的第一個 item（使用者看到「只剩一個」）。
+                # 解法：非 multipart 的請求在此統一讀乾淨，之後所有分支都用
+                # self._post_body；multipart 交給 _receive_upload() 自行讀。
+                ctype = self.headers.get("Content-Type", "")
+                if "multipart/form-data" in ctype:
+                    self._post_body = None
+                else:
+                    n = int(self.headers.get("Content-Length", 0) or 0)
+                    try:
+                        self._post_body = self.rfile.read(n) if n else b""
+                    except OSError:
+                        self._post_body = b""
                 try:
                     if path == "/api/settings":
                         return self._json(server.backend.set_settings(self._read_json_body()))
@@ -280,6 +305,16 @@ class WebViewServer:
                             body.get("dir", ""), body.get("bundle", "")))
                     if path == "/api/batch/add":
                         return self._batch_add()
+                    if path == "/api/batch/add-path":
+                        # Wave 11：直接引用本機檔案，不複製、不上傳。
+                        body = self._read_json_body()
+                        raw = str(body.get("path", "")).strip()
+                        try:
+                            item = server.batch_queue.add_path(
+                                raw, body.get("name"), body.get("opts") or {})
+                            return self._json({"ok": True, "item": item})
+                        except ValueError as e:
+                            return self._err(400, str(e))
                     if path == "/api/batch/start":
                         return self._json({"ok": True,
                                            "summary": server.batch_queue.start()})

@@ -255,6 +255,11 @@ class WebBackend:
         self._server = None              # api_server.TranscribeServer（LAN 端點）
         self._tunnel = None              # cf_tunnel.CloudflareTunnel（對外臨時網址，延遲建立）
         self._on_event = on_event
+        # Wave 11／問題 8：標記目前轉寫任務的歸屬（None=單檔、batch=批次）。
+        # 批次 worker 會在呼叫 transcribe() 前設成 "batch"，讓 SSE 的
+        # progress / progress-detail 帶 scope，前端才知道要畫在「批次」頁，
+        # 而不是把批次進度誤顯示在「音檔轉字幕」頁。
+        self._progress_scope = None
         # H1: structured runtime log shared by the WebView and LAN endpoint.
         self.run_log = RunLog(on_event=on_event)
         self._theme_cb = None            # 主題變更回呼（app_webview 用來同步視窗標題列深淺）
@@ -404,7 +409,17 @@ class WebBackend:
                 continue
 
     # ── 事件推送 ────────────────────────────────────────────
+    def set_progress_scope(self, scope: str | None):
+        """設定進度事件歸屬（BatchQueue 在跑某個 item 時設 "batch"）。"""
+        self._progress_scope = scope
+
     def _emit(self, event: str, payload: dict):
+        # Wave 11：只對進度類事件加 scope，其餘事件契約完全不變。
+        # 單檔任務 scope=None → payload 一個字都不動，舊前端也相容。
+        scope = getattr(self, "_progress_scope", None)
+        if scope and event in ("progress", "progress-detail") and isinstance(payload, dict):
+            payload = dict(payload)
+            payload["scope"] = scope
         # Mirror user-visible backend messages into the run log. "log" itself
         # is excluded to avoid an infinite publish loop.
         if event in ("status", "capabilities", "download", "warning") and isinstance(payload, dict):

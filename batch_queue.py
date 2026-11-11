@@ -24,6 +24,8 @@ identical between single-file and batch runs - there is no second pipeline.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import threading
 import traceback
 import uuid
@@ -36,6 +38,14 @@ _DONE = "done"
 _FAILED = "failed"
 _CANCELED = "canceled"
 _TERMINAL = {_DONE, _FAILED, _CANCELED}
+
+# Wave 11：只接受常見音訊／影片容器。add_path() 直接引用本機檔案，必須先
+# 擋掉「把任意系統檔當音檔餵給 ffmpeg」的誤用（這是本機單人工具，仍做基本校驗）。
+_AUDIO_EXTS = {
+    ".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma",
+    ".mp4", ".mkv", ".mov", ".avi", ".webm", ".ts", ".m4v", ".wmv",
+    ".aiff", ".aif", ".amr", ".3gp",
+}
 
 
 def _now() -> str:
@@ -69,7 +79,12 @@ class BatchQueue:
         self.active_id: str | None = None
         self.cancel_requested = False
         self._worker: threading.Thread | None = None
+        # Wave 11：generation 保證「停止後立刻再開始」時，舊 worker 收尾不會
+        # 覆蓋新 worker 的 running 狀態，也不會被 start() 重置的
+        # cancel_requested 復活去多跑一個檔。
+        self._gen = 0
         self._load()
+        self._sweep_orphans()
 
     # ── persistence ────────────────────────────────────────────────────
     def _load(self):
@@ -81,6 +96,16 @@ class BatchQueue:
             for it in items:
                 if not isinstance(it, dict) or "id" not in it:
                     continue
+                # Wave 11 相容：舊版 state 沒有 ownedPath / localPath 欄位。
+                # 只要 path 仍在 upload_dir 內就視為「我們複製的副本」，
+                # 否則會被 _sweep_orphans 當孤兒刪掉，導致 retry 找不到檔。
+                if "ownedPath" not in it:
+                    try:
+                        p = Path(str(it.get("path", ""))).resolve()
+                        it["ownedPath"] = self.upload_dir.resolve() in p.parents
+                    except OSError:
+                        it["ownedPath"] = False
+                    it.setdefault("localPath", not it["ownedPath"])
                 # A process death leaves "running" items with no worker. Put
                 # them back to pending; their SRT/checkpoint survives, so
                 # transcribe() resumes from the last completed speech group.
@@ -96,6 +121,104 @@ class BatchQueue:
         except (OSError, ValueError, TypeError):
             # A corrupt state file must not prevent the app from starting.
             self.items = []
+
+    def _is_owned(self, item: dict) -> bool:
+        """這個 item 的音檔是不是我們自己複製進 upload_dir 的副本。
+
+        外部路徑（add_path / 使用者本機檔案）永遠不能刪——那是使用者的財產。
+        """
+        return bool(item.get("ownedPath"))
+
+    def _drop_owned(self, item: dict):
+        """刪掉該 item 擁有的上傳副本（僅限 upload_dir 內，防路徑穿越）。"""
+        if not self._is_owned(item):
+            return
+        try:
+            p = Path(str(item.get("path", ""))).resolve()
+            root = self.upload_dir.resolve()
+            if p == root or root not in p.parents:
+                return
+            p.unlink(missing_ok=True)
+        except OSError:
+            # 檔案被防毒軟體鎖住時不讓整個操作失敗；下次啟動 _sweep_orphans 會再試。
+            pass
+        item["ownedPath"] = False
+
+    def _sweep_orphans(self):
+        """啟動時清掉 upload_dir 裡沒有任何 item 引用的孤兒檔。
+
+        這是 Wave 11 之前「清掉任務後殘留垃圾」的主因：remove() /
+        clear_finished() 以前只從 items 移除，磁碟上的副本永遠留著。
+        """
+        try:
+            referenced = set()
+            for it in self.items:
+                if self._is_owned(it):
+                    try:
+                        referenced.add(Path(str(it.get("path", ""))).resolve())
+                    except OSError:
+                        pass
+            for p in self.upload_dir.iterdir():
+                if p.is_file():
+                    try:
+                        if p.resolve() not in referenced:
+                            p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
+    def add_path(self, src_path: str | Path, name: str | None = None,
+                 opts: dict | None = None) -> dict:
+        """直接引用本機檔案，不複製、不上傳（Wave 11）。
+
+        瀏覽器 <input type=file> 出於沙箱限制拿不到本機絕對路徑，所以純
+        WebView 無法「零複製」；但使用者可以手動貼上路徑（一次可多行），
+        由後端校驗後直接引用。結果 SRT 仍照常落盤，原始音檔絕不更動、
+        也絕不刪除。
+        """
+        src = Path(str(src_path)).expanduser()
+        raw = str(src_path).strip()
+        if raw.startswith("\\\\") or src_path and str(src_path).startswith("//"):
+            raise ValueError("不支援網路路徑（UNC），請用本機磁碟路徑")
+        try:
+            resolved = src.resolve()
+        except OSError as e:
+            raise ValueError(f"路徑無效：{e}") from e
+        if not resolved.is_file():
+            raise ValueError(f"找不到檔案或不是一般檔案：{resolved}")
+        if resolved.suffix.lower() not in _AUDIO_EXTS:
+            raise ValueError(f"不支援的檔案類型：{resolved.suffix or '(無副檔名)'}")
+        # 別把程式自己的狀態目錄當音檔餵進 ffmpeg
+        try:
+            if self.state_dir.resolve() in resolved.parents:
+                raise ValueError("不可加入程式自身的狀態目錄內的檔案")
+        except OSError:
+            pass
+
+        with self._lock:
+            item_id = uuid.uuid4().hex[:12]
+            allowed = {k: (opts or {})[k] for k in
+                       ("language", "diarize", "nSpeakers", "align", "hint")
+                       if k in (opts or {})}
+            allowed.update({"path": str(resolved), "name": Path(name or resolved.name).name})
+            item = {
+                "id": item_id,
+                "name": Path(name or resolved.name).name,
+                "path": str(resolved),
+                "status": "pending",
+                "progress": 0.0,
+                "error": None,
+                "srtPath": None,
+                "opts": allowed,
+                "createdAt": _now(),
+                "ownedPath": False,   # 外部檔案：任何清理都不會動它
+                "localPath": True,    # UI 可標示「本機路徑」
+            }
+            self.items.append(item)
+            self._save()
+            self._emit(item, "added")
+            return dict(item)
 
     def _save(self):
         tmp = self.state_file.with_suffix(".json.tmp")
@@ -159,6 +282,8 @@ class BatchQueue:
                 "srtPath": None,
                 "opts": allowed,
                 "createdAt": _now(),
+                "ownedPath": True,    # 這是我們複製的副本，移除時要刪
+                "localPath": False,
             }
             self.items.append(item)
             self._save()
@@ -173,18 +298,28 @@ class BatchQueue:
                 return self.summary()
             self.cancel_requested = False
             self.running = True
-            self._worker = threading.Thread(target=self._run, daemon=True,
+            self._gen += 1
+            gen = self._gen
+            self._worker = threading.Thread(target=self._run, args=(gen,), daemon=True,
                                             name="batch-worker")
             self._worker.start()
             return self.summary()
 
     def cancel(self) -> dict:
-        """Cancel the active item and drop pending ones; done items stay."""
+        """暫停佇列：保留待處理項目，只中斷目前正在跑的那一個。
+
+        Wave 11：舊版把「所有 pending」一起標成 canceled，使用者按「停止」
+        再按「開始」時佇列就空了（沒有任何 pending 可跑）。現在 pending
+        原封不動，running 的那個退回 pending（其 SRT/checkpoint 仍在，
+        transcribe() 會從上一段接著跑），所以「停止 → 再開始」能續跑。
+        """
         with self._lock:
             self.cancel_requested = True
+            self.running = False
+            self._gen += 1
             for it in self.items:
-                if it.get("status") in ("pending", "running"):
-                    it["status"] = _CANCELED
+                if it.get("status") == "running":
+                    it["status"] = "pending"
                     it["error"] = None
             self.active_id = None
             self._save()
@@ -204,6 +339,7 @@ class BatchQueue:
                     # item is being processed.
                     if it.get("status") == "running" or self.active_id == item_id:
                         return False
+                    self._drop_owned(it)          # Wave 11：連磁碟副本一起清
                     self.items.pop(idx)
                     self._save()
                     self._broadcast()
@@ -212,8 +348,13 @@ class BatchQueue:
 
     def clear_finished(self) -> int:
         with self._lock:
-            keep = [i for i in self.items if i.get("status") not in _TERMINAL]
-            removed = len(self.items) - len(keep)
+            keep, removed = [], 0
+            for it in self.items:
+                if it.get("status") in _TERMINAL:
+                    self._drop_owned(it)          # Wave 11：不再留垃圾
+                    removed += 1
+                else:
+                    keep.append(it)
             self.items = keep
             self._save()
             self._broadcast()
@@ -246,12 +387,25 @@ class BatchQueue:
             except Exception:
                 pass
 
+    def _set_scope(self, scope):
+        """告訴後端「這段轉寫屬於批次」，讓 progress SSE 帶 scope。
+
+        用 getattr 而非直接呼叫：BatchQueue 的 backend 在測試裡是
+        FakeBackend，也可能是只實作 transcribe/cancel 的輕量替身。
+        """
+        setter = getattr(self.backend, "set_progress_scope", None)
+        if callable(setter):
+            try:
+                setter(scope)
+            except Exception:
+                pass
+
     # ── worker ─────────────────────────────────────────────────────────
-    def _run(self):
+    def _run(self, gen: int):
         try:
             while True:
                 with self._lock:
-                    if self.cancel_requested:
+                    if self.cancel_requested or self._gen != gen:
                         break
                     nxt = next((i for i in self.items if i.get("status") == "pending"), None)
                     if nxt is None:
@@ -274,10 +428,16 @@ class BatchQueue:
                             self._emit(cur, "progress")
 
                 try:
-                    if self.cancel_requested:
+                    if self.cancel_requested or self._gen != gen:
                         raise RuntimeError("已取消")
+                    # Wave 11／問題 8：標記進度歸屬，前端才知道要畫在批次頁。
+                    self._set_scope("batch")
                     result = self.backend.transcribe(opts, progress_cb=_progress)
                     with self._lock:
+                        # gen 已變 = 使用者按了「停止」或又按了「開始」，
+                        # 這個舊 worker 的結果不能再寫回佇列。
+                        if self._gen != gen:
+                            continue
                         cur = next((i for i in self.items if i["id"] == item_id), None)
                         if cur:
                             cur["status"] = _DONE
@@ -288,6 +448,8 @@ class BatchQueue:
                             self._emit(cur, "done")
                 except Exception as exc:
                     with self._lock:
+                        if self._gen != gen:
+                            continue          # 已被取消／取代，別覆寫新狀態
                         cur = next((i for i in self.items if i["id"] == item_id), None)
                         if cur:
                             cur["status"] = _CANCELED if self.cancel_requested else _FAILED
@@ -297,14 +459,20 @@ class BatchQueue:
                     if not self.cancel_requested:
                         traceback.print_exc()
                 finally:
+                    self._set_scope(None)
                     with self._lock:
-                        self.active_id = None
+                        if self._gen == gen:
+                            self.active_id = None
             with self._lock:
-                self.running = False
-                self._save()
-                self._broadcast()
+                # 只有「現任」worker 能收網；舊 worker 不能把新 worker 的
+                # running 改成 False，否則「停止後立刻再開始」會立刻顯示停了。
+                if self._gen == gen:
+                    self.running = False
+                    self._save()
+                    self._broadcast()
         except Exception:
             with self._lock:
-                self.running = False
-                self._save()
+                if self._gen == gen:
+                    self.running = False
+                    self._save()
             traceback.print_exc()

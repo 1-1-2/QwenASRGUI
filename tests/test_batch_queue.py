@@ -166,11 +166,118 @@ def main() -> int:
         q5.items[0]["status"] = "running"
         q5.active_id = q5.items[0]["id"]
         r.check("cannot remove a running item", q5.remove(q5.items[0]["id"]) is False)
-        summ = q5.cancel()
-        r.check("cancel marks pending/running as canceled",
-                all(i["status"] == "canceled" for i in q5.items),
+        q5.cancel()
+        # Wave 11／問題 4：舊語義把所有 pending 一起標成 canceled，使用者按
+        # 「停止」再按「開始」時沒有任何 pending 可跑，佇列看起來被清空。
+        # 新語義是「暫停」：pending 原封不動、running 退回 pending。
+        r.check("cancel keeps pending and puts running back to pending",
+                all(i["status"] == "pending" for i in q5.items),
                 str([i["status"] for i in q5.items]))
         r.check("cancel calls backend.cancel()", be5.cancelled is True)
+        q5.start()
+        r.check("start after cancel resumes the pending items",
+                wait_done(q5) and all(i["status"] == "done" for i in q5.items),
+                str([i["status"] for i in q5.items]))
+
+        print("\n[Wave 11] 本機路徑直引、副本清理、孤兒清掃")
+        import threading
+        w11 = tmp / "state_w11"
+        be6 = FakeBackend()
+        q6 = BatchQueue(be6, state_dir=w11)
+        local = upload(tmp, "local.m4a")
+        it = q6.add_path(local, opts={"language": "zh", "trial": True})
+        r.check("add_path 直接引用原檔、不複製",
+                Path(it["path"]).resolve() == local.resolve() and
+                it["ownedPath"] is False and it["localPath"] is True, it["path"])
+        r.check("add_path 只保留白名單 opts（試跑不可注入）",
+                it["opts"].get("language") == "zh" and "trial" not in it["opts"])
+
+        def _reject(fn):
+            try:
+                fn()
+                return False
+            except ValueError:
+                return True
+
+        r.check("add_path 拒絕不存在的檔案",
+                _reject(lambda: q6.add_path(tmp / "nope.wav")))
+        txt = tmp / "readme.txt"
+        txt.write_text("hi", encoding="utf-8")
+        r.check("add_path 拒絕非音訊副檔名", _reject(lambda: q6.add_path(txt)))
+        r.check("add_path 拒絕 UNC 網路路徑",
+                _reject(lambda: q6.add_path(r"\\server\share\a.wav")))
+
+        up = q6.add(upload(tmp, "copied.wav"), "copied.wav")
+        up_path = Path(up["path"])
+        r.check("上傳副本標記為自有", up["ownedPath"] is True and up_path.is_file())
+        orphan = q6.upload_dir / "orphan.wav"
+        orphan.write_bytes(b"orphan")
+        q6._sweep_orphans()
+        r.check("啟動清掃刪掉孤兒副本", not orphan.exists())
+        r.check("清掃保留仍被引用的副本", up_path.is_file())
+        r.check("remove 連自有副本一起刪",
+                q6.remove(up["id"]) is True and not up_path.exists())
+        r.check("remove 絕不刪使用者本機原檔",
+                q6.remove(it["id"]) is True and local.is_file())
+        r.check("兩個都移除後佇列為空", q6.items == [])
+        up2 = q6.add(upload(tmp, "finished.wav"), "finished.wav")
+        up2_path = Path(up2["path"])
+        q6.items[0]["status"] = "done"
+        r.check("clear_finished 也刪自有副本",
+                q6.clear_finished() == 1 and not up2_path.exists())
+
+        print("\n[Wave 11] 停止後立即再開始：generation 不互相覆蓋")
+        class GenBackend:
+            """第 1、2 次 transcribe 各用一個 gate 卡住，模擬舊 worker 晚收尾。"""
+            def __init__(self):
+                self.calls, self.gates, self.scopes = [], [], []
+                self._lk = threading.Lock()
+
+            def set_progress_scope(self, s):
+                with self._lk:
+                    self.scopes.append(s)
+
+            def cancel(self):
+                with self._lk:
+                    if self.gates:
+                        self.gates[0].set()      # 只放行舊 worker
+
+            def transcribe(self, opts, progress_cb=None):
+                with self._lk:
+                    n = len(self.calls)
+                    self.calls.append(opts.get("name"))
+                if n <= 1:
+                    g = threading.Event()
+                    with self._lk:
+                        self.gates.append(g)
+                    g.wait(3.0)
+                if progress_cb:
+                    progress_cb(100, "done")
+                return {"srtPath": "/x.srt", "totalSegments": 1}
+
+        be7 = GenBackend()
+        q7 = BatchQueue(be7, state_dir=tmp / "state_w11b")
+        for n in ("b1.wav", "b2.wav"):
+            q7.add(upload(tmp, n), n)
+        q7.start()
+        deadline = time.time() + 2
+        while time.time() < deadline and not be7.calls:
+            time.sleep(0.01)
+        r.check("舊 worker 已進入 transcribe", len(be7.calls) >= 1)
+        q7.cancel()
+        r.check("cancel 後兩個項目都是 pending",
+                all(i["status"] == "pending" for i in q7.items),
+                str([i["status"] for i in q7.items]))
+        q7.start()
+        time.sleep(0.35)      # 讓舊 worker 收尾；新 worker 仍卡在 gate[1]
+        r.check("舊 worker 收尾不會把新 worker 的 running 改成 False",
+                q7.running is True, str(q7.running))
+        r.check("批次任務標記 scope=batch 並在結束後還原",
+                "batch" in be7.scopes and None in be7.scopes, str(be7.scopes))
+        with be7._lk:
+            if len(be7.gates) > 1:
+                be7.gates[1].set()
+        r.check("新 worker 最終正常收網", wait_done(q7, 4.0), str(q7.running))
 
         print("\n[B4] summary")
         q5.items = [

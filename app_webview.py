@@ -607,13 +607,55 @@ def _find_edge() -> str | None:
     return None
 
 
-def _profile_dir() -> str:
-    base = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME / "edge-profile"
-    base.mkdir(parents=True, exist_ok=True)
-    return str(base)
+def _profile_dir(variant: int = 0) -> str:
+    """Edge 的專用 profile 目錄。
+
+    Wave 11：variant>0 是重試用的備用目錄。固定 profile 若殘留
+    SingletonLock（上次 Edge 沒乾淨退出），新啟動的 msedge.exe 會把
+    --app URL 轉發給那個殘留實例、自己立刻 exit(0) —— 使用者看到的就是
+    「視窗閃一下就沒了」，而 launcher.log 記為「退出碼 0，存活 0.0s」。
+    換一個全新的 profile 目錄即可避開鎖競爭。
+
+    只使用 0/1/2 三個固定名字，不會無限增生目錄（使用者先前明確不希望
+    「每次啟動都產生新 profile」）。
+    """
+    base = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME
+    name = "edge-profile" if variant == 0 else f"edge-profile-r{variant}"
+    d = base / name
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d)
 
 
-def _app_mode_args(url: str) -> list[str]:
+def _clear_stale_singleton(profile_dir: str):
+    """清除上次 Edge 沒乾淨退出留下的 ProcessSingleton 鎖（Wave 11／問題 2）。
+
+    Chromium 會在 --user-data-dir 裡放 SingletonLock / SingletonSocket /
+    SingletonCookie。上次進程崩潰或被強制結束後這些檔可能還在，新啟動的
+    msedge.exe 會判定「這個 profile 已有實例」，把 --app URL 轉發過去後
+    自己立刻 exit(0) —— launcher.log 裡就是「退出碼 0，存活 0.0s」，
+    使用者看到的是冷啟動閃一下就沒了。
+
+    本機以 Chromium + 固定 --user-data-dir 可穩定重現：
+      Failed to create <profile>/SingletonLock: File exists (17)
+      Failed to create a ProcessSingleton for your profile directory...
+      Aborting now to avoid profile corruption.
+
+    只刪這三個已知檔名，不碰 profile 其他內容；若檔案真的被另一個 Edge
+    行程佔住，unlink 會失敗，我們記一行日誌後交給 _run_edge_session()
+    換備用 profile 重試，不強行破壞。
+    """
+    root = Path(profile_dir)
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        p = root / name
+        try:
+            if p.is_symlink() or p.exists():
+                p.unlink()
+                _log(f"[{APP_NAME}] 已清除殘留的 {name}（{root.name}）")
+        except OSError as e:
+            _log(f"[{APP_NAME}] {name} 清除失敗（可能仍有行程佔用）：{e}")
+
+
+def _app_mode_args(url: str, variant: int = 0) -> list[str]:
     """Edge --app 模式的完整旗標。抽成獨立函式，方便測試與日後調整。
 
     這裡每個旗標都對應一個「使用者看得到的問題」，不只是瘦身：
@@ -631,7 +673,7 @@ def _app_mode_args(url: str) -> list[str]:
     """
     return [
         f"--app={url}", "--inprivate",
-        f"--user-data-dir={_profile_dir()}",
+        f"--user-data-dir={_profile_dir(variant)}",
         f"--window-size={WIN_W},{WIN_H}",
         "--no-first-run", "--no-default-browser-check", "--disable-sync",
         "--disable-background-networking", "--hide-crash-restore-bubble",
@@ -640,10 +682,14 @@ def _app_mode_args(url: str) -> list[str]:
     ]
 
 
-def open_edge_app(url: str) -> subprocess.Popen | None:
+def open_edge_app(url: str, variant: int = 0) -> subprocess.Popen | None:
     edge = _find_edge()
     if edge:
-        args = [edge, *_app_mode_args(url)]
+        # Wave 11：開窗前先清掉上次異常結束留下的 ProcessSingleton 鎖。
+        # 這是冷啟動秒退（exit 0 / 0.0s）最常見的可重現原因；清不掉也沒關係，
+        # _run_edge_session 會換備用 profile 再試。
+        _clear_stale_singleton(_profile_dir(variant))
+        args = [edge, *_app_mode_args(url, variant)]
         # CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
         #   BREAKAWAY_FROM_JOB 讓 Edge 脫離 Python 的 Job Object —— 否則 Python
         #   退出時 Job handle 關閉，OS 會連帶殺掉 Edge，使用者看到的就是「視窗
@@ -653,13 +699,56 @@ def open_edge_app(url: str) -> subprocess.Popen | None:
         flags = 0x08000000 | 0x01000000 if sys.platform == "win32" else 0
         try:
             proc = subprocess.Popen(args, creationflags=flags)
-            _log(f"[{APP_NAME}] Edge PID {proc.pid} 已啟動（脫離 Job Object）")
+            _log(f"[{APP_NAME}] Edge PID {proc.pid} 已啟動（脫離 Job Object，"
+                 f"profile variant={variant}）")
             _decorate_window_async()   # Edge --app 視窗同樣套白底黑字標題列 + 圖示
             return proc
         except Exception:
             pass
     webbrowser.open(url)
     return None
+
+
+# Edge 在 2 秒內以 code 0 退出 = 典型的「轉發給殘留實例後自己結束」，
+# 而不是使用者主動關窗（人不可能在 2 秒內關掉一個剛開的視窗）。
+_EDGE_EARLY_EXIT_SEC = 2.0
+_EDGE_MAX_ATTEMPTS = 3
+
+
+def _run_edge_session(url: str) -> tuple[int | None, float, int]:
+    """啟動 Edge 並等到視窗關閉；若判定為「轉發後秒退」就換 profile 重試。
+
+    回傳 (最後一次退出碼, 最後一次存活秒數, 總嘗試次數)。
+    這個函式是 Wave 11 閃退修復的核心：不猜是哪個防毒軟體或哪個鎖，
+    直接用可觀測訊號（存活 < 2s 且 exit 0）觸發隔離重試，並把每次
+    嘗試寫進 launcher.log，讓下一次反饋能一眼看出是否還在發生。
+    """
+    for attempt in range(_EDGE_MAX_ATTEMPTS):
+        t_edge = time.perf_counter()
+        proc = open_edge_app(url, variant=attempt)
+        if proc is None:
+            # 找不到 msedge.exe，已降級成系統瀏覽器；沒有行程可等，
+            # 維持 HTTP server 存活（與舊行為一致）。
+            _log(f"[{APP_NAME}] 找不到 msedge.exe，已用系統瀏覽器開啟，"
+                 f"HTTP server 持續服務。")
+            threading.Event().wait()
+            return None, 0.0, 0
+        proc.wait()
+        rc = proc.poll()
+        alive = time.perf_counter() - t_edge
+        _log(f"[{APP_NAME}] Edge 已結束：退出碼 {rc}，存活 {alive:.1f}s"
+             f"（第 {attempt + 1}/{_EDGE_MAX_ATTEMPTS} 次）")
+        early = (rc in (0, None)) and alive < _EDGE_EARLY_EXIT_SEC
+        if early and attempt + 1 < _EDGE_MAX_ATTEMPTS:
+            _log(f"[{APP_NAME}] ⚠ Edge 疑似被轉發給殘留實例（{alive:.1f}s 內 "
+                 f"以 code {rc} 結束），換用備用 profile 自動重試…")
+            time.sleep(0.35)   # 給殘留 Edge 一點時間釋放 SingletonLock
+            continue
+        if early:
+            _log(f"[{APP_NAME}] ⚠ Edge 連續 {_EDGE_MAX_ATTEMPTS} 次秒退；"
+                 f"請把本份 launcher-*.log 回報給開發者。")
+        return rc, alive, attempt + 1
+    return None, 0.0, _EDGE_MAX_ATTEMPTS
 
 
 def _cli_argv() -> list[str] | None:
@@ -846,21 +935,11 @@ def main():
             _log(f"[{APP_NAME}] Native window unavailable, using Edge --app.")
     try:
         if not native_ok:
-            t_edge = time.perf_counter()
-            proc = open_edge_app(url)
-            clk.mark("Edge 行程已拉啟")
-            if proc is not None:
-                proc.wait()
-                # 記錄 Edge 退出資訊：下次「視窗閃退」時能從這裡看出 Edge 是
-                # 正常關閉（exit 0）還是異常崩潰（非 0）或被外部殺掉。
-                edge_rc = proc.poll()
-                edge_alive = time.perf_counter() - t_edge
-                _log(f"[{APP_NAME}] Edge 已結束：退出碼 {edge_rc}，存活 {edge_alive:.1f}s")
-                if edge_rc not in (0, None) or edge_alive < 2.0:
-                    _log(f"[{APP_NAME}] ⚠ Edge 異常退出（退出碼 {edge_rc}，僅存活 "
-                         f"{edge_alive:.1f}s）——可能是 profile 初始化失敗或被防毒軟體攔截。")
-            else:
-                threading.Event().wait()
+            # Wave 11：交給 _run_edge_session 處理「轉發後秒退」的自動重試。
+            # 以前這裡直接 proc.wait()，Edge 0.0s 退出就一路走到 finally、
+            # Python 跟著 os._exit，使用者只看到「閃一下就沒了」。
+            _run_edge_session(url)
+            clk.mark("Edge 行程已結束")
     except KeyboardInterrupt:
         pass
     finally:

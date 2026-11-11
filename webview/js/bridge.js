@@ -241,8 +241,11 @@
 
     async getBatch() {
       if (MODE === "web") {
-        try { return await apiGet("/api/batch"); }
-        catch { return { summary: { done: 0, total: 0, failed: 0, progress: 0, running: false }, items: [] }; }
+        // Wave 11：以前這裡在請求失敗時回 items:[]，等於把「一次網路抖動」
+        // 放大成「整個佇列被清空」。曾因 keep-alive 殘留 body 讓
+        // GET /api/batch 得到 501，前端 8 個檔瞬間歸零。現在寧可拋錯，
+        // 由 refreshBatch() 保留既有狀態，絕不用空陣列覆蓋佇列。
+        return await apiGet("/api/batch");
       }
       return MOCK.batch;
     },
@@ -269,6 +272,11 @@
         throw new Error(msg);
       }
       return r.json();
+    },
+    // Wave 11：貼上本機絕對路徑，後端直接引用，不產生任何副本。
+    async batchAddPath(path, opts) {
+      if (MODE !== "web") return { ok: true, item: null, mock: true };
+      return apiPost("/api/batch/add-path", { path, opts: opts || {} });
     },
     async batchStart() {
       if (MODE !== "web") return { ok: true, mock: true };

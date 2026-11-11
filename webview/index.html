@@ -96,6 +96,10 @@
           <button class="btn btn-primary" id="btn-run" disabled>
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span data-i18n="file.run">開始轉換</span>
           </button>
+          <!-- Wave 11：試跑勾選很容易被忘記（開關在下方摺疊面板裡），
+               所以在「開始轉換」旁邊常駐一個醒目徽章，勾選時立刻出現。 -->
+          <span class="trial-badge" id="trial-badge" hidden
+                data-i18n="file.trialBadge">試跑前 5 分鐘 · 不會完整轉檔</span>
           <button class="btn btn-ghost" id="btn-open-dir" disabled>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span data-i18n="file.openDir">開啟輸出資料夾</span>
           </button>
@@ -123,11 +127,15 @@
         </div>
         <textarea class="input" id="hint-box" data-i18n-ph="file.hintPh" placeholder="例如：本段為產品行銷 Podcast，會出現「轉換率」「漏斗」等行銷術語…"></textarea>
 
-        <!-- 切分參數：與「這份音檔怎麼切」有關的設定全部集中在識別頁 -->
-        <div class="card seg-panel" id="seg-panel">
-          <div class="hint-head">
-            <div class="l"><span class="t" data-i18n="file.segTitle">切分參數</span><span class="d" data-i18n="file.segDesc">切得越長，語句越完整。</span></div>
-          </div>
+        <!-- Wave 11：切分參數改為可摺疊面板，預設收起節省版面；
+             試跑勾選另有「開始轉換」旁的徽章提示，不怕收起後忘記。 -->
+        <details class="card seg-panel" id="seg-panel">
+          <summary class="seg-summary">
+            <span class="t" data-i18n="file.segTitle">切分參數</span>
+            <span class="d" id="seg-summary-val">—</span>
+            <span class="chev">▸</span>
+          </summary>
+          <div class="seg-body">
           <div class="row">
             <div class="label"><div class="t" data-i18n="file.vad">語音偵測靈敏度（VAD）</div></div>
             <input type="range" class="slider" id="seg-vad" min="0.30" max="0.80" step="0.01" value="0.50"><span class="slider-val" id="seg-vad-val">0.50</span>
@@ -147,18 +155,20 @@
             <label class="switch"><input type="checkbox" id="sw-trial"><span class="track"></span><span data-i18n="file.trial">試跑前 5 分鐘</span></label>
             <span class="seg-verdict" id="seg-verdict" data-i18n="file.previewEmpty">尚未預檢</span>
           </div>
-        </div>
+          </div>
+        </details>
 
         <!-- Two progress views coexist: time/segment ratio above, percentage
              bar below. Live subtitles arrive over SSE in bounded batches. -->
         <div class="progress" id="progress" hidden>
           <div class="meta"><span class="s" id="prog-status">辨識中 · 第 5/8 段</span><span class="p" id="prog-pct">68%</span></div>
           <div class="bar"><i id="prog-bar" style="width:68%"></i></div>
-          <div id="prog-detail" style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--ink-2);font-family:var(--font-mono)">
+          <!-- Wave 11／問題 1：上方 .meta 已有「辨識中 · 第 5/8 段」，
+               下方舊版又顯示「識別中」(prog-phase) 與「5 段」(prog-groups)，
+               同一句話講兩次。現在只留上方沒有的純數值：已處理時間、剩餘。 -->
+          <div class="prog-detail" id="prog-detail">
             <span id="prog-time">已處理 — / —</span>
-            <span id="prog-groups">— 段</span>
             <span id="prog-eta">剩餘 —</span>
-            <span id="prog-phase">準備中</span>
           </div>
         </div>
 
@@ -226,11 +236,40 @@
       <section class="view" data-view="batch">
         <div class="batch-head">
           <button class="btn btn-ghost" id="btn-batch-add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span data-i18n="batch.add">加入檔案</span></button>
+          <!-- Wave 11／問題 3：本機檔案不必先複製進 batch_uploads。 -->
+          <button class="btn btn-ghost" id="btn-batch-path"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg><span data-i18n="batch.addPath">貼上本機路徑</span></button>
           <button class="btn btn-primary" id="btn-batch-run"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span data-i18n="batch.run">全部開始</span></button>
           <button class="btn btn-ghost" id="btn-batch-clear"><span data-i18n="batch.clear">清除已完成</span></button>
           <span style="font-size:12px;color:var(--ink-2)" data-i18n="batch.sharedOpts">語言、提示詞、切分與試跑參數共用「音檔轉字幕」頁的設定</span>
           <div class="sp"></div>
           <div class="summary" id="batch-summary">0 / 0 完成 · 總進度 0%</div>
+        </div>
+
+        <!-- Wave 11／問題 3：直接引用本機檔案（不複製、不上傳、不產生垃圾副本）。
+             瀏覽器 <input type=file> 拿不到絕對路徑，所以用「貼路徑」補上這條路。 -->
+        <div class="card batch-paths" id="batch-paths" hidden>
+          <div class="line">
+            <textarea class="input" id="batch-path-input" data-i18n-ph="batch.pathPh"
+                      placeholder="每行一個本機檔案絕對路徑，例如：&#10;C:\DATA\TMP\audio\001.m4a"></textarea>
+            <button class="btn btn-primary" id="btn-batch-path-add" data-i18n="batch.pathAdd">加入路徑</button>
+            <button class="btn btn-ghost" id="btn-batch-path-close" data-i18n="common.close">關閉</button>
+          </div>
+          <div class="hint" data-i18n="batch.pathHint">直接引用本機檔案：不複製、不上傳、不佔用暫存空間；移除任務也不會刪除你的原檔。每行一個路徑，僅支援本機磁碟。</div>
+          <div class="hint" id="batch-path-msg" hidden></div>
+        </div>
+
+        <!-- Wave 11／問題 8：批次頁自己的總進度條 + 目前處理中的檔案。
+             以前進度只畫在「音檔轉字幕」頁，切到批次頁看不到任何進度。 -->
+        <div class="progress card batch-progress" id="batch-progress">
+          <div class="meta">
+            <span class="s" id="batch-prog-status" data-i18n="batch.idle">待處理</span>
+            <span class="p" id="batch-prog-pct">0%</span>
+          </div>
+          <div class="bar"><i id="batch-prog-bar" style="width:0%"></i></div>
+          <div class="detail" id="batch-prog-detail">
+            <span id="batch-prog-count">0 / 0 完成</span>
+            <span id="batch-prog-active">—</span>
+          </div>
         </div>
         <div class="batch-list" id="batch-list"></div>
       </section>

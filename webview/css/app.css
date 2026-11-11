@@ -351,6 +351,47 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 
 /* 切分參數：與其他設定卡共用 .row 節奏，字級 / 行距 / 間距全部收斂到一組。
    舊版把 .row、獨立 .d、.switch 直接堆在一起，沒有專門樣式，導致行距忽大忽小。 */
+/* ── Wave 11／問題 5：切分參數改成 <details> 摺疊面板 ───────────────
+   收起時只留一列標題 + 目前生效參數摘要，展開才顯示滑桿／預檢／試跑。
+   原生 disclosure 三角在各瀏覽器長得不一樣，直接藏掉改用自訂 chevron。 */
+.seg-panel.card { padding: 0; overflow: hidden; }
+.seg-panel > summary.seg-summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 18px;
+}
+.seg-panel > summary.seg-summary::-webkit-details-marker { display: none; }
+.seg-panel > summary.seg-summary::marker { content: ""; }
+.seg-panel > summary.seg-summary:hover { background: var(--panel-2); }
+.seg-panel > summary .t { font-size: 13px; font-weight: 600; color: var(--ink); }
+.seg-panel > summary .d {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--muted);
+  margin-left: auto; white-space: nowrap;
+}
+.seg-panel > summary .chev {
+  color: var(--faint); font-size: 12px; transition: transform .18s;
+}
+.seg-panel[open] > summary .chev { transform: rotate(90deg); }
+.seg-panel[open] > summary.seg-summary {
+  border-bottom: 1px solid var(--line);
+}
+.seg-panel .seg-body { padding: 2px 18px 14px; }
+
+/* ── Wave 11／問題 6：試跑醒目徽章（緊貼「開始轉換」）───────────── */
+.trial-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px; border-radius: var(--r-pill);
+  background: var(--warn-bg); color: var(--warn-fg);
+  border: 1px solid var(--warn-line);
+  font-size: 12px; font-weight: 700; letter-spacing: .2px;
+  white-space: nowrap; cursor: pointer;
+  box-shadow: 0 0 0 3px rgba(224, 165, 59, .12);
+}
+.trial-badge::before { content: "⚠"; font-size: 12px; }
+.btn-primary.trial-on {
+  box-shadow: 0 0 0 3px rgba(224, 165, 59, .38), 0 4px 12px rgba(14, 142, 122, .26);
+}
+
 .seg-panel .hint-head { margin: 0 0 4px; }
 .seg-panel .row { padding: 10px 2px; }
 .seg-panel .slider-val { min-width: 38px; }
@@ -383,6 +424,18 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .bar { height: 7px; border-radius: 5px; background: var(--line); overflow: hidden; }
 .bar > i { display: block; height: 100%; width: 0; border-radius: 5px;
   background: linear-gradient(90deg, var(--accent), var(--accent-strong)); transition: width .3s ease; }
+
+/* Wave 11／問題 1：進度條上下方不再重複。
+   上方 .meta 已經有「辨識中 · 第 5/8 段」這種主狀態；舊版下方又顯示
+   「識別中」(prog-phase) 與「5 段」(prog-groups)，等於同一句話講兩次。
+   現在下方只留「上方沒有的數值」：已處理時間、剩餘時間，且改成
+   緊貼進度條的一行淡字，不再像第二個狀態列。 */
+.prog-detail {
+  display: flex; gap: 16px; flex-wrap: wrap;
+  margin-top: 6px;
+  font-size: 11.5px; color: var(--muted); font-family: var(--font-mono);
+}
+.prog-detail span { white-space: nowrap; }
 
 /* ============================================================
    Signature：波形 + 時間軸字幕卡
@@ -485,21 +538,62 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
   padding: 2px 7px; margin: -2px -7px; box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
-/* 記錄 log */
+/* 記錄 log ── Wave 11／問題 7：純文字逐行輸出。
+   舊版是一張有底色、圓角、邊框的卡片，且 .ln 用 pre-wrap 讓一條
+   多行訊息折成好幾行，看起來像「有裝飾的區塊」而不是終端輸出。
+   現在：無卡片裝飾、每條訊息強制單行（不折行）、時間戳固定顯示在最前面，
+   長行靠橫向捲動，不會把一行拆成數行。 */
 .log {
-  margin-top: 18px; background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: 10px; padding: 12px 14px; font-family: var(--font-mono);
-  font-size: 11.5px; color: var(--muted); line-height: 1.7; max-height: 130px; overflow-y: auto;
+  margin-top: 10px; background: transparent; border: 0; border-radius: 0;
+  padding: 4px 2px; font-family: var(--font-mono);
+  font-size: 11.5px; color: var(--ink-2); line-height: 1.6;
+  max-height: 220px; overflow: auto;
 }
-.log .ln { white-space: pre-wrap; word-break: break-word; }
+.log .ln { white-space: pre; word-break: normal; }
+.log .ln .ts { color: var(--faint); }
+.log .ln.lv-error { color: #c0392b; }
+.log .ln.lv-warn { color: #b26a00; }
+[data-theme="dark"] .log .ln.lv-error { color: #FF8A85; }
+[data-theme="dark"] .log .ln.lv-warn { color: #E6B968; }
 
 /* ============================================================
    批次視圖
    ============================================================ */
-.batch-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.batch-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
 .batch-head .sp { flex: 1; }
 .batch-head .summary { font-size: 12.5px; color: var(--muted); font-family: var(--font-mono); }
 .batch-list { display: flex; flex-direction: column; gap: 8px; }
+
+/* Wave 11／問題 8：批次頁自己的進度條 + 當前任務。
+   以前批次進度只借「音檔轉字幕」頁的進度條顯示，批次頁本身只有一行
+   純文字 summary；現在這一頁自帶總進度條、目前處理中的檔名與狀態。 */
+.batch-progress { margin-top: 0; margin-bottom: 12px; padding: 12px 16px; }
+.batch-progress .meta {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-size: 12.5px; margin-bottom: 7px;
+}
+.batch-progress .meta .s {
+  color: var(--ink-2); font-weight: 500; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.batch-progress .meta .p {
+  color: var(--accent-strong); font-family: var(--font-mono);
+  font-weight: 700; flex: 0 0 auto;
+}
+.batch-progress .detail {
+  display: flex; gap: 16px; flex-wrap: wrap; margin-top: 7px;
+  font-size: 11.5px; color: var(--muted); font-family: var(--font-mono);
+}
+
+/* Wave 11／問題 3：貼上本機路徑直接引用，不複製不上傳。 */
+.batch-paths { margin-bottom: 12px; padding: 12px 16px; }
+.batch-paths .line { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
+.batch-paths textarea {
+  min-height: 58px; font-family: var(--font-mono); font-size: 12px;
+  line-height: 1.5; resize: vertical; flex: 1 1 320px;
+}
+.batch-paths .hint { font-size: 11.5px; color: var(--muted); margin-top: 7px; line-height: 1.55; }
+
 .b-row {
   display: flex; align-items: center; gap: 14px;
   padding: 12px 16px; border: 1px solid var(--line);
@@ -508,7 +602,19 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .b-row .nm { flex: 1; min-width: 0; }
 .b-row .nm .f { font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .b-row .nm .e { font-size: 11.5px; color: var(--live); margin-top: 2px; line-height: 1.45; }
-.b-row .pbar { width: 120px; flex: 0 0 120px; }
+/* 每一列自己的進度文字（後端 statusText / 本機路徑標記）*/
+.b-row .nm .s {
+  font-size: 11px; color: var(--muted); margin-top: 2px;
+  font-family: var(--font-mono);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.b-row .nm .s.local { color: var(--accent-strong); }
+.b-row .pbar { display: flex; align-items: center; gap: 8px; width: 158px; flex: 0 0 158px; }
+.b-row .pbar .bar { flex: 1; }
+.b-row .pct {
+  font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  width: 38px; flex: 0 0 38px; text-align: right;
+}
 .b-row .more {
   width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--line);
   background: var(--panel); cursor: pointer; color: var(--muted);

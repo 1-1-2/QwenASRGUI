@@ -264,8 +264,16 @@ def main() -> int:
             "childElementCount > LIVE_MAX" in app)
     r.check("live panel follows / pauses on scroll", "liveFollow" in app and
             'addEventListener("scroll"' in app)
-    r.check("time/segment/ETA elements exist", all(
-        f'id="{x}"' in html for x in ("prog-time", "prog-groups", "prog-eta", "prog-phase")))
+    # Wave 11／問題 1：進度條上下方不再重複。上方 prog-status 已含
+    # 「辨識中 · 第 5/8 段」，下方舊版又畫 prog-phase「識別中」與
+    # prog-groups「5 段」，現在只留純數值 prog-time / prog-eta。
+    r.check("progress detail keeps only non-duplicate values",
+            all(f'id="{x}"' in html for x in ("prog-time", "prog-eta")) and
+            all(f'id="{x}"' not in html for x in ("prog-groups", "prog-phase")))
+    # Wave 11／問題 8：批次頁自己有進度條，不再借音檔頁的。
+    r.check("batch page has its own progress bar",
+            'class="progress card batch-progress"' in html and
+            'id="batch-prog-bar"' in html and 'id="batch-prog-status"' in html)
     r.check("percentage bar retained", 'id="prog-bar"' in html and 'id="prog-pct"' in html)
     r.check("live subtitle panel exists", 'id="live-list"' in html and 'id="live-panel"' in html)
     r.check("batch page shares options hint", 'batch.sharedOpts' in html)

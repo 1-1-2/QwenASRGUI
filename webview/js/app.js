@@ -200,6 +200,7 @@
   let batchItems = [];             // declared here so syncActionButtons is safe
   let batchRunning = false, batchMockRunning = false, batchActiveIdx = -1;
   let batchUploadErrors = [], logExpanded = false;
+  let lastBatchDetail = null;      // Wave 11：批次頁目前任務的進度明細
 
   function markBusy(scope, on) {
     if (on) UI_BUSY.add(scope); else UI_BUSY.delete(scope);
@@ -323,14 +324,17 @@
     }
   });
 
-  // 進度分派：模型就地載入 → 模型頁；服務端批次 → 由 batch SSE 事件獨自負責；
+  // 進度分派：模型就地載入 → 模型頁；服務端批次 → 批次頁自己的進度區；
   // mock 批次 → 當前批次列；否則 → 單檔進度條。
-  API.on("progress", ({ pct, status }) => {
+  // Wave 11／問題 8：後端現在會給批次任務的進度事件標 scope="batch"，
+  // 這樣即使前端 batchRunning 尚未同步（start 後 SSE 還沒到），也不會
+  // 把批次進度誤畫到「音檔轉字幕」頁。
+  API.on("progress", ({ pct, status, scope }) => {
+    const isBatch = scope === "batch" || batchRunning;
     if (_modelLoading) {
       setModelProg(pct, status);
-    } else if (batchRunning) {
-      // Server-side queue publishes its own "batch" events; do not paint the
-      // single-file progress bar with a task belonging to another view.
+    } else if (isBatch) {
+      applyBatchProgress(status);
     } else if (batchMockRunning && batchActiveIdx >= 0) {
       batchItems[batchActiveIdx].progress = pct / 100;
       updateBatchRow(batchActiveIdx);
@@ -395,7 +399,11 @@
       $("#prog-status").textContent = window.I18N
         ? I18N.L(lastProgress.status) : lastProgress.status;
     }
-    if (lastProgressDetail) renderProgressDetail(lastProgressDetail);
+    if (lastProgressDetail) {
+      if (lastProgressDetail.scope === "batch" || batchRunning)
+        renderBatchDetail(lastProgressDetail);
+      else renderProgressDetail(lastProgressDetail);
+    }
     const mps = $("#model-prog-status");
     if (mps && lastModelProgressStatus != null) {
       mps.textContent = window.I18N ? I18N.L(lastModelProgressStatus) : lastModelProgressStatus;
@@ -408,6 +416,8 @@
     });
     // 批量列表與狀態 chip 也是執行期產生的，切換語言後要整批重繪。
     if (typeof renderBatch === "function") renderBatch();
+    // Wave 11：摺疊面板的摘要是翻譯字串，切語言要跟著換。
+    if (typeof syncSegSummary === "function") syncSegSummary();
     // 自檢面板、端點頁狀態等內容來自後端（走 I18N.L 動態翻譯），
     // 不重抓就永遠停在切換前的語言。這裡在下一輪事件循環重繪，避免
     // 使用者連點語言下拉時互相打斷。
@@ -439,31 +449,32 @@
     const pad = n => String(n).padStart(2, "0");
     return (h ? h + ":" : "") + pad(m) + ":" + pad(r);
   }
-  // Phase labels are resolved through i18n at render time; the map only holds
-  // the key + Hant fallback so a language switch never leaves stale Hant text.
-  const PHASE_TEXT = {
-    running: "run.running", paused: "run.paused",
-    done: "run.done", preparing: "run.preparingShort",
-  };
+  // Wave 11／問題 1：進度條上下方不再重複。
+  // 上方 .meta 的 prog-status 由後端 progress 事件給「辨識中 · 第 5/8 段」，
+  // 已經包含階段與段數；舊版下方又畫 prog-phase「識別中」、prog-groups
+  // 「5 段」，等於把同一句話講兩次。現在下方只保留上方沒有的數值
+  // （已處理時間 / 剩餘時間），PHASE 與段數不再另畫。
   function renderProgressDetail(d) {
     const total = Number(d.totalSec) || 0, done = Number(d.doneSec) || 0;
-    const elTime = $("#prog-time"), elGroups = $("#prog-groups"),
-          elEta = $("#prog-eta"), elPhase = $("#prog-phase");
+    const elTime = $("#prog-time"), elEta = $("#prog-eta");
     if (elTime) elTime.textContent = T("run.processed", null,
       { done: fmtDur(done), total: total ? fmtDur(total) : "—" });
-    if (elGroups) elGroups.textContent = T("run.groups", null, { n: d.groups ?? 0 });
     if (elEta) elEta.textContent = d.etaSec == null
       ? T("run.remainingUnknown", "剩餘 —")
       : T("run.remaining", null, { eta: fmtDur(d.etaSec) });
-    if (elPhase) {
-      const ph = PHASE_TEXT[d.phase];
-      elPhase.textContent = ph ? T(ph) : (window.I18N ? I18N.L(d.phase) : d.phase) || T("run.running");
-    }
+  }
+  // 批次頁專用：把同一份 progress-detail 畫在批次頁自己的進度區，
+  // 而不是借「音檔轉字幕」頁的進度條（Wave 11／問題 8）。
+  function renderBatchDetail(d) {
+    lastBatchDetail = d || null;
+    refreshBatchActiveText();
   }
   API.on("progress-detail", (d) => {
     if (!d) return;
     lastProgressDetail = d;
-    renderProgressDetail(d);
+    // scope 由後端標記：批次任務的進度只進批次頁，不污染單檔進度條。
+    if (d.scope === "batch" || batchRunning) renderBatchDetail(d);
+    else renderProgressDetail(d);
     // Queue view: keep the overall percentage list in sync without a second
     // polling loop. The batch page renders the same number in its summary.
     if (!batchRunning && batchMockRunning && batchActiveIdx >= 0 && batchItems[batchActiveIdx]) {
@@ -472,6 +483,18 @@
       batchSummary();
     }
   });
+
+  // 批次任務的 progress 事件：只更新「目前處理中」那一列的狀態文字，
+  // 百分比仍以服務端 batch SSE 的 item.progress 為準（後端這些廣播常是
+  // pct=0 的階段提示，直接拿來覆寫會把進度條打回 0）。
+  function applyBatchProgress(status) {
+    if (status == null) return;
+    const idx = batchItems.findIndex(i => i.status === "running");
+    if (idx < 0) return;
+    batchItems[idx].statusText = status;
+    updateBatchRow(idx);
+    batchSummary();
+  }
 
   const LIVE_MAX = 200;
   let liveFollow = true, liveCount = 0;
@@ -883,9 +906,25 @@
   function appendLogRow(entry) {
     const el = $("#file-log"); if (!el) return;
     const d = document.createElement("div"); d.className = "ln";
-    if (entry.level === "error") d.style.color = "var(--danger, #c0392b)";
-    else if (entry.level === "warn") d.style.color = "#b26a00";
-    d.textContent = `[${entry.ts || ""}] ${entry.message || entry}`;
+    // Wave 11／問題 7：一條訊息 = 一行純文字，去裝飾、去換行。
+    // 後端診斷（ffmpeg 路徑、WinError 5 說明）常含多行；舊版
+    // white-space:pre-wrap 會把它折成好幾行，看起來像裝飾過的段落而不是
+    // 逐行輸出。這裡把內嵌換行壓成「 · 」，並去掉舊版 [ts] 的方括號裝飾，
+    // 時間戳改以淡色前綴固定顯示（有就一定顯示）。
+    const level = entry && entry.level;
+    if (level === "error") d.classList.add("lv-error");
+    else if (level === "warn") d.classList.add("lv-warn");
+    const msg = String(entry && entry.message != null ? entry.message : entry)
+      .replace(/\r\n|\r|\n/g, " · ")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim();
+    const ts = entry && entry.ts ? String(entry.ts) : "";
+    if (ts) {
+      const s = document.createElement("span"); s.className = "ts";
+      s.textContent = ts + "  ";
+      d.appendChild(s);
+    }
+    d.appendChild(document.createTextNode(msg));
     el.appendChild(d);
     while (el.childElementCount > LOG_MAX) el.removeChild(el.firstChild);
     el.scrollTop = el.scrollHeight;
@@ -977,13 +1016,20 @@
     }
   });
 
-  /** 從服務端拉全量快照；服務端是唯一事實源。 */
+  /** 從服務端拉全量快照；服務端是唯一事實源。
+   *  Wave 11：失敗時「保留現有佇列」而非清空——以前 getBatch() 降級成
+   *  items:[] 一次，8 個檔就瞬間歸零，使用者看到「開始後只剩一個」。 */
   async function refreshBatch() {
     if (API.mode !== "web") return;
     let snap;
     try { snap = await API.getBatch(); }
-    catch { return; }
-    batchItems = (snap.items || []).map(it => Object.assign({}, it, { file: null }));
+    catch (err) {
+      // 不清空、不覆寫；保留上一次的正確快照。
+      console.warn("[batch] refreshBatch failed, keeping existing queue", err);
+      return;
+    }
+    if (!snap || !Array.isArray(snap.items)) return;   // 髒資料不覆寫
+    batchItems = snap.items.map(it => Object.assign({}, it, { file: null }));
     batchRunning = !!(snap.summary && snap.summary.running);
     renderBatch();
     syncActionButtons();
@@ -991,9 +1037,21 @@
 
   API.on("batch", payload => {
     if (API.mode !== "web" || !payload) return;
+    // 換任務／全量快照時丟掉上一支檔案的進度明細，避免顯示舊時長。
+    if (payload.type === "start" || payload.type === "state" ||
+        payload.type === "added" || payload.type === "retry")
+      lastBatchDetail = null;
     if (payload.type === "state" && Array.isArray(payload.items)) {
       batchItems = payload.items.map(it => Object.assign({}, it, { file: null }));
     } else if (payload.item) {
+      // Wave 11：單筆 item 事件（start/progress/done/error）只做「更新或新增」。
+      // 若本地陣列是空的、但服務端 summary 說還有 N 筆，代表我們狀態落後，
+      // 別只 push 這一筆（那會讓佇列看起來「只剩第一個」），直接補拉全量。
+      const serverTotal = payload.summary && payload.summary.total;
+      if (!batchItems.length && serverTotal > 1) {
+        refreshBatch();
+        return;
+      }
       const idx = batchItems.findIndex(i => i.id === payload.item.id);
       if (idx >= 0) batchItems[idx] = Object.assign({}, batchItems[idx], payload.item);
       else batchItems.push(Object.assign({}, payload.item, { file: null }));
@@ -1004,16 +1062,57 @@
     syncActionButtons();
   });
 
+  /** 批次頁「目前：」那一行：檔名 + 狀態 +（有明細時）已處理／段數／剩餘。 */
+  function refreshBatchActiveText() {
+    const el = $("#batch-prog-active"); if (!el) return;
+    const active = batchItems.find(i => i.status === "running");
+    if (!active) { el.textContent = "—"; return; }
+    const st = active.statusText
+      ? (window.I18N ? I18N.L(active.statusText) : active.statusText)
+      : stLabel(active.status)[0];
+    const parts = [T("batch.progActive", null, { name: active.name, status: st })];
+    const d = lastBatchDetail;
+    if (d) {
+      const total = Number(d.totalSec) || 0;
+      if (total) parts.push(fmtDur(Number(d.doneSec) || 0) + " / " + fmtDur(total));
+      if (d.groups != null) parts.push(T("run.groups", null, { n: d.groups }));
+      if (d.etaSec != null) parts.push(T("run.remaining", null, { eta: fmtDur(d.etaSec) }));
+    }
+    el.textContent = parts.join(" · ");
+  }
+
   function batchSummary() {
+    const total = batchItems.length;
     const done = batchItems.filter(i => i.status === "done").length;
     const failed = batchItems.filter(i => i.status === "failed").length;
-    const avg = batchItems.length
-      ? batchItems.reduce((a, b) => a + (b.progress || 0), 0) / batchItems.length : 0;
-    let text = T("batch.progress", null,
-      { done, total: batchItems.length, pct: Math.round(avg * 100) });
+    const pending = batchItems.filter(i => i.status === "pending").length;
+    const active = batchItems.find(i => i.status === "running");
+    const avg = total
+      ? batchItems.reduce((a, b) => a + (b.progress || 0), 0) / total : 0;
+    const pct = Math.round(avg * 100);
+    let text = T("batch.progress", null, { done, total, pct });
     if (failed) text += T("batch.failedSuffix", null, { n: failed });
     if (batchRunning) text += T("batch.runningSuffix", " · 執行中");
     const el = $("#batch-summary"); if (el) el.textContent = text;
+
+    // Wave 11／問題 8：批次頁獨立進度（以前只有上面那行純文字）。
+    const bar = $("#batch-prog-bar"), pctEl = $("#batch-prog-pct"),
+          statusEl = $("#batch-prog-status"), countEl = $("#batch-prog-count");
+    if (bar) bar.style.width = pct + "%";
+    if (pctEl) pctEl.textContent = pct + "%";
+    if (statusEl) {
+      if (active) statusEl.textContent = T("batch.progRunning", null, { name: active.name });
+      else if (batchRunning) statusEl.textContent = T("batch.progPaused", null, { n: pending });
+      else if (!total) statusEl.textContent = T("batch.progEmpty", "尚未加入檔案");
+      else if (done + failed === total) statusEl.textContent = T("batch.progDone", "全部完成");
+      else statusEl.textContent = T("batch.idle", "待處理");
+    }
+    if (countEl) {
+      let c = T("batch.progCount", null, { done, total });
+      if (failed) c += " · " + T("batch.progFailed", null, { n: failed });
+      countEl.textContent = c;
+    }
+    refreshBatchActiveText();
   }
   function renderBatch() {
     batchSummary();
@@ -1033,6 +1132,13 @@
     }
     batchItems.forEach((it, idx) => host.appendChild(batchRow(it, idx)));
   }
+  /** Wave 11：每一列自己的進度文字 —— 本機路徑標記 + 後端 statusText。 */
+  function batchRowSub(it) {
+    const bits = [];
+    if (it.localPath) bits.push(T("batch.localPath", "本機路徑 · 不複製"));
+    if (it.statusText) bits.push(window.I18N ? I18N.L(it.statusText) : String(it.statusText));
+    return bits.join(" · ");
+  }
   function batchRow(it, idx) {
     const [label, cls] = stLabel(it.status);
     const row = document.createElement("div");
@@ -1041,10 +1147,14 @@
     const actTitle = it.status === "done" ? T("batch.openOut", "開啟輸出資料夾")
       : (terminal && API.mode === "web") ? T("batch.retry", "重試")
       : T("batch.remove", "移除");
+    const pct = Math.round((it.progress || 0) * 100);
+    const sub = batchRowSub(it);
     row.innerHTML = `
       <div class="nm"><div class="f">${escapeHtml(it.name)}</div>
+        ${sub ? `<div class="s ${it.localPath ? "local" : ""}">${escapeHtml(sub)}</div>` : ""}
         ${it.error ? `<div class="e">${escapeHtml(it.error)}</div>` : ""}</div>
-      <div class="pbar"><div class="bar"><i style="width:${Math.round((it.progress || 0) * 100)}%"></i></div></div>
+      <div class="pbar"><div class="bar"><i style="width:${pct}%"></i></div></div>
+      <span class="pct">${pct}%</span>
       <span class="chip ${cls}">${label}</span>
       <button class="more" title="${actTitle}">⋯</button>`;
     row.querySelector(".more").addEventListener("click", async () => {
@@ -1063,12 +1173,71 @@
     const it = batchItems[idx];
     const row = $(`.b-row[data-idx="${idx}"]`); if (!row) return;
     const [label, cls] = stLabel(it.status);
-    row.querySelector(".pbar i").style.width = Math.round((it.progress || 0) * 100) + "%";
+    const pct = Math.round((it.progress || 0) * 100);
+    row.querySelector(".pbar i").style.width = pct + "%";
+    const pctEl = row.querySelector(".pct"); if (pctEl) pctEl.textContent = pct + "%";
     const chip = row.querySelector(".chip"); chip.className = "chip " + cls; chip.textContent = label;
+    let sub = row.querySelector(".nm .s");
+    const text = batchRowSub(it);
+    if (text) {
+      if (!sub) {
+        sub = document.createElement("div"); sub.className = "s";
+        const nm = row.querySelector(".nm");
+        nm.insertBefore(sub, nm.querySelector(".e") || null);
+      }
+      sub.className = "s" + (it.localPath ? " local" : "");
+      sub.textContent = text;
+    } else if (sub) sub.remove();
     batchSummary();
   }
 
   $("#btn-batch-add").addEventListener("click", () => batchInput.click());
+  // Wave 11／問題 3：本機路徑直引。<input type=file> 出於瀏覽器沙箱拿不到
+  // 絕對路徑，所以補一條「貼路徑」通道：後端 add_path() 直接引用、不複製、
+  // 不上傳；item 標 ownedPath=false，任何清理都不會動到使用者的原檔。
+  const pathPanel = $("#batch-paths"), pathInput = $("#batch-path-input"),
+        pathMsg = $("#batch-path-msg");
+  function showPathMsg(msg, bad) {
+    if (!pathMsg) return;
+    pathMsg.hidden = false;
+    pathMsg.textContent = msg;
+    pathMsg.style.color = bad ? "var(--danger, #c0392b)" : "var(--ok, #1C8C5A)";
+  }
+  $("#btn-batch-path") && $("#btn-batch-path").addEventListener("click", () => {
+    if (!pathPanel) return;
+    pathPanel.hidden = !pathPanel.hidden;
+    if (!pathPanel.hidden && pathInput) pathInput.focus();
+  });
+  $("#btn-batch-path-close") && $("#btn-batch-path-close").addEventListener("click", () => {
+    if (pathPanel) pathPanel.hidden = true;
+  });
+  $("#btn-batch-path-add") && $("#btn-batch-path-add").addEventListener("click", async () => {
+    const lines = String(pathInput ? pathInput.value : "")
+      .split(/\r?\n/).map(s => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+    if (!lines.length) {
+      showPathMsg(T("batch.pathEmpty", "請先貼上至少一個檔案路徑"), true); return;
+    }
+    const opts = currentBatchOpts();
+    let ok = 0; const errs = [];
+    for (const line of lines) {
+      if (API.mode === "web") {
+        try { await API.batchAddPath(line, opts); ok++; }
+        catch (err) { errs.push(`${line}：${err.message || err}`); }
+      } else {
+        batchItems.push({
+          id: "m" + Math.random().toString(36).slice(2, 9), file: null,
+          name: line.split(/[\\/]/).pop() || line,
+          status: "pending", progress: 0, localPath: true,
+        });
+        ok++;
+      }
+    }
+    if (errs.length) showPathMsg(T("batch.pathPartial", null,
+      { ok, fail: errs.length, err: errs.join("；") }), true);
+    else showPathMsg(T("batch.pathAdded", null, { n: ok }), false);
+    if (ok && pathInput) pathInput.value = "";
+    if (API.mode === "web") await refreshBatch(); else renderBatch();
+  });
   $("#btn-batch-run").addEventListener("click", runBatch);
   $("#btn-batch-clear") && $("#btn-batch-clear").addEventListener("click", async () => {
     if (API.mode === "web") { await API.batchClear(); await refreshBatch(); }
@@ -1573,6 +1742,10 @@
     if ($("#sw-align")) $("#sw-align").checked = !!s.align;
     if ($("#hint-box") && s.hint != null) $("#hint-box").value = s.hint;
     if ($("#sw-trial")) $("#sw-trial").checked = !!s.trial;
+    // Wave 11：設定回填後同步試跑徽章與摺疊摘要 —— 否則重啟後明明勾著
+    // 試跑，徽章卻是隱藏的，又回到「以為會完整轉檔」的老問題。
+    syncTrialBadge();
+    syncSegSummary();
   }
   // Persist control changes as they happen (no need to press a save button).
   function bindPersisted(sel, key, read) {
@@ -1587,6 +1760,38 @@
   bindPersisted("#sel-spk", "nSpeakers", el => el.value);
   bindPersisted("#sw-align", "align", el => !!el.checked);
   bindPersisted("#sw-trial", "trial", el => !!el.checked);
+
+  // ── Wave 11／問題 5 + 6 ─────────────────────────────────────────────
+  // 切分參數改成 <details> 後，收起時只剩一列標題；摘要顯示目前生效的
+  // VAD / 段長，讓使用者不必展開也知道設定。試跑開關也藏進面板了，所以
+  // 另在「開始轉換」旁常駐一個醒目徽章，勾選時立刻出現，避免誤以為會完整轉檔。
+  function syncSegSummary() {
+    const el = $("#seg-summary-val"); if (!el) return;
+    const vad = $("#seg-vad") ? (+$("#seg-vad").value).toFixed(2) : "0.50";
+    const chunk = $("#seg-chunk") ? $("#seg-chunk").value : "30";
+    el.textContent = T("file.segSummary", null, { vad, chunk });
+  }
+  function syncTrialBadge() {
+    const sw = $("#sw-trial"), badge = $("#trial-badge"), run = $("#btn-run");
+    const on = !!(sw && sw.checked);
+    if (badge) badge.hidden = !on;
+    if (run) run.classList.toggle("trial-on", on);
+  }
+  if ($("#sw-trial")) $("#sw-trial").addEventListener("change", syncTrialBadge);
+  if ($("#trial-badge")) {
+    const badge = $("#trial-badge");
+    badge.title = T("file.trial", "試跑前 5 分鐘");
+    // 點徽章直接展開面板並聚焦開關：看得到提示，也能馬上改回來。
+    badge.addEventListener("click", () => {
+      const panel = $("#seg-panel"); if (panel) panel.open = true;
+      const sw = $("#sw-trial"); if (sw) sw.focus();
+    });
+  }
+  $("#seg-vad") && $("#seg-vad").addEventListener("input", syncSegSummary);
+  $("#seg-chunk") && $("#seg-chunk").addEventListener("input", syncSegSummary);
+  syncSegSummary();
+  syncTrialBadge();
+
   const hintEl = $("#hint-box");
   if (hintEl) {
     let hintTimer = null;

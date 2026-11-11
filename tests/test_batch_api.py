@@ -172,6 +172,40 @@ def main() -> int:
             r.check("POST /api/batch/remove is wired", code == 200 and
                     removed.get("ok") is False)
 
+            # Wave 11／問題 4 的真正根因：HTTP/1.1 keep-alive 下，/api/batch/start
+            # 這類「不讀 body」的 POST 會把前端送的 `{}` 留在連線裡，
+            # 殘留位元組被 BaseHTTPRequestHandler 當成下一條請求行，
+            # 緊接的 GET /api/batch 因此得到 501 → 前端佇列瞬間歸零。
+            # 在同一條連線上連續打 POST→GET，直接把這個情境釘死。
+            import http.client
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                conn.request("POST", "/api/batch/start", body=b"{}",
+                             headers={"Content-Type": "application/json"})
+                rp = conn.getresponse()
+                rp.read()
+                conn.request("GET", "/api/batch")
+                rg = conn.getresponse()
+                payload = rg.read()
+                r.check("keep-alive POST /start then GET /batch does not 501",
+                        rp.status == 200 and rg.status == 200,
+                        f"POST={rp.status} GET={rg.status}")
+                r.check("GET after POST still returns a full snapshot",
+                        b'"summary"' in payload and b'"items"' in payload)
+
+                conn.request("POST", "/api/batch/cancel", body=b"{}",
+                             headers={"Content-Type": "application/json"})
+                rp2 = conn.getresponse()
+                rp2.read()
+                conn.request("GET", "/api/batch")
+                rg2 = conn.getresponse()
+                rg2.read()
+                r.check("keep-alive POST /cancel then GET /batch stays 200",
+                        rp2.status == 200 and rg2.status == 200,
+                        f"POST={rp2.status} GET={rg2.status}")
+            finally:
+                conn.close()
+
             # Static contract: the front end must no longer be the queue owner.
             appjs = (ROOT / "webview/js/app.js").read_text(encoding="utf-8")
             bridge = (ROOT / "webview/js/bridge.js").read_text(encoding="utf-8")
