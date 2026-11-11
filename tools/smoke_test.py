@@ -98,6 +98,35 @@ def kill_tree(proc: subprocess.Popen) -> None:
         pass
 
 
+# 诊断用：在包内 _internal 里「去掉 tkinter 相关模块」再导入启动器的依赖链。
+# 打包版缺哪个模块，这里一次就能看出来，不必反复等 20 分钟的 Windows 构建。
+DIAG = r"""
+import os, sys, traceback
+here = sys.argv[1]
+sys.path.insert(0, here)
+for name in ("tkinter", "customtkinter"):
+    sys.modules[name] = None
+os.environ["QWENASR_WEBVIEW_BUILD"] = "1"
+out = []
+for mod in ("webview_server", "webview_backend", "app", "ffmpeg_utils"):
+    try:
+        __import__(mod)
+        out.append("OK   " + mod)
+    except Exception:
+        tb = traceback.format_exc().strip().splitlines()
+        out.append("FAIL " + mod + " -> " + " | ".join(tb[-6:]))
+print("\n=== DIAG-IMPORT ===")
+print("\n".join(out))
+"""
+
+
+def diagnose_imports(exe_dir: Path, internal: Path) -> None:
+    """用包内自带的 Python 环境跑一遍导入，定位真正的缺失模块。"""
+    fi = subprocess.run([sys.executable, "-I", "-c", DIAG, str(internal)],
+                        capture_output=True, text=True, timeout=180)
+    print((fi.stdout or "") + (fi.stderr or "")[-1500:])
+
+
 class Checker:
     def __init__(self):
         self.failed: list[str] = []
@@ -256,6 +285,11 @@ def main() -> int:
         shutil.rmtree(work, ignore_errors=True)
 
     if c.failed:
+        print("\n=== 包内导入诊断（定位真实缺失模块）===")
+        try:
+            diagnose_imports(exe_dir, exe_dir / "_internal")
+        except Exception as exc:
+            print(f"  诊断本身失败：{type(exc).__name__}: {exc}")
         print(f"\n启动器日志尾部（{launch_log}）：")
         print(tail(text))
         print(f"\n结果：{len(c.failed)} 项失败 → {', '.join(c.failed)}")
