@@ -627,8 +627,12 @@ def main() -> int:
     ff = Path(args.ffmpeg) if args.ffmpeg else None
     zip_path = make_package(args.version, args.sha, ff, slim=not args.no_slim)
     # 体积构成：只打印，不改任何东西。回答「哪个占大头」靠它，不靠猜。
-    if internal.is_dir():
-        print_size_breakdown(internal)
+    # 统计对象必须是最终发行目录（已精简），统计 dist 中间产物会把已删掉的
+    # 244.9 MB openvino/ 重新算进来 —— 那份数字对用户毫无意义。
+    stage_internal = ROOT / "release_pkg" / APP_NAME / "_internal"
+    if stage_internal.is_dir():
+        print(f"\n发行包 _internal 体积：{dir_size(stage_internal) / 1024 / 1024:.1f} MB")
+        print_size_breakdown(stage_internal)
 
     print(f"\n发行包：{zip_path}")
     print(f"大小：{zip_path.stat().st_size / 1024 / 1024:.1f} MB")
