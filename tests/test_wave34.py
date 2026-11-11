@@ -268,7 +268,10 @@ def main() -> int:
     r.check("batch opts reuse shared controls",
             'hint: $("#hint-box").value.trim()' in app and
             'diarize: $("#sw-diar").checked' in app)
-    r.check("batch summary shows overall percentage", "總進度" in app)
+    # The literal moved into the dictionary in Wave 7 (so the summary follows
+    # the UI language); assert the key is used and carries the wording.
+    r.check("batch summary shows overall percentage",
+            'T("batch.progress"' in app and "總進度" in i18n)
     r.check("i18n has sharedOpts in three languages", '"batch.sharedOpts"' in i18n)
 
     passed = sum(r.items)

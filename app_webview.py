@@ -44,6 +44,151 @@ WIN_W, WIN_H = 1180, 820
 
 
 # ════════════════════════════════════════════════════════
+# stdio 兜底：windowed 打包下 sys.stdout / sys.stderr 是 None
+# ════════════════════════════════════════════════════════
+#   PyInstaller --windowed（無主控台 EXE）啟動時，Python 的標準串流會被設成
+#   None —— 此時任何 print() 或 sys.stdout.flush() 都會：
+#     AppError: sys.stdout is None  /  AttributeError: 'NoneType' object has no attribute 'flush'
+#   開發模式從 cmd 執行時一定有真實的主控台，所以這個問題只在打包版才炸，
+#   而且炸在最外層的 main() 收尾（單一實例、關窗退出都走那條路）。
+#   修法：啟動最早期把 None 換成一個寫往日誌檔的替身，兼具兩個好處：
+#     • 不再出現 NoneType 例外（診斷訊息也不會憑空消失）
+#     • 使用者仍可從 %LOCALAPPDATA%\<APP_NAME>\launcher.log 追查啟動問題
+class _NullSafeStream:
+    """包住真實串流；真實串流為 None 或已關閉時靜默丟棄（可選寫入日誌檔）。"""
+
+    def __init__(self, real, log_path: Path | None = None):
+        self._real = real
+        self._log = None
+        if log_path is not None:
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                # 啟動器日誌只保留單檔並上限約 1 MB：塞住磁碟比沒有日誌更糟
+                if log_path.exists() and log_path.stat().st_size > 1_048_576:
+                    log_path.unlink()
+                self._log = open(log_path, "a", encoding="utf-8", errors="replace")
+            except Exception:
+                self._log = None
+
+    # io.TextIOBase 的常用介面（print / flush 只會用到這幾個）
+    def write(self, s):
+        if self._real is not None:
+            try:
+                self._real.write(s)
+            except Exception:
+                pass
+        if self._log is not None:
+            try:
+                self._log.write(s)
+                self._log.flush()
+            except Exception:
+                pass
+        return len(s) if s else 0
+
+    def flush(self):
+        for target in (self._real, self._log):
+            if target is not None:
+                try:
+                    target.flush()
+                except Exception:
+                    pass
+
+    def isatty(self):
+        try:
+            return bool(self._real is not None and self._real.isatty())
+        except Exception:
+            return False
+
+    def fileno(self):                             # 供需要真實 fd 的第三方套件探測
+        if self._real is None:
+            raise OSError("no console stream")
+        try:
+            return self._real.fileno()
+        except (AttributeError, OSError):
+            # 探測方（如 isatty / colorama / tqdm）會把 OSError 當成「無 tty」處理，
+            # 但 AttributeError 會直接往外炸 —— 統一轉成 OSError 更安全。
+            raise OSError("no real file descriptor") from None
+
+    @property
+    def encoding(self):
+        return getattr(self._real, "encoding", "utf-8") or "utf-8"
+
+    def __getattr__(self, name):                  # 其餘屬性一律委派給真實串流
+        if self._real is None:
+            raise AttributeError(name)
+        return getattr(self._real, name)
+
+
+def _log_dir() -> Path | None:
+    """啟動器日誌目錄：%LOCALAPPDATA%\\<APP_NAME>（非 Windows 用家目錄）。"""
+    try:
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CACHE_HOME")
+        root = Path(base) if base else Path.home()
+        return root / APP_NAME
+    except Exception:
+        return None
+
+
+def hush_stdio():
+    """把 None 的 stdout／stderr 換成安全替身。必須在任何 print 之前呼叫。"""
+    if sys.stdout is not None and sys.stderr is not None:
+        return                                    # 有真實主控台（開發模式）→ 不動
+    log_path = None
+    d = _log_dir()
+    if d is not None:
+        try:
+            log_path = d / "launcher.log"
+        except Exception:
+            log_path = None
+    if sys.stdout is None:
+        sys.stdout = _NullSafeStream(None, log_path)
+    if sys.stderr is None:
+        # stderr 與 stdout 共用同一個日誌檔（append 模式，兩個 handle 各自寫入無妨）
+        sys.stderr = _NullSafeStream(None, log_path)
+
+
+hush_stdio()
+
+
+def _install_crash_log():
+    """最後兜底：未捕捉例外寫進 crash.log，並提醒使用者看哪個檔案。
+
+    windowed EXE 沒有主控台，未捕捉例外原本**完全無聲**（使用者只看到視窗沒開）。
+    有了這支 handler，任何啟動期錯誤都會留下可回報的檔案；stderr 已被前一步
+    換成日誌替身，所以 traceback 就能落地。
+    """
+    import traceback
+
+    def _hook(exc_type, exc, tb):
+        try:
+            sys.stderr.write("".join(traceback.format_exception(exc_type, exc, tb)))
+            sys.stderr.flush()
+        except Exception:
+            pass
+        try:
+            if sys.platform == "win32":
+                d = _log_dir()
+                where = str(d / "launcher.log") if d else "launcher.log"
+                ctypes.windll.user32.MessageBoxW(
+                    None,
+                    f"程式啟動時發生錯誤：\n{exc_type.__name__}: {exc}\n\n"
+                    f"詳細記錄：{where}",
+                    APP_NAME, 0x00000010)          # MB_ICONERROR
+        except Exception:
+            pass
+
+    sys.excepthook = _hook
+    # 背景執行緒的例外不會經過 sys.excepthook（3.8 起改走 threading.excepthook）
+    try:
+        threading.excepthook = lambda a: _hook(a.exc_type, a.exc_value, a.exc_traceback)
+    except Exception:
+        pass
+
+
+_install_crash_log()
+
+
+# ════════════════════════════════════════════════════════
 # 標題列配色：配合淺色頁面主題 → 白底黑字
 # ════════════════════════════════════════════════════════
 #   原生視窗（WebView2）與 Edge --app 視窗的標題列由 OS（DWM）繪製，預設會
@@ -315,17 +460,37 @@ def _profile_dir() -> str:
     return str(base)
 
 
+def _app_mode_args(url: str) -> list[str]:
+    """Edge --app 模式的完整旗標。抽成獨立函式，方便測試與日後調整。
+
+    這裡每個旗標都對應一個「使用者看得到的問題」，不只是瘦身：
+      --app=<url>            無網址列 / 書籤列（純應用視窗）
+      --inprivate            不落瀏覽紀錄
+      --user-data-dir=<專用> 與日常 Edge 完全隔離 → 不會撿到使用者的拡充功能
+      --window-size          首開尺寸對齊 WIN_W × WIN_H
+      --no-first-run / --no-default-browser-check
+                             不跳「設為預設瀏覽器」「歡迎使用」
+      --disable-features=…   關掉 Edge 自帶的側邊欄 / 帳號登入提示
+      --hide-crash-restore-bubble
+                             上次非正常關閉後不再彈「恢復頁面」氣泡
+      （標題列固定是頁面 <title>「聲音辨識小工具」；Windows 11 上我們再把標題列
+        配色改成與頁面一致的深/淺色，見 _set_titlebar。）
+    """
+    return [
+        f"--app={url}", "--inprivate",
+        f"--user-data-dir={_profile_dir()}",
+        f"--window-size={WIN_W},{WIN_H}",
+        "--no-first-run", "--no-default-browser-check", "--disable-sync",
+        "--disable-background-networking", "--hide-crash-restore-bubble",
+        "--disable-features=msImplicitSignin,msEdgeSyncEnabled,msEdgeWelcomePage,"
+        "EdgeFollowEnabled,msEdgeSidebarV2,msReverseVideoTab,EdgeCollections",
+    ]
+
+
 def open_edge_app(url: str) -> subprocess.Popen | None:
     edge = _find_edge()
     if edge:
-        args = [
-            edge, f"--app={url}", "--inprivate",
-            f"--user-data-dir={_profile_dir()}",
-            f"--window-size={WIN_W},{WIN_H}",
-            "--no-first-run", "--no-default-browser-check", "--disable-sync",
-            "--disable-background-networking",
-            "--disable-features=msImplicitSignin,msEdgeSyncEnabled,msEdgeWelcomePage,EdgeFollowEnabled",
-        ]
+        args = [edge, *_app_mode_args(url)]
         flags = 0x08000000 if sys.platform == "win32" else 0
         try:
             proc = subprocess.Popen(args, creationflags=flags)
@@ -499,8 +664,14 @@ def main():
             guard.release()
             srv.stop()
         finally:
-            sys.stdout.flush()
-            sys.stderr.flush()
+            # 收尾 flush 一律走「盡力而為」：windowed 版的 stdout 可能是替身或 None，
+            # 一步失敗不能連帶讓 os._exit 被跳過 —— 那會留下殭屍行程與被佔用的埠。
+            for _s in (sys.stdout, sys.stderr):
+                try:
+                    if _s is not None:
+                        _s.flush()
+                except Exception:
+                    pass
             os._exit(0)
 
 

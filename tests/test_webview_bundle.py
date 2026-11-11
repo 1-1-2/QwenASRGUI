@@ -1,0 +1,129 @@
+"""Wave 7 regression: WebView packaging must not drag the Tk GUI into the bundle.
+
+Why this exists
+---------------
+``app.py`` is the Tk desktop app. ``app_webview.py`` (the shipped launcher) only
+reuses its inference core: ASREngine / ASREngine1p7B / RealtimeManager and the
+pure helpers above them. But PyInstaller analyses imports statically - one
+top-level ``import customtkinter`` is enough to pull tkinter, customtkinter and
+the whole tcl/tk runtime (~15-25 MB) into a package whose UI is HTML.
+
+The GUI section is therefore guarded by ``QWENASR_WEBVIEW_BUILD=1``. These
+tests run ``app.py`` in a subprocess under both settings and assert:
+
+  * WebView mode: inference classes exist, tkinter/customtkinter never load;
+  * Tk mode: App exists and the GUI stack does load (no regression);
+  * build_release.py actually sets the flag for PyInstaller.
+
+    python tests/test_webview_bundle.py
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+
+
+class Result:
+    def __init__(self):
+        self.items = []
+
+    def check(self, name, ok, detail=""):
+        self.items.append(bool(ok))
+        print(f"  {'通过' if ok else '失败'}  {name}" + (f" — {detail}" if detail else ""))
+
+    @property
+    def ok(self):
+        return all(self.items)
+
+
+PROBE = r"""
+import sys, json
+import app
+print(json.dumps({
+    "has_app": hasattr(app, "App"),
+    "has_engine": hasattr(app, "ASREngine"),
+    "has_engine17": hasattr(app, "ASREngine1p7B"),
+    "has_realtime": hasattr(app, "RealtimeManager"),
+    "has_split": callable(getattr(app, "_split_to_lines", None)),
+    "has_assign": callable(getattr(app, "_assign_ts", None)),
+    "tk": "tkinter" in sys.modules,
+    "ctk": "customtkinter" in sys.modules,
+}))
+"""
+
+
+def _probe(env_extra: dict) -> dict | None:
+    env = dict(os.environ)
+    env.update({"PYTHONPATH": str(ROOT), "PYTHONIOENCODING": "utf-8"})
+    env.update(env_extra)
+    for k, v in env_extra.items():
+        if v == "":
+            env.pop(k, None)
+    import json
+    try:
+        out = subprocess.run([sys.executable, "-c", PROBE], cwd=str(ROOT),
+                             capture_output=True, text=True, timeout=180, env=env)
+    except subprocess.TimeoutExpired:
+        return None
+    if out.returncode != 0:
+        print("    stderr:", out.stderr.strip().splitlines()[-1:] or "")
+        return None
+    line = out.stdout.strip().splitlines()[-1]
+    return json.loads(line)
+
+
+def main() -> int:
+    r = Result()
+
+    # ── WebView build mode ────────────────────────────────────────────────
+    wb = _probe({"QWENASR_WEBVIEW_BUILD": "1"})
+    r.check("app.py imports in WebView mode", wb is not None)
+    if wb:
+        r.check("inference core is present",
+                wb["has_engine"] and wb["has_engine17"] and wb["has_realtime"])
+        r.check("pure helpers are present", wb["has_split"] and wb["has_assign"])
+        r.check("Tk App is NOT defined", not wb["has_app"])
+        r.check("tkinter is never imported", not wb["tk"])
+        r.check("customtkinter is never imported", not wb["ctk"])
+
+    # ── default / Tk mode (no regression for `python app.py`) ─────────────
+    tk = _probe({"QWENASR_WEBVIEW_BUILD": ""})
+    r.check("app.py imports in Tk mode", tk is not None)
+    if tk:
+        r.check("Tk App still defined", tk["has_app"])
+        r.check("inference core still present", tk["has_engine"])
+        r.check("Tk mode does load tkinter", tk["tk"])
+
+    # ── static checks on the build & launcher ─────────────────────────────
+    build_src = (ROOT / "build_release.py").read_text(encoding="utf-8")
+    r.check("build_release.py sets QWENASR_WEBVIEW_BUILD",
+            "QWENASR_WEBVIEW_BUILD" in build_src)
+
+    app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+    head = app_src.split("_WEBVIEW_BUILD = os.environ")[0]
+    r.check("no top-level tkinter import in app.py",
+            not any(ln.strip() in ("import tkinter as tk",)
+                    for ln in head.splitlines()))
+    r.check("no top-level customtkinter import in app.py",
+            "import customtkinter as ctk" not in head)
+
+    # Release packaging must keep excluding the .NET window stack, and now the
+    # Tk stack too: tkinter cannot be excluded via --exclude-module alone when a
+    # top-level import exists, hence the guard above; this asserts the tooling
+    # never re-adds a hidden import for the GUI.
+    r.check("customtkinter is not a hidden import in build_release.py",
+            '"customtkinter"' not in build_src.split("HIDDEN_IMPORTS")[1].split("]")[0])
+
+    passed = sum(r.items)
+    print(f"\n结果：{passed}/{len(r.items)} 项通过")
+    print("✅ 全部通过" if r.ok else "❌ 存在失败项")
+    return 0 if r.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

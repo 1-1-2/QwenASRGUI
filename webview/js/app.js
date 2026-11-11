@@ -13,14 +13,11 @@
     return s;
   }
 
-  const VIEW_TITLES = {
-    file: "音檔轉字幕", batch: "批次辨識", record: "錄製轉換",
-    endpoint: "端點服務", model: "模型與裝置", settings: "設定",
-  };
-
   // ── 導覽切換 ────────────────────────────────────────────
+  // 標題一律現查字典（view.<name>），不在模組載入時求值 —— 否則切換語言後
+  // 標題列還是舊語言。字典缺鍵時退回空字串，由 HTML 的預設值接手。
   let _curView = "file";
-  function viewTitle(name) { return (window.I18N && I18N.t("view." + name)) || VIEW_TITLES[name] || ""; }
+  function viewTitle(name) { return (window.I18N && I18N.t("view." + name)) || ""; }
   function refreshViewTitle() { $("#view-title").textContent = viewTitle(_curView); }
   function switchView(name) {
     _curView = name;
@@ -38,7 +35,7 @@
      "unknown" on purpose; size_hint values are estimates and never used for
      progress math. */
   function fmtBytes(v) {
-    if (v === null || v === undefined) return "未知";
+    if (v === null || v === undefined) return T("common.unknown", "未知");
     if (v < 1024) return v + " B";
     const u = ["KiB", "MiB", "GiB"];
     let n = v, i = -1;
@@ -59,8 +56,17 @@
       const incomplete = st.incomplete || [];
       const summary = $("#catalog-summary");
       if (summary) {
-        const mirrorTxt = st.mirror ? ("目前鏡像：" + st.mirror) : "目前鏡像：官方（未設定）";
-        summary.textContent = `${mirrorTxt} · 已完整 ${st.complete ? st.complete.length : 0}/${bundles.length} 組 · 待補 ${incomplete.length} 組 · 本機已佔用 ${fmtBytes(st.total_bytes_on_disk)} · 根目錄 ${st.model_root || ""}`;
+        const mirrorTxt = st.mirror
+          ? T("dl.mirror", null, { name: st.mirror })
+          : T("dl.mirrorOfficial", "目前鏡像：官方（未設定）");
+        summary.textContent = T("dl.summary", null, {
+          mirror: mirrorTxt,
+          done: st.complete ? st.complete.length : 0,
+          total: bundles.length,
+          missing: incomplete.length,
+          used: fmtBytes(st.total_bytes_on_disk),
+          root: st.model_root || "",
+        });
       }
       const sel = $("#catalog-import-bundle");
       if (sel) {
@@ -69,24 +75,26 @@
       }
       host.innerHTML = bundles.map(b => {
         const badge = b.complete
-          ? '<span class="chip" style="color:var(--ok,#1a7f45)">完整</span>'
-          : `<span class="chip chip-muted">缺 ${b.total_count - b.present_count}/${b.total_count}</span>`;
+          ? `<span class="chip" style="color:var(--ok,#1a7f45)">${T("dl.badgeComplete", "完整")}</span>`
+          : `<span class="chip chip-muted">${T("dl.badgeMissing", null,
+              { missing: b.total_count - b.present_count, total: b.total_count })}</span>`;
         // models.json already writes size_hint as "约 1.2 GB". Wrapping that
         // in another "約 …（估計）" produced "約 约 1.2 GB（估計）", so strip a
         // leading 约/約 before formatting.
         const hint = v => {
           const s = String(v || "").trim().replace(/^[约約]\s*/, "");
-          return s ? `約 ${esc(s)}（估計）` : "";
+          return s ? T("dl.estimated", null, { size: esc(s) }) : "";
         };
         const approx = b.size_hint ? ` <span class="chip chip-muted">${hint(b.size_hint)}</span>` : "";
         const files = b.files.map(f => {
           const size = f.size_bytes !== null && f.size_bytes !== undefined
             ? fmtBytes(f.size_bytes)
-            : (f.size_hint ? hint(f.size_hint) : "大小未知");
+            : (f.size_hint ? hint(f.size_hint) : T("dl.sizeUnknown", "大小未知"));
           const sha = f.sha256_expected
-            ? (f.sha256_ok === true ? "SHA256 ✓" : (f.sha256_ok === false ? "SHA256 ✗" : "SHA256 待驗證"))
-            : "SHA256 未知";
-          const state = f.present ? "✓" : ("✗ " + esc(f.problem || "missing"));
+            ? (f.sha256_ok === true ? T("dl.shaOk", null)
+               : (f.sha256_ok === false ? T("dl.shaBad", null) : T("dl.shaUnverified", null)))
+            : T("dl.shaUnknown", null);
+          const state = f.present ? "✓" : ("✗ " + esc(f.problem || T("dl.missing", "缺失")));
           return `<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:12px;font-family:var(--font-mono)">
             <span style="width:14px;color:${f.present ? "var(--ok,#1a7f45)" : "var(--warn,#b26a00)"}">${f.present ? "✓" : "✗"}</span>
             <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</span>
@@ -99,12 +107,14 @@
           <summary style="cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center">
             <span style="flex:1">${esc(window.I18N ? I18N.L(b.label) : b.label)}</span>${approx}${badge}
           </summary>
-          <div style="margin-top:6px;color:var(--ink-2);font-size:12px">目標：${esc(b.target_dir)} · 來源：${esc(b.provider || "")}${b.optional ? " · 選用" : ""}</div>
+          <div style="margin-top:6px;color:var(--ink-2);font-size:12px">${T("dl.target", null, {
+            dir: esc(b.target_dir), provider: esc(b.provider || ""),
+            optional: b.optional ? T("dl.optional", " · 選用") : "" })}</div>
           ${files}
         </details>`;
-      }).join("") || '<div style="color:var(--ink-2)">無資料</div>';
+      }).join("") || `<div style="color:var(--ink-2)">${T("dl.empty", "無資料")}</div>`;
     } catch (e) {
-      host.innerHTML = `<div style="color:var(--warn,#b26a00)">讀取失敗：${esc(e.message || e)}</div>`;
+      host.innerHTML = `<div style="color:var(--warn,#b26a00)">${T("dl.readFailed", null, { err: esc(e.message || e) })}</div>`;
     }
   }
   $("#btn-catalog-refresh") && $("#btn-catalog-refresh").addEventListener("click", renderDownloadCenter);
@@ -112,19 +122,22 @@
     const msg = $("#catalog-msg");
     try {
       const r = await API.exportDownloadManifest([]);
-      if (msg) msg.textContent = `已輸出：${r.path}（${fmtBytes(r.bytes)}，${r.bundle_count} 組）`;
-    } catch (e) { if (msg) msg.textContent = "輸出失敗：" + (e.message || e); }
+      if (msg) msg.textContent = T("dl.manifestWritten", null,
+        { path: r.path, size: fmtBytes(r.bytes), count: r.bundle_count });
+    } catch (e) { if (msg) msg.textContent = T("dl.manifestFailed", null, { err: e.message || e }); }
   });
   $("#btn-catalog-import") && $("#btn-catalog-import").addEventListener("click", async () => {
     const msg = $("#catalog-msg");
     const dir = ($("#catalog-import-dir") || {}).value || "";
     const bundle = ($("#catalog-import-bundle") || {}).value || "";
-    if (!dir) { if (msg) msg.textContent = "請先填入手動下載的資料夾路徑"; return; }
+    if (!dir) { if (msg) msg.textContent = T("dl.needDir", "請先填入手動下載的資料夾路徑"); return; }
     try {
       const r = await API.importLocalModel(dir, bundle);
-      if (msg) msg.textContent = r.ok ? `匯入完成：${r.message}（複製 ${r.copied} 檔）` : `匯入未通過：${r.message}`;
+      if (msg) msg.textContent = r.ok
+        ? T("dl.imported", null, { msg: r.message, n: r.copied })
+        : T("dl.importRejected", null, { msg: r.message });
       await renderDownloadCenter();
-    } catch (e) { if (msg) msg.textContent = "匯入失敗：" + (e.message || e); }
+    } catch (e) { if (msg) msg.textContent = T("dl.importFailed", null, { err: e.message || e }); }
   });
   $("#nav").addEventListener("click", e => {
     const btn = e.target.closest(".nav-item");
@@ -218,7 +231,8 @@
         span.dataset.i18n = batchRunning ? "batch.cancel" : "batch.run";
         I18N.apply(batchRun);
       }
-      batchRun.title = batchRunning ? "取消佇列" : "全部開始";
+      batchRun.title = batchRunning ? T("batch.cancelAll", "取消佇列")
+                              : T("batch.runAll", "全部開始");
     }
   }
 
@@ -229,17 +243,18 @@
     picked = f;
     if (!f) { drop.classList.remove("has-file"); renderDropEmpty(); syncActionButtons(); return; }
     drop.classList.add("has-file");
-    const meta = f.sizeSec ? `${f.sizeSec} 秒` : (f.size ? (f.size / 1048576).toFixed(1) + " MB" : "");
+    const meta = f.sizeSec ? T("batch.seconds", null, { n: f.sizeSec })
+      : (f.size ? (f.size / 1048576).toFixed(1) + " MB" : "");
     drop.innerHTML = `<span class="file-chip">${escapeHtml(f.name)}
       ${meta ? `<span class="meta">${meta}</span>` : ""}
-      <button class="x" title="移除">✕</button></span>`;
+      <button class="x" title="${T("batch.remove", "移除")}">✕</button></span>`;
     drop.querySelector(".x").addEventListener("click", ev => { ev.stopPropagation(); setFile(null); });
     syncActionButtons();
   }
   function renderDropEmpty() {
     drop.innerHTML = `<div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></div>
-      <div class="big">拖曳音訊到此，或<b>點擊選擇檔案</b></div>
-      <div class="sub">支援 mp3 / wav / m4a / 影片音軌</div>`;
+      <div class="big">${T("file.dropBigHtml", "拖曳音訊到此，或<b>點擊選擇檔案</b>")}</div>
+      <div class="sub">${T("file.dropSubHtml", "支援 mp3 / wav / m4a / 影片音軌")}</div>`;
   }
 
   // 桌面：原生對話框；web/mock：fallback 到 <input type=file>
@@ -274,9 +289,9 @@
     running = true;
     markBusy("transcribe", true);
     $("#result").hidden = true;
-    showProgress(0, "準備中…");
+    showProgress(0, T("run.preparing", "準備中…"));
     resetLive();
-    logLine("▶ 開始轉換：" + picked.name);
+    logLine(T("run.started", null, { name: picked.name }));
     try {
       const res = await API.transcribe({
         path: picked.path, file: picked.file || picked,
@@ -288,12 +303,14 @@
         trial: $("#sw-trial") ? $("#sw-trial").checked : false,
       });
       renderResult(res);
-      logLine("✓ 完成，共 " + (res.totalSegments ?? res.segments.length) + " 段" +
-        (res.srtPath ? "，已輸出 " + res.srtPath : ""));
+      logLine(T("run.finished", null, {
+        n: res.totalSegments ?? res.segments.length,
+        srt: res.srtPath ? T("run.finishedSrt", null, { path: res.srtPath }) : "",
+      }));
       if (res.previewTruncated) {
         logLine(I18N.t("file.previewTruncated").replace("%1", res.previewLimit) + " " + res.srtPath);
       }
-      if (res.trial) logLine("試跑模式：僅處理前 5 分鐘，字幕另存為 .trial.srt");
+      if (res.trial) logLine(T("run.trialNote"));
       $("#btn-open-dir").disabled = false;
       $("#btn-save-sub").disabled = false;
     } catch (err) {
@@ -350,7 +367,7 @@
     if ($("#seg-effective")) {
       $("#seg-effective").textContent =
         (Number.isFinite(eff) ? eff + "s" : "—") +
-        "（模型上限 " + (Number.isFinite(ceil) ? ceil + "s" : "—") + "）";
+        T("run.modelCeiling", null, { n: Number.isFinite(ceil) ? ceil : "—" });
     }
     if ($("#seg-ram")) {
       $("#seg-ram").textContent = Number.isFinite(ram)
@@ -376,18 +393,26 @@
     const pad = n => String(n).padStart(2, "0");
     return (h ? h + ":" : "") + pad(m) + ":" + pad(r);
   }
-  const PHASE_TEXT = { running: "識別中", paused: "已暫停", done: "完成", preparing: "準備中" };
+  // Phase labels are resolved through i18n at render time; the map only holds
+  // the key + Hant fallback so a language switch never leaves stale Hant text.
+  const PHASE_TEXT = {
+    running: "run.running", paused: "run.paused",
+    done: "run.done", preparing: "run.preparingShort",
+  };
   API.on("progress-detail", (d) => {
     if (!d) return;
     const total = Number(d.totalSec) || 0, done = Number(d.doneSec) || 0;
     const elTime = $("#prog-time"), elGroups = $("#prog-groups"),
           elEta = $("#prog-eta"), elPhase = $("#prog-phase");
-    if (elTime) elTime.textContent = `已處理 ${fmtDur(done)} / ${total ? fmtDur(total) : "—"}`;
-    if (elGroups) elGroups.textContent = `${d.groups ?? 0} 段`;
-    if (elEta) elEta.textContent = d.etaSec == null ? "剩餘 —" : `剩餘 ${fmtDur(d.etaSec)}`;
+    if (elTime) elTime.textContent = T("run.processed", null,
+      { done: fmtDur(done), total: total ? fmtDur(total) : "—" });
+    if (elGroups) elGroups.textContent = T("run.groups", null, { n: d.groups ?? 0 });
+    if (elEta) elEta.textContent = d.etaSec == null
+      ? T("run.remainingUnknown", "剩餘 —")
+      : T("run.remaining", null, { eta: fmtDur(d.etaSec) });
     if (elPhase) {
-      const raw = PHASE_TEXT[d.phase] || d.phase || "識別中";
-      elPhase.textContent = window.I18N ? I18N.L(raw) : raw;
+      const ph = PHASE_TEXT[d.phase];
+      elPhase.textContent = ph ? T(ph) : (d.phase || T("run.running"));
     }
     // Queue view: keep the overall percentage list in sync without a second
     // polling loop. The batch page renders the same number in its summary.
@@ -531,10 +556,10 @@
     // spkc-N：依說話者標示左側外框色（與 chip 同色系，不污染卡片背景）
     el.className = "sub-card" + (s.speaker ? " spkc-" + (((s.speaker - 1) % 3) + 1) : "");
     el.dataset.seg = idx;
-    const spk = s.speaker ? `<span class="chip spk-${((s.speaker - 1) % 3) + 1}">說話者 ${s.speaker}</span>` : "";
+    const spk = s.speaker ? `<span class="chip spk-${((s.speaker - 1) % 3) + 1}">${T("run.speaker", null, { n: s.speaker })}</span>` : "";
     el.innerHTML = `<span class="tc">${fmtClock(s.start)} → ${fmtClock(s.end)}</span>
       <div class="body"><div class="spk">${spk}</div><div class="txt">${escapeHtml(s.text)}</div></div>
-      <button class="sub-edit" title="編輯此行" aria-label="編輯此行">
+      <button class="sub-edit" title="${T("run.editLine", "編輯此行")}" aria-label="${T("run.editLine", "編輯此行")}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
       </button>`;
     el.addEventListener("click", e => {
@@ -758,13 +783,13 @@
   }
   function buildSrt(segs) {
     return segs.map((s, i) => {
-      const spk = s.speaker ? `說話者${s.speaker}：` : "";
+      const spk = s.speaker ? T("run.speakerPrefix", null, { n: s.speaker }) : "";
       return `${i + 1}\n${srtTs(s.start)} --> ${srtTs(s.end)}\n${spk}${s.text}\n`;
     }).join("\n");
   }
   function buildTxt(segs) {
     return segs.some(s => s.speaker)
-      ? segs.map(s => (s.speaker ? `說話者${s.speaker}：` : "") + s.text).join("\n")
+      ? segs.map(s => (s.speaker ? T("run.speakerPrefix", null, { n: s.speaker }) : "") + s.text).join("\n")
       : segs.map(s => s.text).join("");
   }
   async function saveSubtitle() {
@@ -772,14 +797,15 @@
     let fmt = "srt";
     try { fmt = (await API.getSettings()).format || "srt"; } catch (e) {}
     const text = fmt === "txt" ? buildTxt(curSegs) : buildSrt(curSegs);
-    const base = (picked && picked.name) ? picked.name.replace(/\.[^.]+$/, "") : "字幕";
+    const base = (picked && picked.name) ? picked.name.replace(/\.[^.]+$/, "")
+      : T("run.defaultSubtitleName", "字幕");
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = base + (fmt === "txt" ? ".txt" : ".srt");
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    logLine("✓ 已存檔字幕：" + a.download);
+    logLine(T("run.savedSubtitle", null, { name: a.download }));
   }
   $("#btn-save-sub").addEventListener("click", saveSubtitle);
 
@@ -845,11 +871,19 @@
   // 狀態由 SSE「batch」事件推送；重新整理頁面也不會掉佇列。
   // mock（離屏預覽）模式保留原本的前端序列迴圈，讓靜態展示不需後端。
   // ════════════════════════════════════════════════════════
+  // 狀態標籤刻意存 [key, fallback] 而不是求值後的字串：模組載入時求值會把
+  // 當下語言「凍結」住，之後切到簡體／英文，批次列仍是原本那套字。
   const ST = {
-    done: ["完成", "chip-ok"], running: ["辨識中", "chip-accent"],
-    pending: ["待處理", "chip-muted"], failed: ["失敗", "chip-live"],
-    canceled: ["已取消", "chip-muted"], uploading: ["上傳中", "chip-muted"],
+    done: "batch.stDone", running: "batch.stRunning", pending: "batch.stPending",
+    failed: "batch.stFailed", canceled: "batch.stCanceled", uploading: "batch.stUploading",
   };
+  const ST_CLS = {
+    done: "chip-ok", running: "chip-accent", pending: "chip-muted",
+    failed: "chip-live", canceled: "chip-muted", uploading: "chip-muted",
+  };
+  function stLabel(status) {
+    return [T(ST[status] || ST.pending), ST_CLS[status] || "chip-muted"];
+  }
   // batchItems / batchRunning / batchMockRunning / batchActiveIdx /
   // batchUploadErrors are declared with the H2 state machine above.
 
@@ -879,7 +913,7 @@
       const opts = currentBatchOpts();
       for (let i = 0; i < files.length; i++) {
         const sum = $("#batch-summary");
-        if (sum) sum.textContent = `上傳中 ${i + 1} / ${files.length}…`;
+        if (sum) sum.textContent = T("batch.uploading", null, { i: i + 1, n: files.length });
         try { await API.batchAdd(files[i], opts); }
         catch (err) { batchUploadErrors.push(`${files[i].name}：${err.message || err}`); }
       }
@@ -925,9 +959,10 @@
     const failed = batchItems.filter(i => i.status === "failed").length;
     const avg = batchItems.length
       ? batchItems.reduce((a, b) => a + (b.progress || 0), 0) / batchItems.length : 0;
-    let text = `${done} / ${batchItems.length} 完成 · 總進度 ${Math.round(avg * 100)}%`;
-    if (failed) text += ` · ${failed} 失敗`;
-    if (batchRunning) text += " · 執行中";
+    let text = T("batch.progress", null,
+      { done, total: batchItems.length, pct: Math.round(avg * 100) });
+    if (failed) text += T("batch.failedSuffix", null, { n: failed });
+    if (batchRunning) text += T("batch.runningSuffix", " · 執行中");
     const el = $("#batch-summary"); if (el) el.textContent = text;
   }
   function renderBatch() {
@@ -938,7 +973,7 @@
       const box = document.createElement("div");
       box.className = "card";
       box.style.cssText = "color:var(--danger, #c0392b);padding:10px;margin-bottom:8px;font-size:12px";
-      box.textContent = "上傳失敗：" + batchUploadErrors.join("；");
+      box.textContent = T("batch.uploadFailed", null, { err: batchUploadErrors.join("；") });
       host.appendChild(box);
     }
     if (!batchItems.length) {
@@ -949,12 +984,13 @@
     batchItems.forEach((it, idx) => host.appendChild(batchRow(it, idx)));
   }
   function batchRow(it, idx) {
-    const [label, cls] = ST[it.status] || ST.pending;
+    const [label, cls] = stLabel(it.status);
     const row = document.createElement("div");
     row.className = "b-row"; row.dataset.idx = idx;
     const terminal = ["failed", "canceled"].includes(it.status);
-    const actTitle = it.status === "done" ? "開啟輸出資料夾"
-      : (terminal && API.mode === "web") ? "重試" : "移除";
+    const actTitle = it.status === "done" ? T("batch.openOut", "開啟輸出資料夾")
+      : (terminal && API.mode === "web") ? T("batch.retry", "重試")
+      : T("batch.remove", "移除");
     row.innerHTML = `
       <div class="nm"><div class="f">${escapeHtml(it.name)}</div>
         ${it.error ? `<div class="e">${escapeHtml(it.error)}</div>` : ""}</div>
@@ -976,7 +1012,7 @@
   function updateBatchRow(idx) {
     const it = batchItems[idx];
     const row = $(`.b-row[data-idx="${idx}"]`); if (!row) return;
-    const [label, cls] = ST[it.status] || ST.pending;
+    const [label, cls] = stLabel(it.status);
     row.querySelector(".pbar i").style.width = Math.round((it.progress || 0) * 100) + "%";
     const chip = row.querySelector(".chip"); chip.className = "chip " + cls; chip.textContent = label;
     batchSummary();
@@ -1042,19 +1078,19 @@
     try { h = await API.getHealthCheck(); } catch (e) { return; }
     const sum = $("#health-sum");
     if (h.summary) {
-      if (h.summary.red > 0) { sum.className = "chip chip-live"; sum.textContent = `${h.summary.red} 項需處理`; }
-      else if (h.summary.yellow > 0) { sum.className = "chip chip-accent"; sum.textContent = `核心就緒 · ${h.summary.yellow} 項將於啟用時自動下載`; }
-      else { sum.className = "chip chip-ok"; sum.textContent = "全部就緒"; }
+      if (h.summary.red > 0) { sum.className = "chip chip-live"; sum.textContent = T("catalog.itemsToFix", null, { n: h.summary.red }); }
+      else if (h.summary.yellow > 0) { sum.className = "chip chip-accent"; sum.textContent = T("catalog.coreReady", null, { n: h.summary.yellow }); }
+      else { sum.className = "chip chip-ok"; sum.textContent = T("catalog.allReady", "全部就緒"); }
     }
     const host = $("#health-panel"); host.innerHTML = "";
     const dot = s => `<span class="hdot hdot-${s}"></span>`;
     const groups = [...(h.cores || [])];
-    if (h.shared && h.shared.length) groups.push({ label: "共用元件", items: h.shared });
+    if (h.shared && h.shared.length) groups.push({ label: T("catalog.shared", "共用元件"), items: h.shared });
     groups.forEach(g => {
       const card = document.createElement("div"); card.className = "health-core";
       const active = g.backend && g.backend === h.activeBackend;
       card.innerHTML = `<div class="hc-title">${escapeHtml(I18N.L(g.label))}` +
-        (active ? ` <span class="chip chip-ok" style="font-size:10px">使用中</span>` : ``) + `</div>`;
+        (active ? ` <span class="chip chip-ok" style="font-size:10px">${T("catalog.inUse", "使用中")}</span>` : ``) + `</div>`;
       (g.items || []).forEach(it => {
         const row = document.createElement("div"); row.className = "hc-item";
         row.innerHTML = `${dot(it.status)}<span class="hi-label">${escapeHtml(I18N.L(it.label))}</span>` +
@@ -1181,13 +1217,13 @@
       card.dataset.core = p.core; card.dataset.model = p.model;
       card.dataset.note = p.note || "";
       const state = p.present
-        ? `<span class="chip chip-muted" style="font-weight:400">已下載</span>`
-        : `<span class="chip chip-muted" style="font-weight:400">需下載</span>`;
+        ? `<span class="chip chip-muted" style="font-weight:400">${T("catalog.downloaded", "已下載")}</span>`
+        : `<span class="chip chip-muted" style="font-weight:400">${T("catalog.needsDownload", "需下載")}</span>`;
       card.innerHTML = `<span class="rd"></span><div class="info">
         <div class="t">${escapeHtml(I18N.L(p.title))}　${state}</div>
         <div class="d">${escapeHtml(I18N.L(p.desc || ""))}</div>
         <div class="d" style="margin-top:4px;font-family:var(--font-mono);font-size:11.5px">
-          建議模型：${escapeHtml(p.model)}</div></div>`;
+          ${T("catalog.suggested", null, { model: escapeHtml(p.model) })}</div></div>`;
       host.appendChild(card);
     });
     basicNote((d.profiles || []).find(p => p.selected));
@@ -1311,9 +1347,9 @@
   $("#btn-model-load") && $("#btn-model-load").addEventListener("click", async () => {
     const btn = $("#btn-model-load");
     if (btn.dataset.act === "goto") { switchView("file"); return; }
-    _modelLoading = true; markBusy("model", true); btn.textContent = "下載／載入中…";
+    _modelLoading = true; markBusy("model", true); btn.textContent = T("model.loading", "下載／載入中…");
     $("#model-progress").hidden = false;
-    setModelProg(0, "準備載入…");
+    setModelProg(0, T("catalog.prepareLoad", "準備載入…"));
     modelMsg(I18N.t("model.loadingHint"), "info");
     try { await API.startLoad(); }
     catch (err) { _modelLoading = false; markBusy("model", false); modelMsg(I18N.t("model.loadFailed", {error: err.message || err}), "warn"); updateLoadBtn(); }
@@ -1345,7 +1381,7 @@
         languages.forEach(l => {
           const o = document.createElement("option");
           o.value = l.value;
-          o.textContent = l.value ? (window.I18N ? I18N.L(l.label) : l.label) : (I18N.t("common.langAuto") || "語言 自動");
+          o.textContent = l.value ? (window.I18N ? I18N.L(l.label) : l.label) : T("common.langAuto", "語言 自動");
           sel.appendChild(o);
         });
         if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
@@ -1361,7 +1397,7 @@
     $("#sw-endpoint").checked = e.running;
     setEpState(e.running);
     $("#ep-port").value = e.port;
-    $("#ep-url").textContent = e.running ? maskKeyInUrl(e.url) : "（服務未啟動）";
+    $("#ep-url").textContent = e.running ? maskKeyInUrl(e.url) : T("ep.notRunning", "（服務未啟動）");
     $("#ep-url").dataset.full = e.url;
     $("#ep-key").textContent = "••••••••••••";
     $("#ep-key").dataset.full = e.key;
@@ -1372,7 +1408,8 @@
   function applyEpQr(e) {
     const qr = $("#ep-qr"), src = e.running ? API.qrSrc(e.url) : "";
     if (src) { qr.src = src; qr.hidden = false; } else { qr.hidden = true; }
-    $("#ep-qr-hint").textContent = e.running ? "同網段裝置可掃此 QR 直接開啟上傳頁" : "（服務未啟動）";
+    $("#ep-qr-hint").textContent = e.running ? T("ep.qrHint", "同網段裝置可掃此 QR 直接開啟上傳頁")
+      : T("ep.notRunning", "（服務未啟動）");
   }
 
   // ── 對外臨時網址（Cloudflare）─────────────────────────────
@@ -1382,14 +1419,15 @@
     const ready = !!(t.running && t.url);
     const st = $("#cf-state");
     st.className = "chip " + (ready ? "chip-ok" : (t.running ? "chip-accent" : "chip-muted"));
-    st.innerHTML = `<span style="font-size:9px">●</span> ${ready ? "對外中" : (t.running ? "建立中…" : "未啟用")}`;
+    st.innerHTML = `<span style="font-size:9px">●</span> ${ready ? T("ep.public", "對外中")
+      : (t.running ? T("ep.starting", "建立中…") : T("ep.inactive", "未啟用"))}`;
     $("#cf-body").hidden = !t.running;
     if (t.url) {
       $("#cf-url").textContent = maskKeyInUrl(t.url); $("#cf-url").dataset.full = t.url;
       const src = API.qrSrc(t.url), qr = $("#cf-qr");
       if (src) { qr.src = src; qr.hidden = false; } else qr.hidden = true;
     } else {
-      $("#cf-url").textContent = "（建立中…）"; $("#cf-url").dataset.full = "";
+      $("#cf-url").textContent = T("ep.starting", "（建立中…）"); $("#cf-url").dataset.full = "";
       $("#cf-qr").hidden = true;
     }
     const cs = $("#cf-status");
@@ -1401,7 +1439,7 @@
     const on = e.target.checked;
     if (on && !$("#sw-endpoint").checked) {        // 通道須先有端點服務
       e.target.checked = false;
-      const cs = $("#cf-status"); cs.className = "cf-status err"; cs.textContent = "請先啟動端點服務";
+      const cs = $("#cf-status"); cs.className = "cf-status err"; cs.textContent = T("ep.startFirst", "請先啟動端點服務");
       return;
     }
     applyTunnelState(await API.toggleTunnel(on));
@@ -1411,7 +1449,7 @@
   function setEpState(on) {
     const c = $("#ep-state");
     c.className = "chip " + (on ? "chip-ok" : "chip-muted");
-    c.innerHTML = `<span style="font-size:9px">●</span> ${on ? "執行中" : "已停止"}`;
+    c.innerHTML = `<span style="font-size:9px">●</span> ${on ? T("ep.running", "執行中") : T("ep.stopped", "已停止")}`;
   }
   function maskKeyInUrl(url) { return url.replace(/k=[^&]+/, "k=•••••"); }
   $("#sw-endpoint").addEventListener("change", async e => {
@@ -1428,19 +1466,21 @@
     const k = $("#ep-key"); const showing = k.dataset.shown === "1";
     k.textContent = showing ? "••••••••••••" : (k.dataset.full || "");
     k.dataset.shown = showing ? "" : "1";
-    $("#btn-reveal-key").textContent = showing ? "顯示" : "隱藏";
+    $("#btn-reveal-key").textContent = showing ? T("ep.show", "顯示") : T("ep.hide", "隱藏");
   });
   $("#btn-newkey").addEventListener("click", async () => {
     const r = await API.regenKey(); $("#ep-key").dataset.full = r.key;
     $("#ep-key").dataset.shown = ""; $("#ep-key").textContent = "••••••••••••";
-    $("#btn-reveal-key").textContent = "顯示";
-    $("#ep-url").dataset.full = r.url; $("#ep-url").textContent = r.running ? maskKeyInUrl(r.url) : "（服務未啟動）";
+    $("#btn-reveal-key").textContent = T("ep.show", "顯示");
+    $("#ep-url").dataset.full = r.url;
+    $("#ep-url").textContent = r.running ? maskKeyInUrl(r.url)
+      : T("ep.notRunning", "（服務未啟動）");
   });
   // 複製按鈕（資料來自 dataset.full）
   document.addEventListener("click", e => {
     const btn = e.target.closest("[data-copy]"); if (!btn) return;
     const t = $(btn.dataset.copy); const val = t.dataset.full || t.textContent;
-    navigator.clipboard?.writeText(val); flash(btn, "已複製");
+    navigator.clipboard?.writeText(val); flash(btn, T("ep.copied", "已複製"));
   });
   function flash(btn, txt) { const o = btn.textContent; btn.textContent = txt; setTimeout(() => btn.textContent = o, 1200); }
 
@@ -1535,28 +1575,28 @@
     // One plain-language verdict on screen; the full distribution stays
     // available on hover and in the run log instead of flooding the panel.
     el.innerHTML = `<b>${I18N.t(warn ? "file.previewWarn" : "file.previewOk")}</b> · ` +
-                   `${p.groupCount || 0} 組 · 最長 ${L.max ?? "—"}s`;
+                   T("split.stats", null, { groups: p.groupCount || 0, max: L.max ?? "—" });
     el.title = `p50 ${L.p50}s / p90 ${L.p90}s / p99 ${L.p99}s / max ${L.max}s · ` +
-               `超上限 ${(p.overLimitRatio * 100).toFixed(1)}% · ` +
-               `極短段 ${(p.shortRatio * 100).toFixed(1)}% · ` +
-               `靜音 ${(p.silenceRatio * 100).toFixed(0)}% · ` +
-               `預計 ${p.estimatedAsrCallsPerHour} 次 ASR/小時`;
+               T("split.overLimit", null, { pct: (p.overLimitRatio * 100).toFixed(1) }) + " · " +
+               T("split.veryShort", null, { pct: (p.shortRatio * 100).toFixed(1) }) + " · " +
+               T("split.silence", null, { pct: (p.silenceRatio * 100).toFixed(0) }) + " · " +
+               T("split.asrCalls", null, { n: p.estimatedAsrCallsPerHour });
   }
   API.on("vad-preview", renderPreviewStat);
   $("#btn-vad-preview") && $("#btn-vad-preview").addEventListener("click", async () => {
     if (!picked) return;
     const btn = $("#btn-vad-preview");
     markBusy("preview", true); btn.dataset.label = btn.textContent;
-    btn.textContent = "預檢中…";
+    btn.textContent = T("split.prechecking", "預檢中…");
     try {
       const r = await API.vadPreview({
         file: picked.file || picked,
         vadThreshold: $("#seg-vad") ? $("#seg-vad").value : "",
       });
       renderPreviewStat(r);
-      logLine("✓ 切分預檢完成：" + (r.groupCount || 0) + " 組");
+      logLine(T("split.precheckOk", null, { n: r.groupCount || 0 }));
     } catch (e) {
-      logLine("✕ 切分預檢失敗：" + (e.message || e));
+      logLine(T("split.precheckFailed", null, { err: e.message || e }));
     } finally {
       markBusy("preview", false);
       btn.textContent = btn.dataset.label || I18N.t("file.previewRun");
@@ -1605,7 +1645,7 @@
   // 檢查更新：開啟 GitHub Releases 頁（系統瀏覽器）
   $("#btn-check-update") && $("#btn-check-update").addEventListener("click", async () => {
     const btn = $("#btn-check-update"); const o = btn.textContent;
-    btn.disabled = true; btn.textContent = "開啟中…";
+    btn.disabled = true; btn.textContent = T("set.opening", "開啟中…");
     try { await API.checkUpdate(); } catch (e) {}
     setTimeout(() => { btn.disabled = false; btn.textContent = o; }, 1500);
   });
@@ -1646,7 +1686,8 @@
     const chip = $("#rec-perm"), help = $("#rec-perm-help");
     if (!chip) return;
     if (!recSupported()) {
-      chip.hidden = false; chip.className = "chip chip-muted"; chip.textContent = "不支援錄音";
+      chip.hidden = false; chip.className = "chip chip-muted";
+      chip.textContent = T("record.unsupported", "不支援錄音");
       return;
     }
     let state = "prompt";
@@ -1681,12 +1722,12 @@
       const mics = devs.filter(d => d.kind === "audioinput");
       sel.innerHTML = "";
       const def = document.createElement("option");
-      def.value = ""; def.textContent = "預設麥克風";
+      def.value = ""; def.textContent = T("record.defaultMic", "預設麥克風");
       sel.appendChild(def);
       mics.forEach((d, i) => {
         const o = document.createElement("option");
         o.value = d.deviceId;
-        o.textContent = d.label || `麥克風 ${i + 1}`;
+        o.textContent = d.label || T("record.micN", null, { n: i + 1 });
         sel.appendChild(o);
       });
       if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
@@ -1698,7 +1739,7 @@
   }
 
   async function startRec() {
-    if (!recSupported()) { recNote("此環境不支援錄音 API。", true); return; }
+    if (!recSupported()) { recNote(T("record.noApi", "此環境不支援錄音 API。"), true); return; }
     // 依選定的麥克風建立音訊約束（空值 → 系統預設裝置）。
     const micId = $("#rec-mic") ? $("#rec-mic").value : "";
     const audioConstraint = { echoCancellation: true, noiseSuppression: true };
@@ -1708,7 +1749,8 @@
     } catch (err) {
       // 被拒 / 無裝置 → 頁內顯示權限指引，不只丟一行錯誤
       const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
-      recNote((denied ? "麥克風權限被拒。" : "無法取得麥克風：") + (err.message || err), true);
+      recNote((denied ? T("record.micDenied", "麥克風權限被拒。")
+                       : T("record.micFailed", "無法取得麥克風：")) + (err.message || err), true);
       refreshMicPerm();
       if (denied && $("#rec-perm-help")) $("#rec-perm-help").hidden = false;
       return;
@@ -1725,7 +1767,7 @@
     lw.innerHTML = Array.from({ length: 28 }, () => `<div class="b" style="height:4px"></div>`).join("");
     $("#rec-timer").textContent = "00:00";
     REC.timer = setInterval(() => { REC.sec++; $("#rec-timer").textContent = fmtClock(REC.sec); }, 1000);
-    recNote("聆聽中…說完停頓約 2 秒會自動辨識；再按一次結束並完成最後一段。");
+    recNote(T("record.listening", "聆聽中…說完停頓約 2 秒會自動辨識；再按一次結束並完成最後一段。"));
     startSeg(); monitor();
   }
   function startSeg() {
@@ -1750,7 +1792,7 @@
         const recLang = $("#rec-lang") ? $("#rec-lang").value : "";
         const res = await API.transcribe({ file, language: recLang || null, diarize: false, align: false });
         (res.segments || []).forEach(s => { if (s.text && s.text.trim()) appendRecLine(s.text.trim()); });
-      } catch (err) { recNote("辨識失敗：" + (err.message || err), true); }
+      } catch (err) { recNote(T("record.asrFailed", null, { err: err.message || err }), true); }
     }
   }
   function monitor() {
@@ -1779,7 +1821,7 @@
     if (REC.raf) cancelAnimationFrame(REC.raf);
     clearInterval(REC.timer);
     $("#rec-live-wave").hidden = true;
-    recNote("已停止。");
+    recNote(T("record.stopped", "已停止。"));
     cutSeg();    // 收尾段（onSegStop 會上傳並 teardown）
   }
   function teardownRec() {
@@ -1844,10 +1886,11 @@
       const ext = fmt === "txt" ? "txt" : "srt";
       REC.fileHandle = await window.showSaveFilePicker({
         suggestedName: `realtime.${ext}`,
-        types: [{ description: "字幕檔", accept: { "text/plain": ["." + ext] } }],
+        types: [{ description: T("record.subtitleFile", "字幕檔"),
+                 accept: { "text/plain": ["." + ext] } }],
       });
       await recAutosaveWrite();           // 立即寫一次（含既有片段）
-      recNote("即時存檔已啟用：每段辨識完成後會自動寫入所選檔案。");
+      recNote(T("record.autosaveOn", "即時存檔已啟用：每段辨識完成後會自動寫入所選檔案。"));
     } catch (err) {                         // 使用者取消選檔 → 還原開關
       REC.fileHandle = null; e.target.checked = false;
     }
@@ -1860,7 +1903,7 @@
       const text = fmt === "txt" ? buildTxt(REC.segs) : buildSrt(REC.segs);
       const w = await REC.fileHandle.createWritable();   // 截斷重寫（內容小，安全可靠）
       await w.write(text); await w.close();
-    } catch (e) { recNote("即時存檔寫入失敗：" + (e.message || e), true); REC.fileHandle = null; }
+    } catch (e) { recNote(T("record.autosaveFailed", null, { err: e.message || e }), true); REC.fileHandle = null; }
   }
 
   // ── 啟動 ────────────────────────────────────────────────
@@ -1871,7 +1914,7 @@
     if (ready == null) { try { ready = (await API.getStatus()).modelReady; } catch (e) {} }
     if (_modelLoading && ready) {
       _modelLoading = false; markBusy("model", false);
-      setModelProg(100, "完成");
+      setModelProg(100, T("run.done", "完成"));
       setTimeout(() => { $("#model-progress").hidden = true; }, 800);
       modelMsg(I18N.t("model.readySwitched"), "info");
       renderHealth();                 // 自檢色點刷新

@@ -94,6 +94,34 @@ def check_layout(stage: Path, assets: frozenset[str] | None = None) -> list[str]
     return errors
 
 
+# Wave 7 slimming: the package must ship the CPU execution path and must not
+# carry the 40+ MB of GPU/NPU/foreign-frontend binaries it never loads.
+OV_KEEP = ["openvino_intel_cpu_plugin.dll", "openvino.dll", "openvino_ir_frontend.dll"]
+OV_MUST_NOT = ["openvino_intel_gpu_plugin.dll", "openvino_intel_npu_plugin.dll",
+               "openvino_tensorflow_frontend.dll", "openvino_pytorch_frontend.dll"]
+
+
+def check_openvino_slim(stage: Path) -> list[str]:
+    """断言 OpenVINO 精简后仍可推理（CPU 插件在、用不到的不在）。
+
+    缺失 CPU 插件会让 import openvino 直接失败 —— 那是致命的；残留 GPU/NPU
+    插件只是浪费体积。所以分开报，前者一律判失败，后者同样判失败（说明精简
+    步骤没生效，包会白白大出几十 MB）。
+    """
+    errors: list[str] = []
+    libs = stage / "_internal" / "openvino" / "libs"
+    if not libs.is_dir():
+        return ["缺少 _internal/openvino/libs/（OpenVINO 未随包）"]
+    present = {p.name for p in libs.glob("*")}
+    for name in OV_KEEP:
+        if name not in present:
+            errors.append(f"缺少 OpenVINO 必需组件 {name}（CPU 推理会直接失败）")
+    for name in OV_MUST_NOT:
+        if name in present:
+            errors.append(f"{name} 不应随包（未精简，白白增加体积）")
+    return errors
+
+
 
 def _force_utf8():
     """Windows 控制台默认 cp1252 会让中文 print 抛 UnicodeEncodeError。"""
@@ -157,6 +185,13 @@ def main() -> int:
         for err in layout_errors:
             print(f"错误：{err}")
         return 1
+
+    slim_errors = check_openvino_slim(stage)
+    if slim_errors:
+        for err in slim_errors:
+            print(f"错误：{err}")
+        return 1
+    print("OpenVINO 精简检查：通过（CPU 插件在位，GPU/NPU 前端未随包）")
 
     # G7: verify the content-addressed manifest of the staged package.
     import sys

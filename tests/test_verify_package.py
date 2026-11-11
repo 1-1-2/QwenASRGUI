@@ -58,7 +58,8 @@ def _make_stage(root: Path) -> Path:
     stage = pkg / "QwenASR-WebView"
     internal = stage / "_internal"
     for p in (stage / "ov_models", stage / "subtitles", stage / "longform_state",
-              internal / "ov_models", internal / "webview_assets"):
+              internal / "ov_models", internal / "webview_assets",
+              internal / "openvino" / "libs"):
         p.mkdir(parents=True, exist_ok=True)
     (stage / "ov_models" / ".keep").write_text("", encoding="utf-8")
     (stage / "subtitles" / ".keep").write_text("", encoding="utf-8")
@@ -69,6 +70,10 @@ def _make_stage(root: Path) -> Path:
                 "prompt_template.json", "webview_assets/index.html"):
         (internal / rel).write_text("stub", encoding="utf-8")
     (internal / "ov_models" / "silero_vad_v4.onnx").write_bytes(b"onnx" * 100)
+    # Wave 7 slimming contract: CPU path present, GPU/NPU frontends absent.
+    for name in ("openvino_intel_cpu_plugin.dll", "openvino.dll",
+                 "openvino_ir_frontend.dll"):
+        (internal / "openvino" / "libs" / name).write_bytes(b"dll")
     (internal / "ov_models" / "mel_filters.npy").write_bytes(b"npy" * 100)
     # _internal/ must exceed 150 MB; a sparse file keeps the fixture cheap.
     with (internal / "big_runtime.dll").open("wb") as f:

@@ -126,7 +126,8 @@ for (const lang of ['hant', 'hans', 'en']) {
       note: {k: 'state.downloaded'}}}),
   };
 }
-process.stdout.write(JSON.stringify({messages, samples}));
+const dictKeys = I.tKeys;
+process.stdout.write(JSON.stringify({messages, samples, dictKeys}));
 """
 
 
@@ -140,6 +141,63 @@ def load_frontend() -> dict:
 
 def placeholders(text: str) -> set[str]:
     return set(PLACEHOLDER.findall(text))
+
+
+CJK_CHAR = re.compile(r"[\u4e00-\u9fff]")
+# Lines whose Chinese is legitimately not user-facing prose:
+#   // … or /* … */            comments
+#   /^[约約]\s*/ etc.          regex literals (character classes)
+#   data-i18n="…"              attribute keys, resolved by I18N.apply
+#   font / style declarations  CSS inside template strings
+_SKIP_HINTS = (
+    'data-i18n', "replace(/", "match(/", "test(/", "font-family",
+    "Microsoft JhengHei", "var(--", "cssText",
+)
+
+
+def scan_hardcoded_zh(src: str) -> list[tuple[int, str]]:
+    """Return (line, text) for Chinese literals that bypass the dictionary.
+
+    Rules:
+      * comments, regex literals, CSS/attribute snippets are ignored;
+      * a Chinese string appearing after ``T("key"`` on the same line is the
+        deliberate Hant fallback argument — allowed;
+      * any other Chinese string literal that reaches textContent / innerHTML
+        / title / placeholder / logLine is a leak and gets flagged.
+    """
+    out: list[tuple[int, str]] = []
+    in_block = False
+    for no, raw in enumerate(src.splitlines(), 1):
+        line = raw
+        if in_block:
+            if "*/" not in line:
+                continue
+            line = line.split("*/", 1)[1]
+            in_block = False
+        if line.strip().startswith("//"):
+            continue
+        if "/*" in line and "*/" not in line:
+            line = line.split("/*", 1)[0]
+            in_block = True
+        if not CJK_CHAR.search(line):
+            continue
+        if any(h in line for h in _SKIP_HINTS):
+            continue
+        # Everything after the first T("key" is fallback territory.
+        cut = line.find('T("')
+        scan = line[:cut] if cut >= 0 else line
+        # A T( call opening on this line but listing the fallback on the next
+        # line ends with a bare `T("key",` — the following lines are then
+        # fallbacks too, which the per-line cut already handles via `cut`.
+        if not re.search(r'[\u4e00-\u9fff]', scan):
+            continue
+        quoted = re.findall(r'"([^"\n]*)"|\'([^\'\n]*)\'|`([^`]*)`', scan)
+        for a, b, c in quoted:
+            seg = a or b or c
+            if seg and CJK_CHAR.search(seg):
+                out.append((no, seg.strip()))
+                break
+    return out
 
 
 def main() -> int:
@@ -251,6 +309,24 @@ def main() -> int:
                            ("accel option card", probe["accel_option_k"]),
                            ("set_model feedback", probe["set_model_k"])):
             r.check(f"{label} is structured", key in ui_text.TEMPLATES, key)
+
+    print("\n[7] No runtime prose bypasses the dictionary (Wave 7)")
+    # The original complaint was that a Simplified / English UI still showed
+    # Traditional Chinese. The dictionary was complete, but ~40 user-visible
+    # strings were concatenated straight into textContent / innerHTML in
+    # app.js, so those paths ignored the language entirely. Every Chinese
+    # literal that reaches the DOM must now come through T()/I18N.
+    app_js = (ROOT / "webview/js/app.js").read_text(encoding="utf-8")
+    offenders = scan_hardcoded_zh(app_js)
+    r.check("no hard-coded Chinese in DOM assignments", not offenders,
+            "; ".join(f"L{n}: {s[:40]}" for n, s in offenders[:6]))
+    # Every T("key", ...) must exist in the dictionary, otherwise the fallback
+    # (Hant) silently leaks into the other two languages.
+    used = set(re.findall(r'\bT\("([A-Za-z0-9_.]+)"', app_js))
+    dict_keys = set(fe["dictKeys"])
+    missing_keys = sorted(k for k in used if k not in dict_keys)
+    r.check("every T() key is in the dictionary", not missing_keys, str(missing_keys[:6]))
+    r.check("app.js routes UI text through T()", len(used) >= 60, f"{len(used)} keys")
 
     print(f"\nResult: {sum(r.items)}/{len(r.items)} passed")
     return 0 if r.ok else 1

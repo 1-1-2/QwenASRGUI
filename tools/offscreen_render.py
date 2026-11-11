@@ -365,9 +365,17 @@ def main() -> int:
               "hf-mirror.com" in cat and "1/2" in cat, cat)
         page.evaluate("document.querySelectorAll('#catalog-list details').forEach(d => d.open = true)")
         cat_list = page.locator("#catalog-list").inner_text()
+        # The page is in English at this point (the language was switched
+        # earlier in this run), so the labels must be English too - that is
+        # exactly the Wave 7 fix. Assert the *behaviour* (never fabricating a
+        # size or hash), not a specific locale's wording.
         check("unknown size/sha are labelled, not faked",
-              "大小未知" in cat_list and "SHA256 未知" in cat_list,
+              ("Size unknown" in cat_list or "大小未知" in cat_list) and
+              ("SHA256 unknown" in cat_list or "SHA256 未知" in cat_list),
               cat_list[-180:].replace("\n", " | "))
+        check("download centre follows the UI language",
+              "Size unknown" in cat_list and "大小未知" not in cat_list,
+              cat_list[-120:].replace("\n", " | "))
         check("size_hint is not double-wrapped with 約/约",
               "約 約" not in cat_list and "約 约" not in cat_list and
               "（估計）（估計）" not in cat_list,
@@ -384,6 +392,35 @@ def main() -> int:
               str(len(report["expected_console_errors"])))
         check("no uncaught page errors overall", not report["page_errors"],
               "; ".join(report["page_errors"][:3]))
+
+        # ── Layout: nothing may be clipped or overflow its container ───────
+        # Longer translations (zh-Hant is the longest of the three) used to
+        # push the sidebar status label outside the rail and silently truncate
+        # the app name. Check scrollWidth vs clientWidth on the rail instead of
+        # eyeballing screenshots.
+        for lang in ("hant", "hans", "en"):
+            page.evaluate(f"window.I18N && I18N.setLang({lang!r})")
+            page.wait_for_timeout(120)
+            clipped = page.evaluate("""() => {
+              const bad = [];
+              const sel = ['.sidebar', '.side-foot', '.status-dot', '.status-dot .t', '.brand .name'];
+              for (const s of sel) {
+                for (const el of document.querySelectorAll(s)) {
+                  const r = el.getBoundingClientRect();
+                  const cs = getComputedStyle(el);
+                  const side = el.closest('.sidebar');
+                  const sb = side ? side.getBoundingClientRect() : null;
+                  if (sb && (r.right > sb.right + 0.5 || r.left < sb.left - 0.5))
+                    bad.push(s + ' escapes sidebar');
+                  if (el.scrollWidth > el.clientWidth + 1 && cs.overflow === 'hidden'
+                      && cs.textOverflow === 'ellipsis')
+                    bad.push(s + ' truncated');
+                }
+              }
+              return bad;
+            }""")
+            check(f"sidebar text fits in {lang}", not clipped, "; ".join(clipped[:3]))
+        page.evaluate("window.I18N && I18N.setLang('en')")
 
         ctx.close()
         browser.close()

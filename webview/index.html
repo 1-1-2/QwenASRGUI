@@ -31,14 +31,14 @@
   <!-- ════════════ 側欄 ════════════ -->
   <aside class="sidebar">
     <div class="brand">
-      <div class="logo" title="聲音辨識小工具">
+      <div class="logo" data-i18n-title="status.appName" title="聲音辨識小工具">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <rect x="9" y="2" width="6" height="12" rx="3"></rect>
           <path d="M5 10a7 7 0 0 0 14 0"></path>
           <line x1="12" y1="19" x2="12" y2="22"></line>
         </svg>
       </div>
-      <div class="name">聲音辨識小工具</div>
+      <div class="name" data-i18n="status.appName">聲音辨識小工具</div>
     </div>
 
     <nav class="nav" id="nav">
@@ -70,7 +70,7 @@
 
     <div class="side-foot">
       <div class="status-dot" id="model-status">
-        <span class="dot"></span><span class="t">模型已就緒</span>
+        <span class="dot"></span><span class="t" data-i18n="status.ready">模型已就緒</span>
       </div>
     </div>
   </aside>
@@ -402,7 +402,8 @@
         <div class="model-load-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
           <button class="btn" id="btn-catalog-refresh">重新整理</button>
           <button class="btn" id="btn-catalog-manifest">輸出下載清單 (.txt)</button>
-          <input class="select" id="catalog-import-dir" placeholder="手動下載的資料夾路徑" style="min-width:230px" />
+          <input class="select" id="catalog-import-dir" data-i18n-ph="dl.importDirPh"
+                 placeholder="手動下載的資料夾路徑" style="min-width:230px" />
           <select class="select" id="catalog-import-bundle" style="min-width:210px"></select>
           <button class="btn" id="btn-catalog-import">匯入並驗證</button>
         </div>
@@ -423,7 +424,7 @@
           <div class="row"><div class="label"><div class="t" data-i18n="set.mirror">HuggingFace 鏡像站</div><div class="d" data-i18n="set.mirrorDesc">下載模型較慢時可改用鏡像</div></div>
             <input class="input mono" id="set-mirror" placeholder="hf-mirror.com" style="width:200px"></div>
           <div class="row"><div class="label"><div class="t" data-i18n="set.ffmpeg">FFmpeg 路徑</div><div class="d" data-i18n="set.ffmpegDesc">處理影片音軌所需（留空則需要時自動下載）</div></div>
-            <div class="with-browse"><input class="input mono" id="set-ffmpeg" placeholder="（留空＝自動偵測／需要時下載）" style="width:240px"><span class="chip chip-muted" id="ff-detected" hidden>已偵測</span></div></div>
+            <div class="with-browse"><input class="input mono" id="set-ffmpeg" data-i18n-ph="set.ffmpegPh" placeholder="（留空＝自動偵測／需要時下載）" style="width:240px"><span class="chip chip-muted" id="ff-detected" data-i18n="set.ffDetected" hidden>已偵測</span></div></div>
           <div class="row"><div class="label"><div class="t" data-i18n="set.theme">外觀主題</div></div>
             <div class="seg" id="set-theme"><button class="on" data-v="light" data-i18n="set.themeLight">淺色</button><button data-v="dark" data-i18n="set.themeDark">深色</button><button data-v="system" data-i18n="set.themeSystem">跟隨系統</button></div></div>
           <div class="row"><div class="label"><div class="t" data-i18n="set.lang">介面語言</div></div>

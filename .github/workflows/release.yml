@@ -156,6 +156,9 @@ jobs:
           run_suite "integration" python tests/test_integration.py
           run_suite "longform_runner" python tests/test_longform_runner.py \
             --minutes 0.5 --skip-ffmpeg --real-vad ov_models/silero_vad_v4.onnx
+          run_suite "launcher_stdio" python tests/test_launcher_stdio.py
+          run_suite "webview_bundle" python tests/test_webview_bundle.py
+          run_suite "openvino_slim" python tests/test_openvino_slim.py
           echo "----- last 120 lines of /tmp/tests.log -----"
           tail -120 /tmp/tests.log
           if [ -n "$failed" ]; then

@@ -47,7 +47,7 @@
   --font-disp: "Space Grotesk", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
   --font-mono: "Space Mono", "JetBrains Mono", "Consolas", "Microsoft JhengHei", monospace;
 
-  --side-w: 88px;
+  --side-w: 104px;   /* 状态文案（模型已就緒 / Ready）需在一行内放下 */
 }
 
 /* ── 深色主題：覆寫色彩 token（其餘版面共用，因全站走 var()）──────────
@@ -144,6 +144,10 @@ button { font-family: inherit; }
   font-family: var(--font-disp);
   font-size: 11px; font-weight: 600; letter-spacing: .2px;
   color: var(--ink-2); white-space: nowrap;
+  /* Seven hanzi do not fit a 100px rail; wrap to two lines instead of being
+     clipped by the sidebar edge, and keep it centred. */
+  max-width: 100%; white-space: normal; text-align: center; line-height: 1.25;
+  word-break: break-all;
 }
 
 .nav { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
@@ -163,10 +167,17 @@ button { font-family: inherit; }
 .status-dot {
   display: flex; align-items: center; gap: 7px; justify-content: center;
   font-size: 11px; color: var(--muted);
+  /* The label used to wrap and spill outside the sidebar as soon as the
+     language produced a longer string ("模型已就緖" in a narrow column).
+     Keep it on one line and clip instead of overflowing. */
+  max-width: 100%; min-width: 0;
 }
 .status-dot .dot {
-  width: 8px; height: 8px; border-radius: 50%;
+  width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
   background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft);
+}
+.status-dot .t {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .status-dot.loading .dot { background: var(--warn-fg); box-shadow: 0 0 0 3px var(--warn-bg); }
 .status-dot.off .dot { background: var(--faint); box-shadow: 0 0 0 3px var(--line); }

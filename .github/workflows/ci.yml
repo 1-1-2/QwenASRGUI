@@ -101,7 +101,9 @@ jobs:
             tests/test_release_manifest.py tests/test_docs.py \
             ui_text.py downloader.py tests/test_i18n_contract.py \
             tests/test_punct_contract.py tools/gen_download_doc.py \
-            tools/verify_package.py tests/test_verify_package.py
+            tools/verify_package.py tests/test_verify_package.py \
+            tests/test_launcher_stdio.py tests/test_webview_bundle.py \
+            tests/test_openvino_slim.py
 
       - name: Frontend syntax check
         run: |
@@ -131,6 +133,17 @@ jobs:
         # belong in _internal/ov_models/, user data must stay beside the
         # launcher. A plain name-based ban once broke the Windows build.
         run: python tests/test_verify_package.py
+
+      - name: Wave 7 regression (windowed launcher / no console)
+        # The windowed EXE has sys.stdout = sys.stderr = None; an unguarded
+        # flush() there crashed the release build at exit.
+        run: python tests/test_launcher_stdio.py
+
+      - name: Wave 7 regression (WebView bundle excludes the Tk GUI)
+        run: python tests/test_webview_bundle.py
+
+      - name: Wave 7 regression (OpenVINO slimming keeps CPU inference)
+        run: python tests/test_openvino_slim.py
 
       - name: Wave 4 regression (server-side batch queue)
         run: |

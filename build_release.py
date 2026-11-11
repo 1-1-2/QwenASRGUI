@@ -84,9 +84,87 @@ COLLECT_DIRS = ["opencc", "openvino", "kaldi_native_fbank"]
 COLLECT_ALL = ["tokenizers"]
 COLLECT_DATA = ["certifi"]
 
+# ══════════════════════════════════════════════════════════════════════════
+# 体积精简（Wave 7）：删掉确定用不到的 OpenVINO 组件
+# ══════════════════════════════════════════════════════════════════════════
+# 为什么能删：本项目只用 OpenVINO 的「IR 前端 + CPU 插件」。
+#   core.compile_model("<模型>.xml", "CPU") —— 模型是 OpenVINO IR（.xml/.bin），
+#   设备恒为 CPU（app.py 里 device 只取 "CPU"；GPU 只用于「探测并列出」展示）。
+# 因此下面这些在 Windows 上占 134.8 MB 解包体积里的绝大部分，都是死重：
+#   openvino_intel_gpu_plugin.dll      30.9 MB  不推理 iGPU
+#   openvino_intel_npu_plugin.dll       4.0 MB  不推理 NPU
+#   openvino_tensorflow_frontend.dll    4.1 MB  不加载 TF 模型
+#   openvino_onnx_frontend.dll          4.0 MB  不加载 ONNX 模型（onnxruntime 负责）
+#   openvino_pytorch_frontend.dll       2.6 MB  不加载 PyTorch 模型
+#   openvino_paddle_frontend.dll        1.5 MB
+#   openvino_tensorflow_lite_frontend    1.2 MB
+#   openvino_jax_frontend.dll           0.5 MB
+#   *.lib（导入库，只在编译期用）        7.7 MB
+#   cache.json                          8.8 MB  设备能力缓存，首次启动会重建
+# 保留：openvino.dll、openvino_intel_cpu_plugin.dll、openvino_ir_frontend.dll、
+#       openvino_auto_plugin / hetero / batch 等被 openvino.dll 依赖的插件。
+#
+# 风险与兜底：删多了会让 import openvino 直接失败 —— 那不是「少个功能」而是
+# 「整个程序起不来」。所以：
+#   1) 只在**确认 CPU 插件与 IR 前端仍在**时才执行删除；
+#   2) 保留清单在这里集中声明，便于审阅；
+#   3) tools/verify_package.py 会断言 CPU 插件存在、GPU/NPU 插件不存在；
+#   4) 提供 --no-slim 一键回退到完整体积。
+OPENVINO_DROP_PATTERNS = [
+    "*intel_gpu_plugin*", "*intel_npu_plugin*",
+    "*tensorflow_frontend*", "*onnx_frontend*", "*pytorch_frontend*",
+    "*paddle_frontend*", "*tensorflow_lite_frontend*", "*jax_frontend*",
+    "*.lib", "*.pdb", "cache.json",
+]
+OPENVINO_MUST_KEEP = [
+    "openvino_intel_cpu_plugin.dll", "openvino.dll", "openvino_ir_frontend.dll",
+]
+
+# Python 侧的死重：被 openvino 包带进来的 OpenVINO 自己的前端 Python 绑定。
+OPENVINO_DROP_SUBDIRS = ["frontend"]
+
+
+def slim_openvino(internal: Path) -> dict:
+    """删除 OpenVINO 里用不到的组件，返回删除清单与节省字节数。"""
+    ov_dir = internal / "openvino"
+    result = {"启用": True, "删除": [], "失败": [], "节省字节": 0, "跳过原因": ""}
+    if not ov_dir.is_dir():
+        result["跳过原因"] = "未找到 _internal/openvino"
+        return result
+
+    libs = ov_dir / "libs"
+    names_under_libs = {p.name for p in libs.glob("*")} if libs.is_dir() else set()
+    missing = [n for n in OPENVINO_MUST_KEEP if n not in names_under_libs]
+    if missing:
+        # 认不出布局就当不认识这个包 —— 宁可不动，也不要打出一个坏的包。
+        result["跳过原因"] = f"必需组件缺失，放弃精简：{missing}"
+        return result
+
+    for pattern in OPENVINO_DROP_PATTERNS:
+        for p in list(libs.glob(pattern)):
+            if p.name in OPENVINO_MUST_KEEP:
+                continue
+            try:
+                size = p.stat().st_size
+                p.unlink()
+                result["删除"].append(p.name)
+                result["节省字节"] += size
+            except OSError as exc:
+                result["失败"].append(f"{p.name}: {exc}")
+    for sub in OPENVINO_DROP_SUBDIRS:
+        d = ov_dir / sub
+        if d.is_dir():
+            try:
+                result["节省字节"] += dir_size(d)
+                shutil.rmtree(d)
+                result["删除"].append(f"{sub}/")
+            except OSError as exc:
+                result["失败"].append(f"{sub}/: {exc}")
+    return result
+
 HIDDEN_IMPORTS = [
     "certifi", "proxy_tools", "bottle", "app", "webview_backend", "webview_server",
-    "openvino", "openvino.runtime", "onnxruntime", "opencc", "customtkinter",
+    "openvino", "openvino.runtime", "onnxruntime", "opencc",
     "sounddevice", "soxr", "soundfile", "kaldi_native_fbank",
     "scipy", "scipy.cluster", "scipy.cluster.hierarchy",
     "scipy.spatial", "scipy.spatial.distance", "scipy._lib.messagestream",
@@ -97,6 +175,9 @@ HIDDEN_IMPORTS = [
     "batch_queue", "single_instance", "run_log", "subtitle_extras",
     "release_manifest",
 ]
+# customtkinter was removed from HIDDEN_IMPORTS on purpose (Wave 7): the WebView
+# UI is HTML, and `app.py` now guards its Tk GUI behind QWENASR_WEBVIEW_BUILD.
+# Keeping a hidden import here would force tkinter + tcl/tk back into the ZIP.
 
 # CPU + OpenVINO INT8 only. Exclude PyTorch / transformers, and the .NET
 # window stack that is no longer used by the default Edge --app path.
@@ -104,6 +185,11 @@ EXCLUDE_MODULES = [
     "torch", "torchvision", "torchaudio", "transformers", "qwen_asr",
     "triton", "bitsandbytes",
     "webview", "webview.platforms", "pythonnet", "clr", "clr_loader",
+    # Wave 7: the shipped UI is HTML. app.py keeps its Tk GUI behind
+    # QWENASR_WEBVIEW_BUILD, and these excludes are the belt to that braces:
+    # if anything ever imports tkinter again, the build fails loudly instead of
+    # silently adding ~20 MB of tcl/tk to every download.
+    "tkinter", "_tkinter", "customtkinter", "darkdetect",
 ]
 
 
@@ -268,7 +354,8 @@ def onedir_output(distpath: Path) -> Path:
     return distpath / APP_NAME
 
 
-def make_package(version: str, sha: str, ffmpeg_exe: Path | None) -> Path:
+def make_package(version: str, sha: str, ffmpeg_exe: Path | None,
+                 slim: bool = True) -> Path:
     distpath = ROOT / "dist" / "webview"
     produced = onedir_output(distpath)
     exe = produced / f"{APP_NAME}.exe"
@@ -293,6 +380,17 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None) -> Path:
         shutil.copy2(ffmpeg_exe, stage / "ffmpeg" / "ffmpeg.exe")
         has_ffmpeg = True
 
+    # Trim OpenVINO before the ZIP is written: the deletion has to happen on
+    # the staged tree, otherwise the savings never reach the download.
+    slim_report = {"启用": False, "删除": [], "失败": [], "节省字节": 0, "跳过原因": "--no-slim"}
+    if slim:
+        slim_report = slim_openvino(internal)
+        print(f"\nOpenVINO 精简：删除 {len(slim_report['删除'])} 项，"
+              f"省 {slim_report['节省字节'] / 1024 / 1024:.1f} MB"
+              + (f"（跳过：{slim_report['跳过原因']}）" if slim_report["跳过原因"] else ""))
+        if slim_report["失败"]:
+            print("  删除失败：", slim_report["失败"][:5])
+
     for d in ("ov_models", "subtitles", "longform_state"):
         (stage / d).mkdir(exist_ok=True)
         (stage / d / ".keep").write_text("", encoding="utf-8")
@@ -309,6 +407,13 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None) -> Path:
         "EXE 体积": exe.stat().st_size,
         "_internal 体积": dir_size(internal),
         "随附 ffmpeg": has_ffmpeg,
+        "OpenVINO 精简": {
+            "启用": slim_report["启用"],
+            "节省 MB": round(slim_report["节省字节"] / 1024 / 1024, 1),
+            "删除项数": len(slim_report["删除"]),
+            "失败": slim_report["失败"],
+            "跳过原因": slim_report["跳过原因"],
+        },
         "随附 Python 源码": py_sources(),
         "静态资源": [src for src, _ in STATIC_DATA],
         "依赖版本": dep_versions(),
@@ -392,6 +497,8 @@ def main() -> int:
                     help="只打印 PyInstaller 命令与源码清单，不实际构建")
     ap.add_argument("--skip-build", action="store_true",
                     help="跳过 PyInstaller，仅用已有 EXE 组装 ZIP（调试用）")
+    ap.add_argument("--no-slim", action="store_true",
+                    help="保留完整 OpenVINO 组件（排查「设备消失」类问题时用）")
     args = ap.parse_args()
 
     print(f"源码目录：{ROOT}")
@@ -414,7 +521,11 @@ def main() -> int:
     if not args.skip_build:
         (ROOT / "dist" / "webview").mkdir(parents=True, exist_ok=True)
         print("\n开始 PyInstaller 构建……")
-        subprocess.run(cmd, check=True, cwd=str(ROOT))
+        # QWENASR_WEBVIEW_BUILD=1 必须对 PyInstaller 的分析子进程可见，否则
+        # app.py 会连 Tk GUI 一起被静态收进包（见 app.py 的 _WEBVIEW_BUILD）。
+        build_env = dict(os.environ)
+        build_env["QWENASR_WEBVIEW_BUILD"] = "1"
+        subprocess.run(cmd, check=True, cwd=str(ROOT), env=build_env)
 
     produced = onedir_output(ROOT / "dist" / "webview")
     exe = produced / f"{APP_NAME}.exe"
@@ -427,7 +538,7 @@ def main() -> int:
         print(f"_internal 体积：{dir_size(internal) / 1024 / 1024:.1f} MB")
 
     ff = Path(args.ffmpeg) if args.ffmpeg else None
-    zip_path = make_package(args.version, args.sha, ff)
+    zip_path = make_package(args.version, args.sha, ff, slim=not args.no_slim)
     print(f"\n发行包：{zip_path}")
     print(f"大小：{zip_path.stat().st_size / 1024 / 1024:.1f} MB")
 

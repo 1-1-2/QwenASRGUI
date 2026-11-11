@@ -1,0 +1,151 @@
+"""Wave 7 regression: OpenVINO slimming must shrink the package without it.
+
+Two failure modes matter more than the size itself:
+
+  1. deleting too much  -> ``import openvino`` fails at runtime, the app does
+     not start at all (CPU plugin / core DLL / IR frontend are mandatory);
+  2. deleting nothing    -> the ZIP silently keeps ~40 MB of GPU/NPU/foreign
+     frontends, i.e. the "slimming" is theatre.
+
+This drives the real ``slim_openvino`` against a synthetic tree shaped like the
+Windows wheel, and the real ``check_openvino_slim`` against the result.
+
+    python tests/test_openvino_slim.py
+"""
+from __future__ import annotations
+
+import sys
+import tempfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tools"))
+
+import build_release as br          # noqa: E402
+import verify_package as vp         # noqa: E402
+
+
+class Result:
+    def __init__(self):
+        self.items = []
+
+    def check(self, name, ok, detail=""):
+        self.items.append(bool(ok))
+        print(f"  {'通过' if ok else '失败'}  {name}" + (f" — {detail}" if detail else ""))
+
+    @property
+    def ok(self):
+        return all(self.items)
+
+
+# Sizes mirror the real win_amd64 wheel (openvino 2025.3.0).
+LIBS = {
+    "openvino_intel_cpu_plugin.dll": 40_500_000,
+    "openvino_intel_gpu_plugin.dll": 30_900_000,
+    "openvino.dll": 14_800_000,
+    "openvino.lib": 7_700_000,
+    "cache.json": 8_800_000,
+    "openvino_tensorflow_frontend.dll": 4_100_000,
+    "openvino_intel_npu_plugin.dll": 4_000_000,
+    "openvino_onnx_frontend.dll": 4_000_000,
+    "openvino_pytorch_frontend.dll": 2_600_000,
+    "openvino_paddle_frontend.dll": 1_500_000,
+    "openvino_tensorflow_lite_frontend.dll": 1_200_000,
+    "openvino_jax_frontend.dll": 500_000,
+    "openvino_auto_plugin.dll": 500_000,
+    "openvino_hetero_plugin.dll": 500_000,
+    "openvino_ir_frontend.dll": 400_000,
+}
+
+
+def make_tree(root: Path) -> Path:
+    stage = root / "pkg"
+    libs = stage / "_internal" / "openvino" / "libs"
+    libs.mkdir(parents=True)
+    for name, size in LIBS.items():
+        # Write the real byte count (truncate) so the reported saving is
+        # meaningful; the content is irrelevant to the deletion logic.
+        f = libs / name
+        with open(f, "wb") as fh:
+            fh.truncate(size)
+    front = stage / "_internal" / "openvino" / "frontend"
+    (front / "onnx").mkdir(parents=True)
+    (front / "onnx" / "py_onnx_frontend.pyd").write_bytes(b"\0" * 4096)
+    return stage
+
+
+def main() -> int:
+    r = Result()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        stage = make_tree(root)
+        internal = stage / "_internal"
+
+        r.check("baseline has GPU plugin", "openvino_intel_gpu_plugin.dll" in br_keep(internal))
+
+        report = br.slim_openvino(internal)
+        left = br_keep(internal)
+
+        r.check("slimming reports success", not report["失败"], str(report["失败"][:3]))
+        r.check("saved a large amount of data", report["节省字节"] > 40_000_000,
+                f"{report['节省字节'] / 1e6:.1f} MB")
+
+        for must in br.OPENVINO_MUST_KEEP:
+            r.check(f"kept {must}", must in left)
+
+        for gone in ("openvino_intel_gpu_plugin.dll", "openvino_intel_npu_plugin.dll",
+                     "openvino_tensorflow_frontend.dll", "openvino_onnx_frontend.dll",
+                     "openvino_pytorch_frontend.dll", "openvino.lib", "cache.json"):
+            r.check(f"removed {gone}", gone not in left)
+
+        r.check("plugins still referenced by openvino.dll are kept",
+                "openvino_auto_plugin.dll" in left and "openvino_hetero_plugin.dll" in left)
+        r.check("python frontend bindings removed",
+                not (internal / "openvino" / "frontend").exists())
+
+        # The verifier must accept the slimmed tree...
+        errors = vp.check_openvino_slim(stage)
+        r.check("verifier accepts the slimmed package", not errors, "; ".join(errors[:3]))
+
+        # ...and reject both regressions.
+        (internal / "openvino" / "libs" / "openvino_intel_cpu_plugin.dll").unlink()
+        errs = vp.check_openvino_slim(stage)
+        r.check("verifier catches a missing CPU plugin",
+                any("CPU" in e or "cpu_plugin" in e for e in errs), str(errs[:2]))
+
+    with tempfile.TemporaryDirectory() as tmp2:
+        stage2 = make_tree(Path(tmp2))
+        errs = vp.check_openvino_slim(stage2)
+        r.check("verifier rejects an unslimmed package", bool(errs), str(errs[:2]))
+
+    # Safety valve: an unrecognised layout must be left untouched.
+    with tempfile.TemporaryDirectory() as tmp3:
+        ov = Path(tmp3) / "_internal" / "openvino" / "libs"
+        ov.mkdir(parents=True)
+        (ov / "something_else.bin").write_bytes(b"x")
+        rep = br.slim_openvino(Path(tmp3) / "_internal")
+        r.check("unknown layout is skipped, not damaged",
+                rep["跳过原因"] and not rep["删除"], rep["跳过原因"])
+        r.check("unknown layout keeps its files",
+                (ov / "something_else.bin").exists())
+
+    # The CLI must expose the escape hatch.
+    src = (ROOT / "build_release.py").read_text(encoding="utf-8")
+    r.check("--no-slim escape hatch exists", '"--no-slim"' in src)
+    r.check("manifest records what was removed", '"OpenVINO 精简"' in src)
+
+    passed = sum(r.items)
+    print(f"\n结果：{passed}/{len(r.items)} 项通过")
+    print("✅ 全部通过" if r.ok else "❌ 存在失败项")
+    return 0 if r.ok else 1
+
+
+def br_keep(internal: Path) -> set[str]:
+    libs = internal / "openvino" / "libs"
+    return {p.name for p in libs.glob("*")} if libs.is_dir() else set()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
