@@ -268,11 +268,24 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Upload build artifact
+      # 两个变体分開上傳：使用者只想要 noffmpeg 的話，只下那個 65 MB 的就好，
+      # 不必為了拿小包而先拉 165 MB 的外層 bundle（裡面塞了兩個 ZIP）。
+      # full 包不帶 -noffmpeg 後綴；用 glob 時要排除 noffmpeg，避免重複上傳。
+      - name: Upload noffmpeg artifact (smaller, 65 MB)
+        uses: actions/upload-artifact@v4
+        with:
+          name: QwenASR-WebView-Windows-x64-noffmpeg
+          path: release_pkg/*-noffmpeg.zip
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload full artifact (with ffmpeg, 102 MB)
         uses: actions/upload-artifact@v4
         with:
           name: QwenASR-WebView-Windows-x64
-          path: release_pkg/*.zip
+          path: |
+            release_pkg/*.zip
+            !release_pkg/*-noffmpeg.zip
           if-no-files-found: error
           retention-days: 30
 
