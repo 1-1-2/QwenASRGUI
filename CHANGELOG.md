@@ -101,8 +101,44 @@
 - **简体优先**：`README.md` 保持简体，繁体为 `README.zh-Hant.md` 及 `.zh-Hant.md` 分册；
   回推上游前再评估是否反向。
 
+### Wave 7 · 实机反馈修复（启动崩溃 / 简繁覆盖 / 体积）
+
+来自用户实测第一版 Windows 包的三条反馈。第一条是致命的：程序根本起不来。
+
+- **windowed 下 `sys.stdout` 为 `None` 导致退出崩溃**（`AttributeError: 'NoneType'
+  object has no attribute 'flush'`）。`main()` 收尾无条件 flush 两个流；开发模式永远有
+  终端，所以本地测试全部通过、打包版一启动即挂。修复分三层：
+  `hush_stdio()` 在导入期把 `None` 的流换成写 `launcher.log` 的安全替身；
+  收尾 flush 改为尽力而为，任何一步失败都不再阻断 `os._exit(0)`（否则会留下僵尸进程与
+  被占用的端口）；新增 `sys.excepthook` / `threading.excepthook`，把未捕获异常写日志并弹窗
+  —— 原来 windowed 版的崩溃是**完全无声**的。`tests/test_launcher_stdio.py` 14/14。
+- **简繁「体验区分没做好」属实**：字典 `D`（232 键）与 `M`（128 键）本身完整，但
+  `webview/js/app.js` 里有约 40 处运行时文案直接拼接繁体中文（下载中心状态、批量队列、
+  进度与日志、端点页、录音页、切分预检、侧栏状态…），**只要操作一次就冒出繁体**。
+  全部改走 `T()`；顺带修掉 `PHASE_TEXT` / `ST` / `VIEW_TITLES` 三处「模块载入时求值」，
+  它们会让切换语言后仍显示旧语言。`tests/test_i18n_contract.py` 新增硬编码扫描
+  （注释 / 正则字符类 / `T()` 回退参数豁免），当前清零。
+- **体积**：OpenVINO wheel 解包 134.8 MB，其中 GPU 插件 30.9 MB、NPU 4.0 MB、
+  TensorFlow/ONNX/PyTorch/Paddle/TFLite/JAX 前端合计 14 MB、导入库 `.lib` 7.7 MB、
+  设备缓存 `cache.json` 8.8 MB —— 本项目只用 IR 前端 + CPU 插件，以上全是死重。
+  `build_release.slim_openvino()` 在打包阶段剔除这些，**实测 openvino 目录 131 MB → 66 MB
+  （省 68 MB）**。三重保护：布局认不出就整体跳过、CPU 插件缺失就跳过、`--no-slim` 可回退；
+  `tools/verify_package.check_openvino_slim()` 断言 CPU 插件在位且 GPU/NPU 插件不在位。
+  仍保留 `--collect-all tokenizers` 与完整 `onnxruntime`（后者是 `app.py` 无条件导入的硬依赖）。
+- **Tk 界面库被误打进 WebView 包**：`app.py` 顶层 `import customtkinter`，PyInstaller 静态
+  分析于是把 tkinter + customtkinter + tcl/tk 全量收进发行包 —— 一个 Tk 界面库在 HTML 界面里
+  毫无用处。现在 GUI 段（含 `import tkinter`）由 `QWENASR_WEBVIEW_BUILD=1` 隔离，
+  `build_release.py` 打包时设置该变量并对 tkinter/customtkinter 加 `--exclude-module` 兜底；
+  `python app.py` 行为不变（已在 Xvfb 下实测窗口正常创建）。
+  `tests/test_webview_bundle.py` 14/14 校验两种模式。
+- **Edge --app 旗标整理**：抽出 `_app_mode_args()`，补 `--hide-crash-restore-bubble`、
+  扩大 `--disable-features` 关闭 Edge 侧栏与登录提示。窗口是系统 Edge 的 --app 无痕窗口，
+  标题栏无法完全去除（那是 Chromium 自绘的框架），保留以支持拖动与最小化。
+- **侧栏排版**：状态文案在 88px 栏宽下被裁切/溢出侧栏。栏宽 88 → 104px，
+  状态文字单行省略、品牌名换行居中；离屏渲染新增「不得溢出、不得截断」断言（三语各一次）。
+
 ## 验证口径
 
-本地回归全绿（各套断言数见 `tests/test_*.py`）、离屏渲染 39/39、远端 CI 全绿。
+本地回归全绿（20 套，断言数见 `tests/test_*.py`）、离屏渲染 43/43、远端 CI 全绿。
 **全部使用 mock ASR**，真实权重未加载；Windows 实机与 3–5 小时完整任务未复验。
 详见 `docs/验证边界.md`。
