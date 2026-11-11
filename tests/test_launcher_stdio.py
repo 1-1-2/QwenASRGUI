@@ -122,8 +122,10 @@ def main() -> int:
             not in (None,))
 
     # ── 2) real behaviour of the replacement stream ────────────────────────
+    # 第二個參數從「路徑」換成 _LogFanout：日誌要同時寫固定檔與每次執行的快照，
+    # 所以由 fanout 統一持有出口（與每行時間戳）。
     log = TMP / "launcher.log"
-    s = aw._NullSafeStream(None, log)
+    s = aw._NullSafeStream(None, aw._LogFanout(TMP, "test-000000"))
     try:
         print("hello", file=s)
         s.write("raw line\n")

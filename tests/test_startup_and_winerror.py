@@ -375,6 +375,94 @@ def test_adopt_is_wired(c: Checker):
     c.check("__init__ 调用 _adopt_existing_quant", called)
 
 
+# ─────────────────────────────────────────────────────────────
+# 6. launcher.log 必须能分清「哪一行属于哪一次启动」
+# ─────────────────────────────────────────────────────────────
+def test_log_lines_carry_timestamps(c: Checker):
+    """每行盖时间戳：单文件 append 模式下，三次启动的日志首尾相接。"""
+    import sys
+    import tempfile
+
+    sys.path.insert(0, str(ROOT))
+    import app_webview as aw
+
+    d = Path(tempfile.mkdtemp())
+    f = aw._LogFanout(d, "20260101-120000")
+    f.write("===== 啟動 PID 123 =====\n")
+    f.write("第一行\n")
+    f.write("多行\n第二行\n")
+    f.write("半行")
+    f.write("補完\n")
+
+    lines = [ln for ln in (d / "launcher.log").read_text(encoding="utf-8").splitlines()
+             if ln.strip()]
+    c.check("写了 5 行", len(lines) == 5, str(lines))
+    stamp = re.compile(r"^\[\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] ")
+    c.check("每行都以时间戳开头", all(stamp.match(ln) for ln in lines), str(lines[:2]))
+    c.check("半行拼接后只保留一个时间戳", lines[-1].count("] ") == 1, lines[-1])
+    f2 = aw._LogFanout(d, "20260101-120001")
+    f2.write("A\n\nB\n")
+    body = (d / f"launcher-20260101-120001-p{__import__('os').getpid()}.log"
+            ).read_text(encoding="utf-8").splitlines()
+    c.check("空行不盖时间戳（不刷屏）", body[1] == "", repr(body))
+
+
+def test_log_snapshot_per_run(c: Checker):
+    """每次运行一份带时间戳的快照，且只保留最近 N 份。"""
+    import sys
+    import tempfile
+
+    sys.path.insert(0, str(ROOT))
+    import app_webview as aw
+
+    d = Path(tempfile.mkdtemp())
+    for i in range(15):
+        aw._LogFanout(d, f"20260101-1200{i:02d}").write(f"第 {i} 次\n")
+
+    snaps = sorted(p.name for p in d.glob("launcher-*.log"))
+    c.check("只保留最近 12 份（不无限增长）", len(snaps) == 12, str(len(snaps)))
+    c.check("快照名内含完整启动时间与 PID",
+            all(re.fullmatch(r"launcher-\d{8}-\d{6}-p\d+\.log", n) for n in snaps),
+            str(snaps[:2]))
+    c.check("清掉的是最旧的那几份",
+            "20260101-120014" in snaps[-1] and "20260101-120000" not in snaps)
+    c.check("最新快照内容完整",
+            "第 14 次" in (d / snaps[-1]).read_text(encoding="utf-8"))
+
+
+def test_log_rotation_keeps_previous(c: Checker):
+    """超 1MB 时轮换成 .1，不再直接 unlink —— 上一次崩潰往往正是要对照的。"""
+    import sys
+    import tempfile
+
+    sys.path.insert(0, str(ROOT))
+    import app_webview as aw
+
+    d = Path(tempfile.mkdtemp())
+    (d / "launcher.log").write_bytes(b"x" * 1_048_577)
+    aw._LogFanout(d, "20260101-130000").write("轮换后\n")
+    c.check("旧内容保留为 launcher.log.1", (d / "launcher.log.1").exists())
+    c.check("新文件从这次启动开始",
+            (d / "launcher.log").stat().st_size < 300,
+            str((d / "launcher.log").stat().st_size))
+
+
+def test_log_writer_wired(c: Checker):
+    """hush_stdio 必须建 fanout 并写启动横幅，否则使用者还是分不清哪次。"""
+    tree = _tree("app_webview.py")
+    fns = _funcs(tree)
+    hush = fns.get("hush_stdio")
+    c.check("找到 hush_stdio", hush is not None)
+    if not hush:
+        return
+    calls = {n.func.id for n in ast.walk(hush)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    c.check("hush_stdio 建立了 _LogFanout", "_LogFanout" in calls, str(calls))
+    src = ast.get_source_segment((ROOT / "app_webview.py").read_text(encoding="utf-8"), hush) or ""
+    c.check("写入启动横幅（含 PID）", "PID" in src and "啟動" in src)
+
+
+
 def main() -> int:
     c = Checker()
     print("== 首启量化一致性 ==")
@@ -391,17 +479,13 @@ def main() -> int:
     print("== 升级不害老用户重下模型 ==")
     test_adopt_existing_quant(c)
     test_adopt_is_wired(c)
+    print("== 日志能否分清哪次启动 ==")
+    test_log_lines_carry_timestamps(c)
+    test_log_snapshot_per_run(c)
+    test_log_rotation_keeps_previous(c)
+    test_log_writer_wired(c)
     print()
     print(f"{c.total - c.failed}/{c.total} 通过")
     return 1 if c.failed else 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
 if __name__ == "__main__":
     raise SystemExit(main())

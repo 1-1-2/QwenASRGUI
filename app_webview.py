@@ -64,21 +64,118 @@ WIN_W, WIN_H = 1180, 820
 #   修法：啟動最早期把 None 換成一個寫往日誌檔的替身，兼具兩個好處：
 #     • 不再出現 NoneType 例外（診斷訊息也不會憑空消失）
 #     • 使用者仍可從 %LOCALAPPDATA%\<APP_NAME>\launcher.log 追查啟動問題
+#
+#   「追查」的前提是能分清哪一行屬於哪一次啟動。單一 append 檔做不到：跑過
+#   三次之後，三段日誌首尾相連，光看內容分不出哪段是閃退那次。所以每行都蓋
+#   時間戳，並且每次啟動另外留一份帶時間戳的快照 —— 出問題只要把「最新那份
+#   快照」整個發出來，不必在一坨歷史裡挑。
+_LOG_SNAPSHOT_PREFIX = "launcher-"
+
+
+class _LogFanout:
+    """一次執行的日誌出口：穩定的 launcher.log ＋ 本次快照，每行蓋時間戳。
+
+    為什麼保留兩個檔案而不是只留快照：
+      • ``launcher.log`` 路徑固定 —— CI 冒煙測試與使用說明都靠它，改名等於
+        把所有既有取證入口一起打斷；
+      • 快照只含本次執行 —— 排查時要的就是「最近這一次」的完整上下文。
+    兩者內容相同，只是顆粒度不同。
+
+    時間戳在**寫入時**取，不是呼叫時取；`_at_bol` 記錄「是否在行首」，因此
+    一次 print() 先寫內容、再寫換行的兩段 write 只會加一個前綴。traceback 那種
+    一次寫一大段的情況，會逐行各蓋一個 —— 反而更容易看出是哪一行出事。
+    """
+
+    MAX_SNAPSHOTS = 12                    # 保留最近 12 次啟動，約幾百 KB
+
+    def __init__(self, directory: Path, tag: str):
+        self._lock = threading.Lock()
+        self._files: list = []
+        self._at_bol = True
+        self.snapshot: Path | None = None
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return
+        main = directory / "launcher.log"
+        try:
+            # 上限約 1 MB：塞住磁碟比沒有日誌更糟。超標時輪換成 .1 而不是刪掉
+            # —— 前一次崩潰往往正是要對照的那一次。
+            if main.exists() and main.stat().st_size > 1_048_576:
+                main.replace(directory / "launcher.log.1")
+        except Exception:
+            pass
+        try:
+            # 带 PID：同一秒內啟動兩次（例如 --selftest 子行程與主行程）時
+            # 檔名仍唯一，不會兩個行程交錯寫同一份快照。
+            self.snapshot = directory / f"{_LOG_SNAPSHOT_PREFIX}{tag}-p{os.getpid()}.log"
+        except Exception:
+            self.snapshot = None
+        for p in (main, self.snapshot):
+            if p is None:
+                continue
+            try:
+                self._files.append(
+                    open(p, "a", encoding="utf-8", errors="replace"))
+            except Exception:
+                pass
+        self._prune(directory)
+
+    def _prune(self, directory: Path):
+        try:
+            olds = sorted(directory.glob(f"{_LOG_SNAPSHOT_PREFIX}*.log"))
+        except Exception:
+            return
+        for p in olds[:-self.MAX_SNAPSHOTS]:
+            if p == self.snapshot:
+                continue                  # 絕不刪掉正在寫的這一份
+            try:
+                p.unlink()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _prefix() -> str:
+        now = time.time()
+        return "[%s.%03d] " % (time.strftime("%m-%d %H:%M:%S", time.localtime(now)),
+                               int((now % 1) * 1000))
+
+    def write(self, s: str) -> int:
+        if not s:
+            return 0
+        with self._lock:
+            parts = []
+            for line in s.splitlines(keepends=True):
+                if self._at_bol and line.strip():
+                    parts.append(self._prefix())
+                    self._at_bol = False
+                parts.append(line)
+                if line.endswith(("\n", "\r")):
+                    self._at_bol = True
+            out = "".join(parts)
+            for f in self._files:
+                try:
+                    f.write(out)
+                    f.flush()             # 閃退時緩衝區不落地 = 白記
+                except Exception:
+                    pass
+        return len(s)
+
+    def flush(self):
+        with self._lock:
+            for f in self._files:
+                try:
+                    f.flush()
+                except Exception:
+                    pass
+
+
 class _NullSafeStream:
     """包住真實串流；真實串流為 None 或已關閉時靜默丟棄（可選寫入日誌檔）。"""
 
-    def __init__(self, real, log_path: Path | None = None):
+    def __init__(self, real, fanout: "_LogFanout | None" = None):
         self._real = real
-        self._log = None
-        if log_path is not None:
-            try:
-                log_path.parent.mkdir(parents=True, exist_ok=True)
-                # 啟動器日誌只保留單檔並上限約 1 MB：塞住磁碟比沒有日誌更糟
-                if log_path.exists() and log_path.stat().st_size > 1_048_576:
-                    log_path.unlink()
-                self._log = open(log_path, "a", encoding="utf-8", errors="replace")
-            except Exception:
-                self._log = None
+        self._log = fanout
 
     # io.TextIOBase 的常用介面（print / flush 只會用到這幾個）
     def write(self, s):
@@ -177,29 +274,36 @@ def hush_stdio():
     """把 None 的 stdout／stderr 換成安全替身。必須在任何 print 之前呼叫。"""
     if sys.stdout is not None and sys.stderr is not None:
         return                                    # 有真實主控台（開發模式）→ 不動
-    log_path = None
+    fanout = None
     d = _log_dir()
     if d is not None:
         try:
-            log_path = d / "launcher.log"
+            fanout = _LogFanout(d, time.strftime("%Y%m%d-%H%M%S"))
+            # 每次執行的分界線：一眼能看出這段屬於哪一次、哪個進程。
+            # 少了它，兩次執行的日誌首尾相接時仍然分不清。
+            fanout.write(
+                f"===== {APP_NAME} 啟動 {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                f"  PID {os.getpid()} =====\n")
         except Exception:
-            log_path = None
+            fanout = None
     if sys.stdout is None:
-        sys.stdout = _NullSafeStream(None, log_path)
+        sys.stdout = _NullSafeStream(None, fanout)
     if sys.stderr is None:
-        # stderr 與 stdout 共用同一個日誌檔（append 模式，兩個 handle 各自寫入無妨）
-        sys.stderr = _NullSafeStream(None, log_path)
+        # stderr 與 stdout 共用同一組出口（同一個 fanout → 只有一份檔案句柄，
+        # 兩個串流互相穿插時順序才不會亂）
+        sys.stderr = _NullSafeStream(None, fanout)
 
 
 hush_stdio()
 
 
 def _install_crash_log():
-    """最後兜底：未捕捉例外寫進 crash.log，並提醒使用者看哪個檔案。
+    """最後兜底：未捕捉例外寫進 launcher.log，並提醒使用者看哪個檔案。
 
     windowed EXE 沒有主控台，未捕捉例外原本**完全無聲**（使用者只看到視窗沒開）。
-    有了這支 handler，任何啟動期錯誤都會留下可回報的檔案；stderr 已被前一步
-    換成日誌替身，所以 traceback 就能落地。
+    有了這支 handler，任何啟動期錯誤都會留下可回報的文字；stderr 已被前一步
+    換成日誌替身，所以 traceback 會落進 launcher.log 與本次執行快照（每行都
+    帶時間戳），同時彈一個說明框指出位置。
     """
     import traceback
 
@@ -219,7 +323,9 @@ def _install_crash_log():
                 ctypes.windll.user32.MessageBoxW(
                     None,
                     f"程式啟動時發生錯誤：\n{exc_type.__name__}: {exc}\n\n"
-                    f"詳細記錄：{where}",
+                    f"詳細記錄：{where}\n"
+                    f"（每次啟動的獨立記錄在同一個資料夾的 launcher-*.log，"
+                    f"把最新的那份附上來即可）",
                     APP_NAME, 0x00000010)          # MB_ICONERROR
         except Exception:
             pass
