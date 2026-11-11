@@ -105,6 +105,12 @@
     "record.mic": ["麥克風", "麦克风", "Microphone"],
     "record.refresh": ["重新整理", "刷新", "Refresh"],
     "record.liveTitle": ["即時字幕", "实时字幕", "Live captions"],
+    "file.seekHint": [" · 點波形、字幕或下方區塊可跳播", " · 点波形、字幕或下方区块可跳播", " · Click the waveform, a subtitle or a block below to seek"],
+    "live.title": ["即時字幕", "实时字幕", "Live subtitles"],
+    "live.desc": ["邊跑邊顯示，最多保留最近 200 條；完整結果仍以 SRT 為準",
+                  "边跑边显示，最多保留最近 200 条；完整结果仍以 SRT 为准",
+                  "Shown while running; keeps the latest 200. The full result is still in the SRT."],
+    "live.follow": ["回到最新", "回到最新", "Jump to latest"],
     "record.liveDesc": ["說完停頓自動辨識；可清除或依輸出格式存檔", "说完停顿自动识别；可清除或按输出格式保存", "Auto-transcribes on pause; clear or save by output format"],
     "record.autosave": ["即時存檔", "实时保存", "Auto-save"],
     "record.clear": ["清除", "清除", "Clear"],
@@ -116,6 +122,14 @@
     "record.permDenied": ["麥克風權限被拒。請在視窗網址列的權限圖示中允許麥克風，或於系統設定開放本程式的麥克風存取後再試。", "麦克风权限被拒。请在窗口地址栏的权限图标中允许麦克风，或在系统设置开放本程序的麦克风访问后再试。", "Microphone blocked. Allow it via the permission icon in the address bar, or enable mic access for this app in system settings, then retry."],
     "record.permDeniedShort": ["麥克風被拒", "麦克风被拒", "Mic blocked"],
 
+    "ep.uploadPage": ["上傳網頁（手機掃 QR 或開啟）", "上传网页（手机扫 QR 或打开）", "Upload page (scan the QR on your phone)"],
+    "ep.copy": ["複製", "复制", "Copy"],
+    "ep.accessKey": ["存取金鑰（等同密碼）", "访问密钥（等同密码）", "Access token (acts as a password)"],
+    "ep.reveal": ["顯示", "显示", "Reveal"],
+    "ep.reset": ["重設", "重置", "Reset"],
+    "ep.tunnelDesc": ["透過 Cloudflare 臨時通道讓外網（非同網段）也能上傳；每次重啟網址會變，首次使用會下載 cloudflared（約 25MB）", "通过 Cloudflare 临时通道让外网（非同网段）也能上传；每次重启网址会变，首次使用会下载 cloudflared（约 25MB）", "Opens a temporary Cloudflare tunnel so devices outside your LAN can upload. The URL changes on every restart; the first use downloads cloudflared (~25 MB)."],
+    "ep.tunnelWarn": ["⚠️ 網址含金鑰（等同密碼），任何取得「完整網址」的人都能上傳、消耗你的 CPU/GPU。用完請立即關閉，勿外流網址／QR。", "⚠️ 网址含密钥（等同密码），任何取得「完整网址」的人都能上传、消耗你的 CPU/GPU。用完请立即关闭，勿外泄网址／QR。", "⚠️ The URL contains the token (a password). Anyone who gets the full URL can upload and use your CPU/GPU. Turn it off when done and do not share the URL or QR."],
+    "ep.tunnelQrHint": ["外網臨時網址（含金鑰）— 掃描或複製給遠端裝置", "外网临时网址（含密钥）— 扫描或复制给远程设备", "Public temporary URL (with token) — scan or copy it to the remote device"],
     "ep.svcTitle": ["OpenAI 相容轉錄服務", "OpenAI 兼容转录服务", "OpenAI-compatible transcription"],
     "ep.svcDesc": ["讓手機或其他程式透過區網上傳音檔辨識", "让手机或其他程序通过局域网上传音频识别", "Let phones or apps upload audio over LAN"],
     "ep.start": ["啟動服務", "启动服务", "Start service"],
@@ -146,6 +160,7 @@
     "status.ready": ["模型已就緒", "模型已就绪", "Ready"],
     "status.loading": ["載入中…", "加载中…", "Loading…"],
     "status.needModel": ["未載入模型", "未加载模型", "No model"],
+    "status.appName": ["聲音辨識小工具", "声音识别小工具", "Speech to Text"],
     "model.accel": ["推理加速版本", "推理加速版本", "Acceleration build"],
     "model.diag": ["診斷", "诊断", "Diagnostics"],
     "model.restartPending": ["已記住「{core} · {model}」（{arch}），將於重新啟動後套用（目前以 {active} 運行）。", "已记住「{core} · {model}」（{arch}），将在重启后生效（当前以 {active} 运行）。", "Saved {core} · {model} ({arch}); it will apply after a restart (currently running on {active})."],
@@ -190,6 +205,13 @@
     // Every one of these was concatenated in Traditional Chinese directly, so
     // a Simplified or English UI still showed Hant text as soon as an action
     // produced a message (download centre, batch queue, endpoint page…).
+    "model.detectingHw": ["偵測硬體中…", "检测硬件中…", "Detecting hardware…"],
+    "model.gpuDiag": ["GPU 偵測由 <code style=\"font-family:var(--font-mono)\">crispasr.exe --diagnostics</code> 進行；若未列出獨立顯示卡，請更新顯卡 / Vulkan 驅動後重試。", "GPU 检测由 <code style=\"font-family:var(--font-mono)\">crispasr.exe --diagnostics</code> 进行；若未列出独立显卡，请更新显卡 / Vulkan 驱动后重试。", "GPU detection runs <code style=\"font-family:var(--font-mono)\">crispasr.exe --diagnostics</code>. If no discrete GPU is listed, update your graphics / Vulkan driver and retry."],
+    "dl.center": ["下載中心", "下载中心", "Download center"],
+    "dl.honesty": ["檔案大小與 SHA256 若顯示「未知」，代表尚未對遠端檔案實測驗證，不會用估計值冒充。括號中的約略值僅供參考，不用於進度計算。", "文件大小与 SHA256 若显示「未知」，代表尚未对远程文件实测验证，不会用估计值冒充。括号中的约略值仅供参考，不用于进度计算。", "When size or SHA256 says \"unknown\", it has not been measured against the remote file — estimates are never passed off as fact. Approximate values are for reference only and are not used for progress."],
+    "dl.refresh": ["重新整理", "重新整理", "Refresh"],
+    "dl.manifest": ["輸出下載清單 (.txt)", "导出下载清单 (.txt)", "Export download list (.txt)"],
+    "dl.import": ["匯入並驗證", "导入并校验", "Import & verify"],
     "dl.mirror": ["目前鏡像：{name}", "当前镜像：{name}", "Mirror: {name}"],
     "dl.mirrorOfficial": ["目前鏡像：官方（未設定）", "当前镜像：官方（未设置）", "Mirror: official (not set)"],
     "dl.summary": ["{mirror} · 已完整 {done}/{total} 組 · 待補 {missing} 組 · 本機已佔用 {used} · 根目錄 {root}",
@@ -755,6 +777,52 @@
     return chars;
   }
 
+  // Wave 7: 反查表，用于「簡體自由文字 → 繁體介面」。
+  // 背景：執行期狀態字串（長音訊 runner 的進度敘述、例外訊息等）無法窮舉，
+  // 走的是 free-form 路徑。它們原本一律寫成簡體，結果繁體介面漏出「已处理」。
+  //
+  // 只做「字對字」反查，不反查 W2S_WORDS：那張表裡混了**用語差異**
+  // （"語系"→"语言"、"採"→"采"），機械反轉會造出「語係」「埰用」這種錯字。
+  // 一張簡→繁表天生多對一（"发" 可能是 發/髮），所以取 S2S 裡的第一個對應，
+  // 並對已知會撞車的字改走 W2S_WORDS 的詞組優先替換來消歧義。
+  const T2S_CHAR = {};
+  for (const [t, s] of Object.entries(S2S)) {
+    if (!(s in T2S_CHAR)) T2S_CHAR[s] = t;
+  }
+  // S2S 里有 139 个「一字对多繁」（钟←鈡/鍾/鐘、采←埰/寀/採、面←麪/麫/麵）。
+  // 直接取第一条会造出「分鈡」「埰用」「裡麪」这类异体字，所以这些字一律
+  // 用白名单指定常用正体，白名单优先于上面的自动反查。
+  Object.assign(T2S_CHAR, {
+    "钟": "鐘", "采": "採", "面": "面", "发": "發", "只": "只", "台": "臺",
+    "里": "裡", "干": "乾", "后": "後", "系": "系", "了": "了", "么": "麼",
+    "云": "雲", "胡": "胡", "姜": "薑", "于": "於", "余": "餘", "斗": "鬥",
+    "谷": "谷", "征": "徵", "板": "板", "克": "克", "占": "佔", "并": "並",
+    "汇": "匯", "舍": "捨", "松": "鬆", "致": "致", "制": "制", "志": "志",
+    "划": "劃", "注": "註", "布": "佈", "个": "個", "几": "幾", "与": "與",
+  });
+  // 一簡對多繁的高頻字：先按詞組定死，剩下沒命中的才走字對字。
+  const T2S_WORDS = [
+    ["头发", "頭髮"], ["理发", "理髮"], ["发丝", "髮絲"], ["发型", "髮型"],
+    ["发展", "發展"], ["发生", "發生"], ["发布", "發布"], ["发送", "發送"],
+    ["发现", "發現"], ["发音", "發音"], ["出发", "出發"], ["引发", "引發"],
+    ["干净", "乾淨"], ["干燥", "乾燥"],
+    ["里面", "裡面"], ["这里", "這裡"], ["那里", "那裡"], ["哪里", "哪裡"],
+    ["复杂", "複雜"], ["复制", "複製"], ["重复", "重複"], ["复数", "複數"],
+    ["恢复", "恢復"],
+    ["发", "發"], ["干", "乾"], ["里", "裡"], ["复", "複"],
+  ].sort((a, b) => b[0].length - a[0].length);
+
+  function toTraditional(text) {
+    let out = String(text);
+    // 1) 先把「一簡對多繁」的詞定死，避免字對字猜錯（发→發/髮、里→裡/里）。
+    for (const [from, to] of T2S_WORDS) out = out.split(from).join(to);
+    // 2) 剩下的逐字回退；已在第 1 步轉好的繁體字在 T2S_CHAR 裡沒有鍵，
+    //    不會被二次改寫。
+    let chars = "";
+    for (const ch of out) chars += (T2S_CHAR[ch] || ch);
+    return chars;
+  }
+
   const EN_MAP = {
     "自動偵測": "Auto detect", "語言 自動": "Language: auto", "人數 自動": "Speakers: auto",
     "全部就緒": "All ready", "核心就緒": "Engine ready", "使用中": "In use",
@@ -777,9 +845,28 @@
     "模型輸出異常，此核心可能不相容，建議改用 CPU(OpenVINO) 核心。":
       "Engine output is abnormal; this backend may be incompatible. Try the CPU (OpenVINO) engine.",
   };
+  // 執行期產生的自由文案（長音訊進度、續跑提示…）沒有字典條目，
+  // 但格式穩定，用少量正則補上英文，避免英文介面整片中文。
+  const EN_PATTERNS = [
+    [/^已[處处]理\s*([\d.]+)\s*分[鐘钟]\s*·\s*(\d+)\s*段$/, (m, f) => `Processed ${m[1]} min · ${m[2]} segments`],
+    [/^從第\s*([\d.]+)\s*分[鐘钟]續[跑钻]$/, (m, f) => `Resuming from ${m[1]} min`],
+    [/^音[檔档][時时]長\s*([\d.]+)\s*分[鐘钟]，?[採采]用[流]?式分[段檔]?$/, (m, f) => `Audio is ${m[1]} min; using streaming segmentation`],
+  ];
+
   function fallback(text) {
     const s = String(text);
-    if (LOCALE === "hant") return s;
+    if (LOCALE === "en") {
+      for (const [re, fn] of EN_PATTERNS) {
+        const m = s.match(re);
+        if (m) return fn(m, toSimplified(s));
+      }
+    }
+    // 只有「確實含簡體專用字」才需要反轉；純繁體或純 ASCII 原樣返回，
+    // 避免把使用者自由輸入（提示詞、歌詞）無謂地改寫。
+    if (LOCALE === "hant") {
+      for (const ch of s) if (ch in T2S_CHAR) return toTraditional(s);
+      return s;
+    }
     if (LOCALE === "hans") return toSimplified(s);
     return EN_MAP[s] || s;
   }
@@ -801,22 +888,53 @@
     return fallback(value);
   }
 
+  // data-i18n 默认写 textContent，会连同元素内的子节点一起抹掉。带内嵌标记的
+  // 元素（例如标题行里的版本号 <span class="chip">）要改用 data-i18n-lead：
+  // 标签只替换「文字节点」，子元素原样保留并维持原有先后顺序。
+  function applyLeadText(el, value) {
+    if (value == null) return;
+    let textNode = null;
+    for (const n of Array.from(el.childNodes)) {
+      if (n.nodeType === 3 && n.nodeValue.trim()) { textNode = n; break; }
+    }
+    if (textNode) {
+      textNode.nodeValue = value + " ";
+    } else {
+      el.insertBefore(document.createTextNode(value + " "), el.firstChild);
+    }
+  }
+
   function apply(root) {
     root = root || document;
     root.querySelectorAll("[data-i18n]").forEach(el => { const v = t(el.dataset.i18n); if (v != null) el.textContent = v; });
     root.querySelectorAll("[data-i18n-html]").forEach(el => { const v = t(el.dataset.i18nHtml); if (v != null) el.innerHTML = v; });
     root.querySelectorAll("[data-i18n-ph]").forEach(el => { const v = t(el.dataset.i18nPh); if (v != null) el.setAttribute("placeholder", v); });
     root.querySelectorAll("[data-i18n-title]").forEach(el => { const v = t(el.dataset.i18nTitle); if (v != null) el.title = v; });
+    root.querySelectorAll("[data-i18n-lead]").forEach(el => applyLeadText(el, t(el.dataset.i18nLead)));
   }
+
+  // 語言切換後，除靜態 DOM 外還有「渲染時就把語言定死」的區塊（進度文案、
+  // 後端資料驅動的自檢面板 / 端點狀態、執行期建立的 <option>）。它們由 app.js
+  // 註冊回呼重繪 —— 放在這裡而不是只包在 app.js 的兩處呼叫點，是因為
+  // 測試與未來的呼叫方都直接走 I18N.setLang()，漏掉包裝就會留下一半舊語言。
+  let _afterLang = [];
+  function onAfterLang(fn) { if (typeof fn === "function" && !_afterLang.includes(fn)) _afterLang.push(fn); }
 
   function setLang(uiLang) {
     LOCALE = normalize(uiLang);
     document.documentElement.lang = LOCALE === "en" ? "en" : (LOCALE === "hans" ? "zh-Hans" : "zh-Hant");
     apply(document);
+    // 浏览器标签页 / Edge --app 窗口标题也走字典，否则切到简体或英文后
+    // 系统窗口栏仍显示初始化时的繁体名。
+    const appName = t("status.appName");
+    if (appName) document.title = appName;
+    for (const fn of _afterLang) {
+      try { fn(LOCALE); } catch (e) { console.warn("[i18n] afterLang hook failed", e); }
+    }
     return LOCALE;
   }
 
-  window.I18N = { setLang, normalize, t, L, toSimplified, apply, renderMsg,
+  window.I18N = { setLang, normalize, onAfterLang, t, L, toSimplified, toTraditional, apply, renderMsg,
                   get locale() { return LOCALE; },
                   get msgKeys() { return Object.keys(M); },
                   get tKeys() { return Object.keys(D); },

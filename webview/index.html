@@ -164,8 +164,8 @@
 
         <div class="card" id="live-panel" hidden style="margin-top:12px">
           <div class="hint-head">
-            <div class="l"><span class="t">即時字幕 / Live subtitles</span><span class="d">邊跑邊顯示，最多保留最近 200 條；完整結果仍以 SRT 為準</span></div>
-            <button class="btn btn-ghost btn-sm" id="btn-live-follow">回到最新</button>
+            <div class="l"><span class="t" data-i18n="live.title">即時字幕</span><span class="d" data-i18n="live.desc">邊跑邊顯示，最多保留最近 200 條；完整結果仍以 SRT 為準</span></div>
+            <button class="btn btn-ghost btn-sm" id="btn-live-follow" data-i18n="live.follow">回到最新</button>
           </div>
           <div id="live-list" style="max-height:220px;overflow:auto;font-size:13px"></div>
         </div>
@@ -195,7 +195,7 @@
               <button class="play-btn play-btn-ghost" id="btn-karaoke" aria-label="卡拉OK模式" title="卡拉OK模式（逐字高亮）">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>
               </button>
-              <span class="play-time"><span id="wave-cur">00:00</span> · 點波形、字幕或下方區塊可跳播</span>
+              <span class="play-time"><span id="wave-cur">00:00</span><span data-i18n="file.seekHint"> · 點波形、字幕或下方區塊可跳播</span></span>
             </div>
           </div>
           <!-- 卡拉OK舞台：逐字高亮放大跳動（由字級 words 驅動）。預設隱藏，按麥克風鈕切換。 -->
@@ -272,52 +272,52 @@
       <section class="view" data-view="endpoint">
         <div class="card">
           <div class="row">
-            <div class="label"><div class="t">OpenAI 相容轉錄服務</div><div class="d">讓手機或其他程式透過區網上傳音檔辨識</div></div>
+            <div class="label"><div class="t" data-i18n="ep.svcTitle">OpenAI 相容轉錄服務</div><div class="d" data-i18n="ep.svcDesc">讓手機或其他程式透過區網上傳音檔辨識</div></div>
             <span class="chip chip-ok" id="ep-state"><span style="font-size:9px">●</span> 執行中</span>
-            <label class="switch"><input type="checkbox" id="sw-endpoint" checked><span class="track"></span>啟動服務</label>
+            <label class="switch"><input type="checkbox" id="sw-endpoint" checked><span class="track"></span><span data-i18n="ep.start">啟動服務</span></label>
           </div>
         </div>
 
-        <div class="sec-title">連線資訊</div>
+        <div class="sec-title" data-i18n="ep.connInfo">連線資訊</div>
         <div class="ep-grid">
           <div class="card">
-            <div class="d" style="font-size:12px;color:var(--muted);margin-bottom:7px">上傳網頁（手機掃 QR 或開啟）</div>
+            <div class="d" data-i18n="ep.uploadPage" style="font-size:12px;color:var(--muted);margin-bottom:7px">上傳網頁（手機掃 QR 或開啟）</div>
             <div class="qr-row">
               <img id="ep-qr" class="qr" alt="上傳網頁 QR" hidden>
               <div class="qr-side">
-                <div class="copy-field"><code id="ep-url">http://192.168.1.20:11435/?k=•••••</code><button class="btn btn-ghost btn-sm" data-copy="#ep-url">複製</button></div>
-                <div class="qr-hint" id="ep-qr-hint">同網段裝置可掃此 QR 直接開啟上傳頁</div>
+                <div class="copy-field"><code id="ep-url">http://192.168.1.20:11435/?k=•••••</code><button class="btn btn-ghost btn-sm" data-i18n="ep.copy" data-copy="#ep-url">複製</button></div>
+                <div class="qr-hint" id="ep-qr-hint" data-i18n="ep.qrHint">同網段裝置可掃此 QR 直接開啟上傳頁</div>
               </div>
             </div>
           </div>
           <div class="card">
-            <div class="d" style="font-size:12px;color:var(--muted);margin-bottom:7px">存取金鑰（等同密碼）</div>
-            <div class="copy-field"><code id="ep-key">••••••••••••</code><button class="btn btn-ghost btn-sm" id="btn-reveal-key">顯示</button><button class="btn btn-ghost btn-sm" id="btn-newkey">重設</button></div>
+            <div class="d" data-i18n="ep.accessKey" style="font-size:12px;color:var(--muted);margin-bottom:7px">存取金鑰（等同密碼）</div>
+            <div class="copy-field"><code id="ep-key">••••••••••••</code><button class="btn btn-ghost btn-sm" id="btn-reveal-key" data-i18n="ep.reveal">顯示</button><button class="btn btn-ghost btn-sm" id="btn-newkey" data-i18n="ep.reset">重設</button></div>
           </div>
         </div>
 
-        <div class="sec-title">對外臨時網址（Cloudflare）</div>
+        <div class="sec-title" data-i18n="ep.cfTitle">對外臨時網址（Cloudflare）</div>
         <div class="card">
           <div class="row">
-            <div class="label"><div class="t">建立對外網址</div><div class="d">透過 Cloudflare 臨時通道讓外網（非同網段）也能上傳；每次重啟網址會變，首次使用會下載 cloudflared（約 25MB）</div></div>
+            <div class="label"><div class="t" data-i18n="ep.cfMake">建立對外網址</div><div class="d" data-i18n="ep.tunnelDesc">透過 Cloudflare 臨時通道讓外網（非同網段）也能上傳；每次重啟網址會變，首次使用會下載 cloudflared（約 25MB）</div></div>
             <span class="chip chip-muted" id="cf-state"><span style="font-size:9px">●</span> 未啟用</span>
-            <label class="switch"><input type="checkbox" id="sw-tunnel"><span class="track"></span>對外</label>
+            <label class="switch"><input type="checkbox" id="sw-tunnel"><span class="track"></span><span data-i18n="ep.public">對外</span></label>
           </div>
-          <div class="cf-warn">⚠️ 網址含金鑰（等同密碼），任何取得「完整網址」的人都能上傳、消耗你的 CPU/GPU。用完請立即關閉，勿外流網址／QR。</div>
+          <div class="cf-warn" data-i18n="ep.tunnelWarn">⚠️ 網址含金鑰（等同密碼），任何取得「完整網址」的人都能上傳、消耗你的 CPU/GPU。用完請立即關閉，勿外流網址／QR。</div>
           <div class="cf-body qr-row" id="cf-body" hidden>
             <img id="cf-qr" class="qr" alt="外網臨時網址 QR" hidden>
             <div class="qr-side">
-              <div class="copy-field"><code id="cf-url">（建立中…）</code><button class="btn btn-ghost btn-sm" data-copy="#cf-url">複製</button></div>
-              <div class="qr-hint">外網臨時網址（含金鑰）— 掃描或複製給遠端裝置</div>
+              <div class="copy-field"><code id="cf-url">（建立中…）</code><button class="btn btn-ghost btn-sm" data-i18n="ep.copy" data-copy="#cf-url">複製</button></div>
+              <div class="qr-hint" data-i18n="ep.tunnelQrHint">外網臨時網址（含金鑰）— 掃描或複製給遠端裝置</div>
             </div>
           </div>
           <div class="cf-status" id="cf-status"></div>
         </div>
 
-        <div class="sec-title">設定</div>
+        <div class="sec-title" data-i18n="ep.settings">設定</div>
         <div class="card">
-          <div class="row"><div class="label"><div class="t">監聽埠</div></div><input class="input mono" id="ep-port" value="11435" style="width:110px"></div>
-          <div class="row"><div class="label"><div class="t">端點路徑</div><div class="d">OpenAI Whisper 相容，可直接替換 base URL 使用</div></div></div>
+          <div class="row"><div class="label"><div class="t" data-i18n="ep.port">監聽埠</div></div><input class="input mono" id="ep-port" value="11435" style="width:110px"></div>
+          <div class="row"><div class="label"><div class="t" data-i18n="ep.path">端點路徑</div><div class="d" data-i18n="ep.pathDesc">OpenAI Whisper 相容，可直接替換 base URL 使用</div></div></div>
           <div class="endpoint-line"><span class="verb">POST</span> /v1/audio/transcriptions</div>
         </div>
       </section>
@@ -342,7 +342,7 @@
         <div id="basic-pane">
           <div class="banner banner-info" id="basic-hw" style="margin-bottom:12px">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
-            <div>偵測硬體中…</div>
+            <div data-i18n="model.detectingHw">偵測硬體中…</div>
           </div>
           <div class="radio-cards" id="basic-profiles"></div>
           <div id="basic-note" class="banner banner-warn" hidden style="margin-top:10px"></div>
@@ -363,7 +363,7 @@
         <div id="model-msg"></div>
 
         <div class="model-load-row" style="display:flex;align-items:center;gap:12px;margin-top:12px">
-          <button class="btn btn-primary" id="btn-model-load">下載並載入模型</button>
+          <button class="btn btn-primary" id="btn-model-load" data-i18n="model.load">下載並載入模型</button>
           <div class="progress" id="model-progress" hidden style="flex:1;margin:0">
             <div class="meta"><span class="s" id="model-prog-status">準備中…</span><span class="p" id="model-prog-pct">0%</span></div>
             <div class="bar"><i id="model-prog-bar" style="width:0%"></i></div>
@@ -388,24 +388,24 @@
         <div class="sec-title" data-i18n="model.diag">診斷</div>
         <div class="banner banner-warn" id="gpu-diag">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          <div>GPU 偵測由 <code style="font-family:var(--font-mono)">crispasr.exe --diagnostics</code> 進行；若未列出獨立顯示卡，請更新顯卡 / Vulkan 驅動後重試。</div>
+          <div data-i18n-html="model.gpuDiag">GPU 偵測由 <code style="font-family:var(--font-mono)">crispasr.exe --diagnostics</code> 進行；若未列出獨立顯示卡，請更新顯卡 / Vulkan 驅動後重試。</div>
         </div>
         </div><!-- /advanced-extra -->
 
         <!-- ── Download center: one source of truth (models.json) ── -->
-        <div class="sec-title" style="margin-top:18px">下載中心 / Download center</div>
+        <div class="sec-title" data-i18n="dl.center" style="margin-top:18px">下載中心</div>
         <div class="banner banner-info" id="catalog-note" style="margin-bottom:10px">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
-          <div>檔案大小與 SHA256 若顯示「未知」，代表尚未對遠端檔案實測驗證，不會用估計值冒充。括號中的約略值僅供參考，不用於進度計算。</div>
+          <div data-i18n="dl.honesty">檔案大小與 SHA256 若顯示「未知」，代表尚未對遠端檔案實測驗證，不會用估計值冒充。括號中的約略值僅供參考，不用於進度計算。</div>
         </div>
         <div id="catalog-summary" style="font-size:13px;color:var(--ink-2);margin-bottom:8px">讀取中…</div>
         <div class="model-load-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
-          <button class="btn" id="btn-catalog-refresh">重新整理</button>
-          <button class="btn" id="btn-catalog-manifest">輸出下載清單 (.txt)</button>
+          <button class="btn" id="btn-catalog-refresh" data-i18n="dl.refresh">重新整理</button>
+          <button class="btn" id="btn-catalog-manifest" data-i18n="dl.manifest">輸出下載清單 (.txt)</button>
           <input class="select" id="catalog-import-dir" data-i18n-ph="dl.importDirPh"
                  placeholder="手動下載的資料夾路徑" style="min-width:230px" />
           <select class="select" id="catalog-import-bundle" style="min-width:210px"></select>
-          <button class="btn" id="btn-catalog-import">匯入並驗證</button>
+          <button class="btn" id="btn-catalog-import" data-i18n="dl.import">匯入並驗證</button>
         </div>
         <div id="catalog-msg" style="font-size:13px;margin-bottom:8px"></div>
         <div id="catalog-list"></div>
@@ -431,7 +431,7 @@
             <select class="select" id="set-lang"><option value="hant">繁體中文</option><option value="hans">简体中文</option><option value="en">English</option></select></div>
         </div>
         <div class="card" style="margin-top:14px;display:flex;align-items:center;gap:12px">
-          <div class="label"><div class="t" style="font-size:13px">聲音辨識小工具 <span class="chip chip-muted" id="app-version">v—</span></div><div class="d" data-i18n="set.appDesc">本地推理 · 資料不離開你的電腦</div></div>
+          <div class="label"><div class="t" style="font-size:13px"><span data-i18n-lead="status.appName">聲音辨識小工具</span> <span class="chip chip-muted" id="app-version">v—</span></div><div class="d" data-i18n="set.appDesc">本地推理 · 資料不離開你的電腦</div></div>
           <div class="sp" style="flex:1"></div>
           <button class="btn btn-ghost btn-sm" id="btn-check-update" data-i18n="set.checkUpdate">檢查更新</button>
         </div>

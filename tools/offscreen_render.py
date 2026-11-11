@@ -186,9 +186,11 @@ def main() -> int:
         # Inject the exact Wave 4 SSE payloads the backend emits.
         page.evaluate("""() => {
           const api = window.QwenAPI;
-          api._emit('progress', {pct: 42, status: '已处理 84.0 分钟 · 612 段'});
+          // 真实后端由 longform_runner._emit 发出，status 是繁体旁路文案；
+          // 早先这里写的是简体，等于用不合契约的数据去验「语言切换后不留繁体」。
+          api._emit('progress', {pct: 42, status: '已處理 84.0 分鐘 · 612 段'});
           api._emit('progress-detail', {
-            pct: 42, status: '已处理 84.0 分钟 · 612 段', taskId: 'offscreen01',
+            pct: 42, status: '已處理 84.0 分鐘 · 612 段', taskId: 'offscreen01',
             doneSec: 5040, totalSec: 12000, groups: 612, etaSec: 6960, phase: 'running'
           });
           // Deliberately omit the numeric fields first: a partial payload must
@@ -420,6 +422,66 @@ def main() -> int:
               return bad;
             }""")
             check(f"sidebar text fits in {lang}", not clipped, "; ".join(clipped[:3]))
+
+        # ── 品牌名 / 视窗标题随语言切换（Wave 7）──────────────────────────
+        # 版本行曾用 data-i18n，apply() 的 textContent 会把版本号 chip 一起抹掉；
+        # document.title 也曾停在初始化时的繁体。两者都用「切到简体再看」验证。
+        for lang, want_name, want_title in (
+            ("hant", "聲音辨識小工具", "聲音辨識小工具"),
+            ("hans", "声音识别小工具", "声音识别小工具"),
+            ("en", "Speech to Text", "Speech to Text"),
+        ):
+            page.evaluate(f"window.I18N && I18N.setLang({lang!r})")
+            page.wait_for_timeout(120)
+            got = page.evaluate("""() => ({
+              brand: document.querySelector('.brand .name').textContent.trim(),
+              sideTitle: document.querySelector('.brand .logo').title,
+              docTitle: document.title,
+              versionAlive: !!document.querySelector('#app-version'),
+              versionText: (document.querySelector('#app-version') || {}).textContent || '',
+              footerLead: ((document.querySelector('.settings .label .t span[data-i18n-lead]') || {}).textContent || '').trim(),
+            })""")
+            check(f"brand name follows {lang}", got["brand"] == want_name,
+                  f'{got["brand"]!r} != {want_name!r}')
+            check(f"window title follows {lang}", got["docTitle"] == want_title,
+                  f'{got["docTitle"]!r} != {want_title!r}')
+            check(f"version badge survives i18n {lang}",
+                  got["versionAlive"] and got["versionText"].strip() not in ("", "v—"),
+                  f'text={got["versionText"]!r} alive={got["versionAlive"]}')
+            check(f"settings footer brand follows {lang}", got["footerLead"] == want_name,
+                  f'{got["footerLead"]!r} != {want_name!r}')
+
+        # 简体 / 英文界面不得残留繁体字形：抓可见文本，查一批高频繁体专用字。
+        # 只做「不该出现的字」的黑名单，避免把 s2t 这类功能名误判。
+        # 只收「简繁不同形」的字：像「案」「理」两体同形，收进来会误报。
+        HANT_ONLY = "個們這來說時會後裡從對開關閉設為與學國語體動對點聲畫檔處續線"
+        for lang in ("hans", "en"):
+            page.evaluate(f"window.I18N && I18N.setLang({lang!r})")
+            # 后端資料驅動的區塊（自檢 / 端點）走非同步重繪，等它跑完再掃。
+            page.wait_for_timeout(700)
+            leaked = page.evaluate("""(chars) => {
+              const bad = [];
+              const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+              let n;
+              while ((n = walk.nextNode())) {
+                const el = n.parentElement;
+                if (!el || el.closest('script,style')) continue;
+                const cs = getComputedStyle(el);
+                if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+                // 產品 / 模型名稱（如 TEA-ASR-1.1 台灣國語 Q8）刻意不翻譯：
+                // 使用者要能在官方頁面與檔案總管裡對得上同一個名字。
+                if (el.closest('.mono, code, [data-brand]')) continue;
+                // 語言名依慣例以自身語言書寫（English 介面也顯示「繁體中文 / 简体中文」），
+                // 這是選擇器裡的可辨識性要求，不算未翻譯。
+                if (el.tagName === 'OPTION' && n.parentElement && n.parentElement.closest('#set-lang')) continue;
+                const txt = n.nodeValue || '';
+                const hit = [...new Set([...txt].filter(c => chars.includes(c)))].join('');
+                if (hit) bad.push(el.className + ':' + hit + ' « ' + txt.trim().slice(0, 40) + ' »');
+              }
+              return bad.slice(0, 6);
+            }""", HANT_ONLY)
+            check(f"no traditional glyphs left in {lang}", not leaked, " | ".join(leaked[:3]))
+
         page.evaluate("window.I18N && I18N.setLang('en')")
 
         ctx.close()

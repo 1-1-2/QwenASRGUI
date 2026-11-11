@@ -337,6 +337,9 @@
   // ════════════════════════════════════════════════════════
   // mock：純展示資料（讓設計稿在瀏覽器中完全可互動）
   // ════════════════════════════════════════════════════════
+  // 与后端 ui_text.msg() 同形的结构：k=稳定键，v=变量，t=繁体兜底。
+  const M = (k, v) => ({ k, v: v || {}, t: (window.I18N ? I18N.t(k, v) : k) || k });
+
   const MOCK = {
     cancelled: false,
     status: { modelReady: true, backend: "GPU · CRISPASR（Vulkan）", device: "NVIDIA GeForce RTX", version: "webview 0.1", appName: "聲音辨識小工具", hasAnyModel: false, selectedReady: false },
@@ -345,40 +348,40 @@
     tunnel: { running: false, url: "", status: "" },
     basicProfiles: {
       tier: "gpu", accel: "Vulkan",
-      hardware: "（展示模式）偵測到獨立顯示卡：NVIDIA GeForce RTX 4070 —— 可用最準的模型。",
+      hardware: M("hw.discrete", { names: "NVIDIA GeForce RTX 4070" }),
       current: { core: "Qwen", model: "Qwen3-ASR-1.7B Q8 (CRISPASR)" },
       profiles: [
-        { key: "zh", title: "中文（標準）", desc: "一般用途首選：中文為主、斷句與標點最完整。",
-          note: "", core: "Qwen", model: "Qwen3-ASR-1.7B Q8 (CRISPASR)",
+        { key: "zh", title: M("profile.zh.title"), desc: M("profile.zh.desc"),
+          note: null, core: "Qwen", model: "Qwen3-ASR-1.7B Q8 (CRISPASR)",
           arch: "GPU · CRISPASR（Vulkan）", present: true, selected: true },
-        { key: "tea", title: "繁體中文 TEA（乾淨聲音）", desc: "台灣國語特化，原生輸出繁體。",
+        { key: "tea", title: M("profile.tea.title"), desc: M("profile.tea.desc"),
           note: "⚠️ 背景配樂較重的段落或歌曲可能整段無輸出。", core: "Qwen",
           model: "TEA-ASR-1.1 台灣國語 Q8 (CRISPASR)", arch: "GPU · CRISPASR（Vulkan）",
           present: false, selected: false },
-        { key: "ja", title: "日本語", desc: "日語／動漫特化，保留日文原生漢字。", note: "",
+        { key: "ja", title: M("profile.ja.title"), desc: M("profile.ja.desc"), note: null,
           core: "Qwen", model: "Qwen3-ASR-1.7B 日語動漫 Q8 (CRISPASR)",
           arch: "GPU · CRISPASR（Vulkan）", present: false, selected: false },
-        { key: "twmix", title: "國台語混合（高速）", desc: "Whisper Breeze，速度極快、不輸出標點。",
-          note: "", core: "Whisper (Breeze)", model: "Breeze Q8 (精確)",
+        { key: "twmix", title: M("profile.twmix.title"), desc: M("profile.twmix.desc"),
+          note: null, core: "Whisper (Breeze)", model: "Breeze Q8 (精確)",
           arch: "GPU · CRISPASR（Vulkan）", present: false, selected: false },
       ],
     },
     accel: {
       ok: true, selected: "vulkan", recommended: "vulkan",
-      reason: "（展示模式）偵測到 NVIDIA 顯示卡。預設仍用 Vulkan（僅 34 MB、實測速度接近）。",
+      reason: M("accel.reason.nvidia", { names: "NVIDIA GeForce RTX 4070", cuda: "CUDA 13" }),
       latest: "0.8.32", installed: { version: "0.8.32", variant: "vulkan" }, needsDownload: false,
       hardware: { gpus: [{ vendor: "nvidia", name: "NVIDIA GeForce RTX 4070", vram_mb: 8192 }] },
       options: [
-        { key: "vulkan", label: "Vulkan（通用 GPU）", size_mb: 34, recommended: true, suitable: true, note: "",
-          desc: "NVIDIA / AMD / Intel 通吃，體積最小。" },
-        { key: "cuda13", label: "CUDA 13（NVIDIA 新驅動）", size_mb: 484, recommended: false, suitable: true, note: "",
-          desc: "NVIDIA 專用，自帶 CUDA 13 runtime。" },
-        { key: "cuda12", label: "CUDA 12（NVIDIA 專用）", size_mb: 690, recommended: false, suitable: true,
-          note: "驅動版本建議改用另一個 CUDA 版本", desc: "NVIDIA 專用，自帶 CUDA 12 runtime。" },
-        { key: "cpu", label: "CPU（純處理器）", size_mb: 8, recommended: false, suitable: true, note: "",
-          desc: "完全不碰顯卡。" },
-        { key: "cpu-legacy", label: "CPU 相容版（無 AVX2 的老 CPU）", size_mb: 8, recommended: false,
-          suitable: true, note: "只有在一般 CPU 版閃退時才需要", desc: "給不支援 AVX2 的老處理器。" },
+        { key: "vulkan", label: M("accel.opt.vulkan.label"), size_mb: 34, recommended: true, suitable: true, note: null,
+          desc: M("accel.opt.vulkan.desc") },
+        { key: "cuda13", label: M("accel.opt.cuda13.label"), size_mb: 484, recommended: false, suitable: true, note: null,
+          desc: M("accel.opt.cuda13.desc") },
+        { key: "cuda12", label: M("accel.opt.cuda12.label"), size_mb: 690, recommended: false, suitable: true,
+          note: null, desc: M("accel.opt.cuda12.desc") },
+        { key: "cpu", label: M("accel.opt.cpu.label"), size_mb: 8, recommended: false, suitable: true, note: null,
+          desc: M("accel.opt.cpu.desc") },
+        { key: "cpu-legacy", label: M("accel.opt.cpu-legacy.label"), size_mb: 8, recommended: false,
+          suitable: true, note: null, desc: M("accel.opt.cpu-legacy.desc") },
       ],
     },
     devices: {
@@ -413,26 +416,35 @@
         { label: "Korean", value: "Korean" }, { label: "Cantonese", value: "Cantonese" },
       ],
     },
+    // 自檢資料的形狀必須跟 webview_backend.health_check() 一致：label / detail
+    // 都是 {k, v, t} 結構化訊息，不是字串。先前這裡放的是純字串，離屏渲染
+    // 因此看不到「英文介面仍顯示中文」這個真實缺陷（真實後端早就回傳結構化）。
     health: {
       summary: { red: 0, yellow: 3, ok: true }, activeBackend: "openvino",
       cores: [
-        { label: "Qwen · OpenVINO（CPU）", backend: "openvino", items: [
-          { key: "model", label: "ASR 模型（0.6B）", status: "green", detail: "已下載" },
-          { key: "vad", label: "語音分段 VAD（silero）", status: "green", detail: "已內建" },
-          { key: "fa", label: "時間軸對齊 FA", status: "yellow", detail: "未下載（約 939MB，啟用對齊時下載）" },
-          { key: "diar", label: "說話者分離（外部 ONNX）", status: "yellow", detail: "未下載（約 32MB，啟用分離時下載）" },
+        { label: M("health.group.ov"), backend: "openvino", items: [
+          { key: "model", label: M("health.ov.model", { size: "0.6B" }), status: "green",
+            detail: M("state.downloaded") },
+          { key: "vad", label: M("health.ov.vad"), status: "green", detail: M("state.builtin") },
+          { key: "fa", label: M("health.ov.fa"), status: "yellow", detail: M("state.notDownloadedFa") },
+          { key: "diar", label: M("health.ov.diar"), status: "yellow", detail: M("state.notDownloadedDiar") },
         ]},
-        { label: "CRISPASR（Vulkan：Whisper/Breeze + Qwen）", backend: "crispasr", items: [
-          { key: "core", label: "CrispASR 核心（crispasr.exe）", status: "green", detail: "已下載" },
-          { key: "breeze", label: "Whisper/Breeze 模型（Q5）", status: "green", detail: "已下載" },
-          { key: "qwen", label: "Qwen3-ASR-1.7B 模型（Q8）", status: "yellow", detail: "未下載（啟用時下載）" },
-          { key: "fa", label: "時間軸對齊 FA（aligner gguf Q5）", status: "green", detail: "已下載" },
-          { key: "diar", label: "說話者分離（外部 ONNX，與 OpenVINO 共用）", status: "yellow", detail: "未下載" },
+        { label: M("health.group.crisp", { variant: "Vulkan" }), backend: "crispasr", items: [
+          { key: "core", label: M("health.crisp.core", { version: "v0.3.1", variant: "Vulkan" }), status: "green", detail: M("state.downloaded") },
+          { key: "breeze", label: M("health.crisp.breeze", { quant: "Q5" }), status: "green",
+            detail: M("state.downloaded") },
+          { key: "qwen", label: M("health.crisp.qwen", { quant: "Q8" }), status: "yellow",
+            detail: M("state.notDownloaded") },
+          { key: "fa", label: M("health.crisp.fa", { quant: "Q5" }), status: "green",
+            detail: M("state.downloaded") },
+          { key: "diar", label: M("health.crisp.diar"), status: "yellow", detail: M("state.notDownloaded") },
         ]},
       ],
       shared: [
-        { key: "ffmpeg", label: "FFmpeg（影片抽音軌用）", status: "green", detail: "已偵測：C:/ffmpeg/ffmpeg.exe" },
-        { key: "diar_shared", label: "說話者分離模型（共用）", status: "yellow", detail: "未下載（啟用分離時自動下載）" },
+        { key: "ffmpeg", label: M("health.shared.ffmpeg"), status: "green",
+          detail: { k: "", v: {}, t: "已偵測：C:/ffmpeg/ffmpeg.exe" } },
+        { key: "diar_shared", label: M("health.shared.diar"), status: "yellow",
+          detail: M("health.shared.diarMissing") },
       ],
     },
     batch: {

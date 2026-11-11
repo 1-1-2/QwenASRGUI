@@ -375,12 +375,58 @@
     }
   });
 
+  // Wave 7: 进度文案在渲染时就把语言定死了，切语言后若不重绘，"已處理"
+  // 会留在简体/英文界面上。这里记住最近一次的原始输入，setLang 之后由
+  // redrawProgressText() 用新语言重新渲染。
+  let lastProgress = { pct: null, status: null };
+  let lastProgressDetail = null;
+  let lastModelProgressStatus = null;   // 提前声明：redrawProgressText() 在初始化期也可能被调用
   function showProgress(pct, status) {
     $("#progress").hidden = false;
+    lastProgress.pct = pct;
+    if (status !== undefined) lastProgress.status = status;
     $("#prog-bar").style.width = pct + "%";
     $("#prog-pct").textContent = Math.round(pct) + "%";
     if (status != null) $("#prog-status").textContent =
       window.I18N ? I18N.L(status) : status;
+  }
+  function redrawProgressText() {
+    if (lastProgress.status != null) {
+      $("#prog-status").textContent = window.I18N
+        ? I18N.L(lastProgress.status) : lastProgress.status;
+    }
+    if (lastProgressDetail) renderProgressDetail(lastProgressDetail);
+    const mps = $("#model-prog-status");
+    if (mps && lastModelProgressStatus != null) {
+      mps.textContent = window.I18N ? I18N.L(lastModelProgressStatus) : lastModelProgressStatus;
+    }
+    // 辨識語言下拉的選項是執行期建立的，不掛 data-i18n，切換語言後不會自己更新。
+    // 這裡就地重繪，避免「自動偵測」在簡體／英文介面上留著繁體。
+    ["#sel-lang", "#rec-lang"].forEach(id => {
+      const sel = $(id); if (!sel) return;
+      [...sel.options].forEach(o => { if (o.dataset.src) o.textContent = I18N.L(o.dataset.src); });
+    });
+    // 批量列表與狀態 chip 也是執行期產生的，切換語言後要整批重繪。
+    if (typeof renderBatch === "function") renderBatch();
+    // 自檢面板、端點頁狀態等內容來自後端（走 I18N.L 動態翻譯），
+    // 不重抓就永遠停在切換前的語言。這裡在下一輪事件循環重繪，避免
+    // 使用者連點語言下拉時互相打斷。
+    if (typeof _relocalizeAsync === "function") setTimeout(_relocalizeAsync, 0);
+  }
+
+  // 切換語言後，重新渲染「資料來自後端、文字由 I18N.L 決定」的區塊。
+  async function _relocalizeAsync() {
+    try { await renderHealth(); } catch (e) {}
+    try { await renderEndpoint(); } catch (e) {}
+  }
+  // 所有語言切換（含測試直接呼叫 I18N.setLang）都走這裡，避免漏掉重繪。
+  if (window.I18N && I18N.onAfterLang) {
+    I18N.onAfterLang(() => {
+      redrawProgressText();
+      relocalizeMics();
+      if (typeof renderBasic === "function") renderBasic();
+      _relocalizeAsync();
+    });
   }
 
   /* ── Wave 4: two progress views + live subtitles ───────────────────────
@@ -399,8 +445,7 @@
     running: "run.running", paused: "run.paused",
     done: "run.done", preparing: "run.preparingShort",
   };
-  API.on("progress-detail", (d) => {
-    if (!d) return;
+  function renderProgressDetail(d) {
     const total = Number(d.totalSec) || 0, done = Number(d.doneSec) || 0;
     const elTime = $("#prog-time"), elGroups = $("#prog-groups"),
           elEta = $("#prog-eta"), elPhase = $("#prog-phase");
@@ -412,8 +457,13 @@
       : T("run.remaining", null, { eta: fmtDur(d.etaSec) });
     if (elPhase) {
       const ph = PHASE_TEXT[d.phase];
-      elPhase.textContent = ph ? T(ph) : (d.phase || T("run.running"));
+      elPhase.textContent = ph ? T(ph) : (window.I18N ? I18N.L(d.phase) : d.phase) || T("run.running");
     }
+  }
+  API.on("progress-detail", (d) => {
+    if (!d) return;
+    lastProgressDetail = d;
+    renderProgressDetail(d);
     // Queue view: keep the overall percentage list in sync without a second
     // polling loop. The batch page renders the same number in its summary.
     if (!batchRunning && batchMockRunning && batchActiveIdx >= 0 && batchItems[batchActiveIdx]) {
@@ -1222,7 +1272,7 @@
       card.innerHTML = `<span class="rd"></span><div class="info">
         <div class="t">${escapeHtml(I18N.L(p.title))}　${state}</div>
         <div class="d">${escapeHtml(I18N.L(p.desc || ""))}</div>
-        <div class="d" style="margin-top:4px;font-family:var(--font-mono);font-size:11.5px">
+        <div class="d" data-brand="model" style="margin-top:4px;font-family:var(--font-mono);font-size:11.5px">
           ${T("catalog.suggested", null, { model: escapeHtml(p.model) })}</div></div>`;
       host.appendChild(card);
     });
@@ -1355,6 +1405,7 @@
     catch (err) { _modelLoading = false; markBusy("model", false); modelMsg(I18N.t("model.loadFailed", {error: err.message || err}), "warn"); updateLoadBtn(); }
   });
   function setModelProg(pct, status) {
+    if (status !== undefined) lastModelProgressStatus = status;
     $("#model-prog-bar").style.width = pct + "%";
     $("#model-prog-pct").textContent = Math.round(pct) + "%";
     if (status != null) $("#model-prog-status").textContent = I18N.L(status);
@@ -1381,7 +1432,10 @@
         languages.forEach(l => {
           const o = document.createElement("option");
           o.value = l.value;
-          o.textContent = l.value ? (window.I18N ? I18N.L(l.label) : l.label) : T("common.langAuto", "語言 自動");
+          // 后端已按 ui_text 契约返回本地化 label（空值项即 msg.lang.auto），
+          // 这里再走一次 T() 会用固定文案盖掉它 —— 简体/英文界面因此显示繁体。
+          o.dataset.src = l.label || "";
+          o.textContent = window.I18N ? I18N.L(o.dataset.src) : o.dataset.src;
           sel.appendChild(o);
         });
         if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
@@ -1713,6 +1767,14 @@
 
   // ── 麥克風裝置列舉（瀏覽器原生；對應 app.py 的 sounddevice 裝置選擇）──────
   //   裝置標籤在未授權前為空字串 → 首次 getUserMedia 後再列舉一次才有名稱。
+  // 語言切換後就地更新「預設麥克風」選項（不重新列舉，避免打斷已選裝置）。
+  function relocalizeMics() {
+    const sel = $("#rec-mic"); if (!sel) return;
+    [...sel.options].forEach(o => {
+      if (o.value === "") o.textContent = T("record.defaultMic", "預設麥克風");
+      else if (o.dataset.idx) o.textContent = T("record.micN", null, { n: +o.dataset.idx });
+    });
+  }
   async function enumerateMics() {
     const sel = $("#rec-mic");
     if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
@@ -1727,6 +1789,8 @@
       mics.forEach((d, i) => {
         const o = document.createElement("option");
         o.value = d.deviceId;
+        if (d.label && !/^Microphone \d+$/i.test(d.label)) o.dataset.label = d.label;
+        else o.dataset.idx = String(i + 1);
         o.textContent = d.label || T("record.micN", null, { n: i + 1 });
         sel.appendChild(o);
       });
