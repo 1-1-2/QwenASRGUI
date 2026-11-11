@@ -134,28 +134,33 @@ def check_zip_entries(zip_path: Path) -> list[str]:
     而「这个 ZIP 里到底有没有 ui_text.py」必须逐个 ZIP 验，不能靠目录状态推断。
     """
     import zipfile
+    if not zipfile.is_zipfile(zip_path):
+        return [f"不是有效的 ZIP：{zip_path.name}"]
+    # 包根目录名带版本（APP_NAME_<version>_windows-x64[-variant]），所以按
+    # 「ZIP 内唯一的顶层目录」推导，不写死。
+    with zipfile.ZipFile(zip_path) as z:
+        names = {n.replace("\\", "/") for n in z.namelist()}
+    tops = {n.split("/")[0] for n in names if "/" in n}
+    if len(tops) != 1:
+        return [f"ZIP 内应有唯一顶层目录，实际 {sorted(tops)[:3]}"]
+    top = next(iter(tops))
     must = [
-        "QwenASR-WebView/QwenASR-WebView.exe",
-        "QwenASR-WebView/manifest.json",
-        "QwenASR-WebView/使用说明.txt",
-        "QwenASR-WebView/_internal/ui_text.py",
-        "QwenASR-WebView/_internal/webview_backend.py",
-        "QwenASR-WebView/_internal/webview_server.py",
-        "QwenASR-WebView/_internal/cluster_core.py",
-        "QwenASR-WebView/_internal/openvino/libs/openvino.dll",
-        "QwenASR-WebView/_internal/openvino/libs/openvino_intel_cpu_plugin.dll",
+        f"{top}/QwenASR-WebView.exe",
+        f"{top}/manifest.json",
+        f"{top}/使用说明.txt",
+        f"{top}/_internal/ui_text.py",
+        f"{top}/_internal/webview_backend.py",
+        f"{top}/_internal/webview_server.py",
+        f"{top}/_internal/cluster_core.py",
+        f"{top}/_internal/openvino/libs/openvino.dll",
+        f"{top}/_internal/openvino/libs/openvino_intel_cpu_plugin.dll",
     ]
     banned_prefix = [
-        "QwenASR-WebView/_internal/scipy/",
-        "QwenASR-WebView/_internal/scipy.libs/",
-        "QwenASR-WebView/_internal/openvino/libs/openvino_intel_gpu",
-        "QwenASR-WebView/_internal/openvino/libs/openvino_intel_npu",
+        f"{top}/_internal/scipy/",
+        f"{top}/_internal/scipy.libs/",
+        f"{top}/_internal/openvino/libs/openvino_intel_gpu",
+        f"{top}/_internal/openvino/libs/openvino_intel_npu",
     ]
-    try:
-        with zipfile.ZipFile(zip_path) as z:
-            names = {n.replace("\\", "/") for n in z.namelist()}
-    except Exception as exc:
-        return [f"无法读取 ZIP：{type(exc).__name__}: {exc}"]
     errs = [f"缺少 {n}" for n in must if n not in names]
     errs += [f"不应包含 {n}" for n in sorted(names)
              if any(n.startswith(p) for p in banned_prefix)]

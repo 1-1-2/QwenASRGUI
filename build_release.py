@@ -504,11 +504,14 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None,
     zip_path = ROOT / "release_pkg" / f"{zip_name}.zip"
     if zip_path.exists():
         zip_path.unlink()
+    # ZIP 内的根目录名带上版本：用户同时留着 full / noffmpeg 两个包解压到
+    # 同一处时不会互相覆盖（两个包的内层目录原本完全同名）。
+    arc_root = f"{APP_NAME}_{version}_windows-x64" + (f"-{variant}" if variant else "")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED,
                          compresslevel=6) as z:
         for p in sorted(stage.rglob("*")):
             if p.is_file():
-                z.write(p, Path(APP_NAME) / p.relative_to(stage))
+                z.write(p, Path(arc_root) / p.relative_to(stage))
     return zip_path
 
 

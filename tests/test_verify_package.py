@@ -110,6 +110,9 @@ ZIP_MUST = [
 ]
 
 
+ZIP_ROOT = "QwenASR-WebView_test_windows-x64"      # 与 build_release 的命名规则一致
+
+
 def write_zip(zip_path: Path, stage: Path, skip=(), extra=()) -> Path:
     """按真实发行包的布局写一个最小 ZIP（跳过 / 追加指定条目用于反例）。"""
     import zipfile

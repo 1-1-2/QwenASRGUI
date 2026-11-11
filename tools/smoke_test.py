@@ -37,26 +37,28 @@ import zipfile
 from pathlib import Path
 
 EXE_NAME = "QwenASR-WebView.exe"
-APP_DIR_NAME = "QwenASR-WebView"
+APP_DIR_NAME = "QwenASR-WebView"      # 期望的包根目录名（找不到就在整棵树里搜）
 LOG_DIR_NAME = "聲音辨識小工具"        # 与 app_webview.APP_NAME 一致
 
 # 缺一个就说明这个包不可用（不是「可能会坏」，是「一定坏」）
-REQUIRED = [
-    f"{APP_DIR_NAME}/{EXE_NAME}",
-    f"{APP_DIR_NAME}/manifest.json",
-    f"{APP_DIR_NAME}/_internal/ui_text.py",
-    f"{APP_DIR_NAME}/_internal/webview_backend.py",
-    f"{APP_DIR_NAME}/_internal/webview_server.py",
-    f"{APP_DIR_NAME}/_internal/cluster_core.py",
-    f"{APP_DIR_NAME}/_internal/openvino/libs/openvino.dll",
-    f"{APP_DIR_NAME}/_internal/openvino/libs/openvino_intel_cpu_plugin.dll",
+# 必需条目 —— 按「文件名 + 相对 _internal 的路径」断言，不写死包根目录名
+# （实测包根是 QwenASR-WebView_2.0.0-longform.xxx_windows-x64/，不是 APP_NAME）
+REQUIRED_INTERNAL = [
+    "ui_text.py",
+    "webview_backend.py",
+    "webview_server.py",
+    "cluster_core.py",
+    "openvino/libs/openvino.dll",
+    "openvino/libs/openvino_intel_cpu_plugin.dll",
 ]
+REQUIRED_TOP = ["manifest.json"]
+
 # 出现即说明瘦身没生效（白送体积，不是功能问题，但也别发出去）
-FORBIDDEN_PREFIX = [
-    f"{APP_DIR_NAME}/_internal/scipy/",
-    f"{APP_DIR_NAME}/_internal/scipy.libs/",
-    f"{APP_DIR_NAME}/_internal/openvino/libs/openvino_intel_gpu",
-    f"{APP_DIR_NAME}/_internal/openvino/libs/openvino_intel_npu",
+FORBIDDEN_INTERNAL_PREFIX = [
+    "scipy/",
+    "scipy.libs/",
+    "openvino/libs/openvino_intel_gpu",
+    "openvino/libs/openvino_intel_npu",
 ]
 
 
@@ -141,15 +143,31 @@ def main() -> int:
     print(f"  解压 {len(names)} 个条目，用时 {time.time() - t0:.1f}s")
 
     name_set = {n.replace("\\", "/") for n in names}
-    missing = [r for r in REQUIRED if r not in name_set]
-    c.check("必需文件齐全", not missing, ", ".join(Path(m).name for m in missing[:5]))
-    bad = [n for n in name_set if any(n.startswith(p) for p in FORBIDDEN_PREFIX)]
+    # 包根目录：唯一含 .exe 的那一层
+    roots = {n.split("/")[0] for n in name_set if n.lower().endswith("/" + EXE_NAME.lower())}
+    root = sorted(roots)[0] if roots else APP_DIR_NAME
+    c.check("包根目录唯一", len(roots) == 1, str(sorted(roots)))
+    internal_prefix = f"{root}/_internal/"
+    missing = [r for r in REQUIRED_INTERNAL if internal_prefix + r not in name_set]
+    missing += [f"{root}/{r}" for r in REQUIRED_TOP if f"{root}/{r}" not in name_set]
+    c.check("必需文件齐全", not missing, ", ".join(missing[:5]))
+    bad = [n for n in name_set
+           if n.startswith(internal_prefix)
+           and any(n[len(internal_prefix):].startswith(p) for p in FORBIDDEN_INTERNAL_PREFIX)]
     c.check("无 SciPy / GPU / NPU 残留", not bad, ", ".join(sorted(bad)[:3]))
 
-    exe = work / EXE_NAME / EXE_NAME
+    # 包根目录名不写死：它随版本变（实测是 ..._windows-x64/），先按名字找，
+    # 找不到就在整棵树里搜唯一的 exe。
+    exe = work / root / EXE_NAME
     if not exe.is_file():
-        print(f"错误：解压后找不到 {exe}")
-        return 1
+        found = sorted(work.rglob(EXE_NAME))
+        if len(found) == 1:
+            exe = found[0]
+        else:
+            print(f"错误：解压后找不到唯一的 {EXE_NAME}")
+            return 1
+    print(f"  启动器：{exe.relative_to(work)}")
+    exe_dir = exe.parent
 
     # ── 2) --selftest（无窗口，能捕获导入期错误）──────────────────────────
     logs = log_dir()
@@ -163,7 +181,7 @@ def main() -> int:
 
     print("\n  [1/3] --selftest")
     try:
-        r = subprocess.run([str(exe), "--selftest"], cwd=str(work / EXE_NAME),
+        r = subprocess.run([str(exe), "--selftest"], cwd=str(exe_dir),
                            capture_output=True, text=True, timeout=180)
         code = r.returncode
     except subprocess.TimeoutExpired:
@@ -195,7 +213,7 @@ def main() -> int:
         except OSError:
             pass
 
-    proc = subprocess.Popen([str(exe)], cwd=str(work / EXE_NAME))
+    proc = subprocess.Popen([str(exe)], cwd=str(exe_dir))
     url_ok = False
     deadline = time.time() + args.wait
     while time.time() < deadline:
