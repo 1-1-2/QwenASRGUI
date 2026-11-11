@@ -123,12 +123,24 @@ def main() -> int:
             "QWENASR_WEBVIEW_BUILD" in build_src)
 
     app_src = (ROOT / "app.py").read_text(encoding="utf-8")
-    head = app_src.split("_WEBVIEW_BUILD = os.environ")[0]
+    # 以 GUI 守卫块为界：界外的顶层 import 才是问题。
+    # （这里曾经按 `_WEBVIEW_BUILD = os.environ` 这个字面量切分 —— 一旦赋值语句
+    #   写法变了就切不到，head 变成整个文件，于是把守卫块里的 import 当成顶层
+    #   import 报假红。切分标记要挑「语义上稳定」的那一行，不是实现细节。）
+    marker = "\nif not _WEBVIEW_BUILD:"
+    head = app_src.split(marker)[0] if marker in app_src else app_src
+    r.check("app.py 有 GUI 守卫块 if not _WEBVIEW_BUILD:", marker.strip() in app_src)
     r.check("no top-level tkinter import in app.py",
             not any(ln.strip() in ("import tkinter as tk",)
                     for ln in head.splitlines()))
     r.check("no top-level customtkinter import in app.py",
             "import customtkinter as ctk" not in head)
+
+    # 守卫的**判据**必须有一条运行期来源。只用构建期的环境变量会让 exe 在用户
+    # 机器上翻转成 False（exe 里没有那个变量）→ import tkinter → 启动即崩。
+    r.check("_WEBVIEW_BUILD 的判据包含 sys.frozen（运行期）",
+            '"frozen"' in app_src.split("def _is_webview_build")[-1][:400]
+            or "getattr(sys, \"frozen\"" in app_src.split("def _is_webview_build")[-1][:400])
 
     # Release packaging must keep excluding the .NET window stack, and now the
     # Tk stack too: tkinter cannot be excluded via --exclude-module alone when a
