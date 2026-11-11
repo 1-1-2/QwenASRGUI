@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import ast
 import importlib
+import os
+import json
 import sys
 import tempfile
 import types
@@ -91,6 +93,7 @@ def _stub_deps():
             app_dir=lambda: ROOT,
             resource_path=lambda *a: ROOT.joinpath(*a),
             is_frozen=lambda: True,
+            resource_root=lambda: ROOT,
         )
 
 
@@ -246,6 +249,41 @@ def main() -> int:
             sys.modules["webview_server"] = saved_mod
         else:
             sys.modules.pop("webview_server", None)
+
+    # ── 7) 启动进度不能写 stdout（CLI 契约），且要留下 selftest.json ────────
+    with tempfile.TemporaryDirectory() as td:
+        os_environ = os.environ.copy()
+        os.environ["LOCALAPPDATA"] = td
+        import io as _io
+        try:
+            sys.modules.pop("app_webview", None)
+            fresh = importlib.import_module("app_webview")
+            out, err = _io.StringIO(), _io.StringIO()
+            saved_o, saved_e = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = out, err
+            try:
+                fresh._selftest()
+            finally:
+                sys.stdout, sys.stderr = saved_o, saved_e
+            r.check("selftest 只往 stderr 写", out.getvalue().strip() == "",
+                    out.getvalue()[:80])
+            r.check("selftest 进度落在 stderr", '{"ok"' in err.getvalue())
+            result_file = Path(td) / fresh.APP_NAME / "selftest.json"
+            if not result_file.is_file():          # 日志替身未重算目录时兜底
+                result_file = Path(td) / "selftest.json"
+            if not result_file.is_file():
+                found = list(Path(td).rglob("selftest.json"))
+                result_file = found[0] if found else result_file
+            r.check("selftest.json 已写出（供冒烟测试读取）", result_file.is_file(),
+                    str(result_file))
+            if result_file.is_file():
+                data = json.loads(result_file.read_text(encoding="utf-8"))
+                r.check("selftest.json 内容可解析", data.get("version") is not None,
+                        str(list(data)[:4]))
+        finally:
+            os.environ.clear()
+            os.environ.update(os_environ)
+            sys.modules.pop("app_webview", None)
 
     passed = sum(r.items)
     print(f"\n结果：{passed}/{len(r.items)} 项通过")

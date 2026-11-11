@@ -195,7 +195,7 @@ HIDDEN_IMPORTS = [
     # 这两处一改，69 MB 的 scipy/ + scipy.libs/ 就彻底不必进包了。
     "cluster_core",
     "crisp_engine", "subtitle_lines", "cli_mode", "version", "updater",
-    "fa_aligner", "api_server", "endpoint_tab", "segno", "cf_tunnel",
+    "fa_aligner", "api_server", "segno", "cf_tunnel",
     "proc_guard", "diarize", "audio_io", "processor_numpy", "downloader",
     "ffmpeg_utils", "model_catalog", "longform_runner", "app_paths",
     "batch_queue", "single_instance", "run_log", "subtitle_extras",
@@ -224,6 +224,13 @@ EXCLUDE_MODULES = [
     # if anything ever imports tkinter again, the build fails loudly instead of
     # silently adding ~20 MB of tcl/tk to every download.
     "tkinter", "_tkinter", "customtkinter", "darkdetect",
+    # 这三个是 Tk 界面专用分页（endpoint_tab 在模块顶层 import tkinter /
+    # customtkinter）。它们过去靠 HIDDEN_IMPORTS 被强行收进来，结果把 tkinter
+    # 一起拖进包 —— 而 tkinter 又被上面排除掉，于是打包版一启动就死在
+    #   RuntimeError: 无法载入核心模块：No module named 'tkinter'
+    # （2026-11-11 由 tools/smoke_test.py 的整包冒烟测试抓到）。
+    # WebView 版不需要它们：端点功能已抽出为 cf_tunnel / api_server。
+    "endpoint_tab", "setting", "subtitle_editor", "batch_tab", "model_tab",
 ]
 
 

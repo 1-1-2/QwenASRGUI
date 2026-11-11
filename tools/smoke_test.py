@@ -181,29 +181,33 @@ def main() -> int:
 
     print("\n  [1/3] --selftest")
     try:
-        r = subprocess.run([str(exe), "--selftest"], cwd=str(exe_dir),
-                           capture_output=True, text=True, timeout=180)
-        code = r.returncode
+        (logs / "selftest.json").unlink()
+    except OSError:
+        pass
+    # windowed exe 没有控制台：stdout/stderr 都被启动器换成日志替身，
+    # 且启动器关窗走 os._exit，等待管道会挂死 —— 所以固定超时，结果看文件。
+    try:
+        code = subprocess.run([str(exe), "--selftest"], cwd=str(exe_dir),
+                              timeout=120).returncode
     except subprocess.TimeoutExpired:
         code = -1
-    # windowed 版没有控制台，stdout 会被替换成日志替身 —— JSON 去日志里找
-    text = read_log(launch_log)
+    result_file = logs / "selftest.json"
     m = None
-    for line in text.splitlines():
-        if line.strip().startswith('{"ok"'):
-            try:
-                m = json.loads(line.strip())
-            except Exception:
-                pass
+    try:
+        m = json.loads(result_file.read_text(encoding="utf-8"))
+    except Exception:
+        m = None
+    text = read_log(launch_log)
     if not c.check("selftest 退出码为 0", code == 0, f"code={code}"):
         print(tail(text))
         return 1
-    c.check("selftest 输出可解析的 JSON", bool(m))
-    if m:
-        c.check("selftest ok=true", m.get("ok") is True, str(m.get("ok")))
-        # server=skipped 就是本次崩溃的形态：GUI 依赖没进包
-        c.check("server 已实测（非 skipped）", m.get("server") == "measured",
-                str(m.get("serverSkipReason") or m.get("server")))
+    if not c.check("selftest 写出了结果文件", m is not None, str(result_file)):
+        print(tail(text))
+        return 1
+    c.check("selftest ok=true", m.get("ok") is True, str(m.get("ok")))
+    # server=skipped 是「GUI 依赖没进包」的形态，正是 2026-11-11 那次崩溃
+    c.check("server 已实测（非 skipped）", m.get("server") == "measured",
+            str(m.get("serverSkipReason") or m.get("server")))
 
     # ── 3) 真正启动一次 GUI ───────────────────────────────────────────────
     print("\n  [2/3] 启动 GUI")
@@ -232,6 +236,11 @@ def main() -> int:
     c.check("已绑定本地端口并打印地址", url_ok, "" if url_ok else f"等待 {args.wait:.0f}s 未出现")
     c.check("未产生 crash.log", not crash_log.exists(),
             read_log(crash_log)[:300] if crash_log.exists() else "")
+    # 缺 tkinter 等可选 GUI 依赖时，代码里可能有 messagebox 弹窗 —— CI 的
+    # runner 是无交互桌面，弹窗会直接卡死。日志里出现弹窗痕迹就判失败。
+    c.check("启动过程没有报缺模块",
+            "No module named" not in text,
+            next((ln for ln in text.splitlines() if "No module named" in ln), "")[:160])
 
     # 再多等两秒：有些崩溃发生在窗口创建之后
     if alive:

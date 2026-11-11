@@ -167,12 +167,20 @@ def main() -> int:
         selftest = subprocess.run([sys.executable, "app_webview.py", "--selftest"],
                                   cwd=ROOT, capture_output=True, text=True, timeout=30)
         r.check("selftest runs headless", selftest.returncode == 0, selftest.stderr[:100])
-        try:
-            payload = json.loads(selftest.stdout.strip())
-            r.check("selftest emits clean JSON", payload.get("ok") is True and
-                    "version" in payload, selftest.stdout[:100])
-        except ValueError:
-            r.check("selftest emits clean JSON", False, selftest.stdout[:100])
+        # 启动器的进度与 JSON 都走 stderr（stdout 留给 CLI 模式的数据输出），
+        # 所以「干净 JSON」= stderr 里恰好有一行可解析的 JSON。
+        payload = None
+        for line in selftest.stderr.splitlines():
+            if line.strip().startswith('{"ok"'):
+                try:
+                    payload = json.loads(line.strip())
+                except ValueError:
+                    payload = None
+        r.check("selftest emits clean JSON",
+                payload is not None and payload.get("ok") is True
+                and "version" in payload, selftest.stderr.strip()[-160:])
+        r.check("selftest 不往 stdout 写杂讯", selftest.stdout.strip() == "",
+                selftest.stdout[:100])
         br = (ROOT / "build_release.py").read_text(encoding="utf-8")
         vp = (ROOT / "tools/verify_package.py").read_text(encoding="utf-8")
         r.check("build generates a manifest before zipping",

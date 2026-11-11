@@ -129,6 +129,18 @@ class _NullSafeStream:
         return getattr(self._real, name)
 
 
+def _log(msg: str):
+    """启动期进度一律走 stderr（已由 hush_stdio 换成日志替身）。
+
+    不用 stdout：--selftest 的 stdout 是契约 JSON，任何杂讯都会让它解析失败；
+    而 CLI 模式又把 stdout 当机器可读输出。启动器的进度信息只属于人看。
+    """
+    try:
+        print(msg, file=sys.stderr)
+    except Exception:
+        pass
+
+
 def _log_dir() -> Path | None:
     """啟動器日誌目錄：%LOCALAPPDATA%\\<APP_NAME>（非 Windows 用家目錄）。"""
     try:
@@ -446,7 +458,7 @@ def run_native_window(url: str) -> bool:
         webview.start()            # 阻塞至視窗關閉（在主執行緒）
         return True
     except Exception as e:
-        print(f"[{APP_NAME}] 原生視窗失敗，改用 Edge：{e}")
+        _log(f"[{APP_NAME}] 原生視窗失敗，改用 Edge：{e}")
         return False
 
 
@@ -532,6 +544,24 @@ def _cli_argv() -> list[str] | None:
     return None
 
 
+def _write_selftest_result(result: dict):
+    """把 selftest 结果写成文件。
+
+    为什么需要：--windowed 的 exe 没有控制台，stdout 被换成日志替身，外部
+    脚本（tools/smoke_test.py、CI）只能「等日志里出现某一行」——既不可靠也
+    容易误判。写一个结果文件，跑完就一定看得见。
+    """
+    d = _log_dir()
+    if d is None:
+        return
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "selftest.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _selftest() -> int:
     """G6: cold-start benchmark for the onedir layout.
 
@@ -567,7 +597,8 @@ def _selftest() -> int:
         # 冒烟测试会把「缺 ui_text.py 的包」判为通过。
         if app_paths.is_frozen():
             result["ok"] = False
-        print(json.dumps(result, ensure_ascii=False))
+        _log(json.dumps(result, ensure_ascii=False))
+        _write_selftest_result(result)
         return 0 if result["ok"] else 1
 
     import urllib.request
@@ -587,7 +618,8 @@ def _selftest() -> int:
     result["constructMs"] = round((t2 - t1) * 1000, 2)
     result["serverStartMs"] = round((t3 - t2) * 1000, 2)
     srv.stop()
-    print(json.dumps(result, ensure_ascii=False))
+    _log(json.dumps(result, ensure_ascii=False))
+    _write_selftest_result(result)
     return 0 if result["ok"] else 1
 
 
@@ -619,10 +651,10 @@ def main():
     owned, existing_url = guard.acquire()
     if not owned:
         if existing_url:
-            print(f"[{APP_NAME}] 已有執行中的執行個體，導向現有視窗：{existing_url}")
+            _log(f"[{APP_NAME}] 已有執行中的執行個體，導向現有視窗：{existing_url}")
             webbrowser.open(existing_url)
         else:
-            print(f"[{APP_NAME}] 已有執行中的執行個體（未取得視窗網址），本次啟動結束。")
+            _log(f"[{APP_NAME}] 已有執行中的執行個體（未取得視窗網址），本次啟動結束。")
         return 0
 
     # 匯入期兜底（見檔案上方 try/except）：缺模組時 WebViewServer 是 None，
@@ -652,11 +684,11 @@ def main():
         if srv.backend.selected_model_present():
             srv.backend.start_load()
         else:
-            print(f"[{APP_NAME}] 選擇的模型尚未下載 → 等使用者於模型頁確認後再下載。")
+            _log(f"[{APP_NAME}] 選擇的模型尚未下載 → 等使用者於模型頁確認後再下載。")
     except Exception:
         srv.backend.start_load()                     # 保底：判斷失敗仍嘗試載入
     url = srv.url
-    print(f"[{APP_NAME}] {url}")
+    _log(f"[{APP_NAME}] {url}")
 
     # Default: Edge --app. No .NET / pythonnet / WebView2 SDK is touched, so a
     # MOTW-marked DLL can never break startup. The native window is opt-in for
@@ -667,7 +699,7 @@ def main():
     if native_requested and webview2_available():
         native_ok = run_native_window(url)
         if not native_ok:
-            print(f"[{APP_NAME}] Native window unavailable, using Edge --app.")
+            _log(f"[{APP_NAME}] Native window unavailable, using Edge --app.")
     try:
         if not native_ok:
             proc = open_edge_app(url)
