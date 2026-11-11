@@ -49,6 +49,10 @@ LIBS = {
     "cache.json": 8_800_000,
     "openvino_tensorflow_frontend.dll": 4_100_000,
     "openvino_intel_npu_plugin.dll": 4_000_000,
+    # 2026.x wheel 新增：npu_compiler 单个 96 MB，比 CPU 插件还大；
+    # 旧规则只写 *intel_npu_plugin* 会把它整个漏掉。
+    "openvino_intel_npu_compiler.dll": 96_000_000,
+    "openvino_gguf_frontend.dll": 1_300_000,
     "openvino_onnx_frontend.dll": 4_000_000,
     "openvino_pytorch_frontend.dll": 2_600_000,
     "openvino_paddle_frontend.dll": 1_500_000,
@@ -109,6 +113,7 @@ def main() -> int:
             r.check(f"kept {must}", must in left)
 
         for gone in ("openvino_intel_gpu_plugin.dll", "openvino_intel_npu_plugin.dll",
+                     "openvino_intel_npu_compiler.dll", "openvino_gguf_frontend.dll",
                      "openvino_tensorflow_frontend.dll", "openvino_onnx_frontend.dll",
                      "openvino_pytorch_frontend.dll", "openvino.lib", "cache.json"):
             r.check(f"removed {gone}", gone not in left)

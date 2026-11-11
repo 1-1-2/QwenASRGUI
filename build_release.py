@@ -110,10 +110,13 @@ COLLECT_DATA = ["certifi"]
 #   2) 保留清单在这里集中声明，便于审阅；
 #   3) tools/verify_package.py 会断言 CPU 插件存在、GPU/NPU 插件不存在；
 #   4) 提供 --no-slim 一键回退到完整体积。
+# 注意 "*intel_npu_*" 不能只写 "*intel_npu_plugin*"：2026.x 的 wheel 里
+# openvino_intel_npu_compiler.dll 单个就 96 MB，比整个 CPU 插件还大。
 OPENVINO_DROP_PATTERNS = [
-    "*intel_gpu_plugin*", "*intel_npu_plugin*",
+    "*intel_gpu_*", "*intel_npu_*",
     "*tensorflow_frontend*", "*onnx_frontend*", "*pytorch_frontend*",
     "*paddle_frontend*", "*tensorflow_lite_frontend*", "*jax_frontend*",
+    "*gguf_frontend*",
     "*.lib", "*.pdb", "cache.json",
 ]
 OPENVINO_MUST_KEEP = [
