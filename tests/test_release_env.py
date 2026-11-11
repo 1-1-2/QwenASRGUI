@@ -43,24 +43,52 @@ PROBE = textwrap.dedent('''
     from importlib.abc import MetaPathFinder
 
     BLOCKED = {blocked!r}
+    LOCAL = {local!r}          # 项目自己的模块：缺了就是包打坏了
+    SIMULATE_MISSING = {simulate_missing!r}   # 假装宿主没装（验证分类逻辑）
 
     class Blocker(MetaPathFinder):
         def find_spec(self, name, path=None, target=None):
-            if name.split(".")[0] in BLOCKED:
+            top = name.split(".")[0]
+            if top in BLOCKED:
                 raise ImportError("%s blocked (release env)" % name)
+            if top in SIMULATE_MISSING:
+                # 与「装上没装」一模一样的表现：ModuleNotFoundError + .name
+                raise ModuleNotFoundError(
+                    "No module named %r" % top, name=top)
             return None
 
     sys.meta_path.insert(0, Blocker())
     sys.frozen = True                             # 与 exe 一致
     os.environ.pop("QWENASR_WEBVIEW_BUILD", None) # exe 运行时不存在
 
-    failed = []
+    def classify(exc):
+        """把「宿主没装某个三方包」与「发行包里缺模块」区分开。
+
+        轻量 CI 只装 numpy，没有 onnxruntime / openvino —— diarize 这类模块在
+        那里必然 import 失败，但这跟「打包版起不来」是两回事，不该判红。发行
+        构建的环境是装齐了的。
+        真正要抓的是另一种：模块缺的是**项目自己的文件**（打漏了），或者是被
+        刻意排除的 tkinter（发行包不带它，任何一处漏 import 都会让 exe 崩）。
+        """
+        msg = str(exc)
+        if "blocked (release env)" in msg:
+            return "fail"                          # 触碰了发行包刻意排除的库
+        if isinstance(exc, ModuleNotFoundError):
+            missing = (getattr(exc, "name", "") or "").split(".")[0]
+            if missing in LOCAL:
+                return "fail"                      # 项目模块没进包 → exe 必崩
+            return "skip"                          # 宿主没装三方依赖
+        return "fail"
+
+    failed, skipped = [], []
     for mod in {mods!r}:
         try:
             __import__(mod)
         except Exception as exc:
-            failed.append((mod, type(exc).__name__, str(exc)))
+            (failed if classify(exc) == "fail" else skipped).append(
+                (mod, type(exc).__name__, str(exc)))
     print("FAILEDJSON" + repr(failed))
+    print("SKIPPEDJSON" + repr(skipped))
 ''')
 
 # 启动器（含 GUI 进程）实际需要导入的模块；ffmpeg_utils / api_server / audio_io
@@ -179,8 +207,11 @@ def _run_frozen_probe() -> dict[str, str]:
     return out
 
 
-def run_probe(mods: list[str]) -> tuple[list, str]:
-    code = PROBE.format(blocked=BLOCKED, mods=mods)
+def run_probe(mods: list[str], simulate_missing: tuple[str, ...] = ()
+              ) -> tuple[list, list, str]:
+    """返回 (真失败, 宿主缺依赖导致的跳过, 原始输出)。"""
+    code = PROBE.format(blocked=BLOCKED, local=sorted(LOCAL_MODULES),
+                        simulate_missing=list(simulate_missing), mods=mods)
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT)
     # 刻意不设 QWENASR_WEBVIEW_BUILD：exe 运行时没有它（见 PROBE 的注释）。
@@ -188,11 +219,13 @@ def run_probe(mods: list[str]) -> tuple[list, str]:
     env.pop("PYTHONHOME", None)
     p = subprocess.run([sys.executable, "-c", code], cwd=str(ROOT),
                        capture_output=True, text=True, timeout=300, env=env)
-    failed = []
+    failed, skipped = [], []
     for line in p.stdout.splitlines():
         if line.startswith("FAILEDJSON"):
             failed = eval(line[len("FAILEDJSON"):])      # 只解析自己打印的字面量
-    return failed, (p.stdout + p.stderr)[-1200:]
+        elif line.startswith("SKIPPEDJSON"):
+            skipped = eval(line[len("SKIPPEDJSON"):])
+    return failed, skipped, (p.stdout + p.stderr)[-1200:]
 
 
 def main() -> int:
@@ -202,10 +235,16 @@ def main() -> int:
     # 1) 核心链必须全通（这就是「打包版能不能起来」的等价条件）
     core = [m for m in CHAIN if not m.endswith("_tab") and m != "subtitle_editor"
             and m != "setting"]
-    failed, log = run_probe(core)
+    failed, skipped, log = run_probe(core)
     r.check("探针本身跑通了", "FAILEDJSON" in log or not failed, log[-200:])
     r.check("核心依赖链全部可导入", not failed,
             "; ".join(f"{m}: {e}" for m, _, e in failed[:3]))
+    # 宿主没装的三方依赖不算失败，但要说清楚跳过了谁 —— 否则「全绿」可能只是
+    # 因为没测到。发行构建的机器装齐了这些，那里的同一份检查才是完整覆盖。
+    if skipped:
+        print("        （宿主缺依赖、未参与判定："
+              + ", ".join(f"{m}→{e.split(chr(39))[1] if chr(39) in e else e}"
+                          for m, _, e in skipped[:6]) + "）")
 
     # 2) 明确断言：这条链里不许有人顶层 import tkinter
     if not failed:
@@ -227,10 +266,19 @@ def main() -> int:
 
     # 3) Tk 专用分页：允许失败，但必须给出「不拖累核心」的结论
     tk_only = ["endpoint_tab", "model_tab", "batch_tab", "subtitle_editor", "setting"]
-    tk_failed, _ = run_probe(tk_only)
+    tk_failed, tk_skipped, _ = run_probe(tk_only)
     r.check("Tk 专用分页在发行环境里确实不可导入（它们不该进包）",
-            len(tk_failed) == len(tk_only),
+            len(tk_failed) + len(tk_skipped) == len(tk_only),
             f"{len(tk_failed)}/{len(tk_only)} 失败（预期）")
+
+    # 3b) 分类逻辑本身要有反例，否则「跳过」会变成「什么都跳过」的橡皮章：
+    #     宿主缺三方包 → 跳过；项目自己的模块没进包 → 失败。
+    f_skip, s_skip, _ = run_probe(["diarize"], simulate_missing=("onnxruntime",))
+    r.check("宿主缺三方依赖 → 判为跳过", not f_skip and len(s_skip) == 1,
+            f"failed={f_skip} skipped={s_skip}")
+    f_loc, _, _ = run_probe(["webview_backend"], simulate_missing=("ui_text",))
+    r.check("项目内模块缺失 → 判为失败（不是跳过）", len(f_loc) == 1,
+            f"failed={f_loc}")
 
     # 4) 源码守卫：不允许再出现 ffmpeg_utils 那种顶层 customtkinter
     offenders = []
