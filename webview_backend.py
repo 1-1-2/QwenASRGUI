@@ -1059,17 +1059,26 @@ class WebBackend:
                     "status": f"切分預檢：只分析前 {PREVIEW_MINUTES} 分鐘（不跑辨識）"})
         cb = progress_cb or (lambda pct, status: self._emit(
             "progress", {"pct": pct, "status": status}))
-        out = _vp(
-            audio_path=Path(path),
-            vad_sess=getattr(self.engine, "vad_sess", None),
-            ffmpeg=_ff,
-            threshold=threshold,
-            max_chunk_secs=effective,
-            minutes=int((opts or {}).get("minutes", PREVIEW_MINUTES) or
-                        PREVIEW_MINUTES),
-            progress_cb=cb,
-            cancel=self._cancel_event,
-        )
+        try:
+            out = _vp(
+                audio_path=Path(path),
+                vad_sess=getattr(self.engine, "vad_sess", None),
+                ffmpeg=_ff,
+                threshold=threshold,
+                max_chunk_secs=effective,
+                minutes=int((opts or {}).get("minutes", PREVIEW_MINUTES) or
+                            PREVIEW_MINUTES),
+                progress_cb=cb,
+                cancel=self._cancel_event,
+            )
+        except PermissionError as e:
+            # Windows 上杀软扫描 %TEMP% 会锁定上传的临时文件，ffmpeg 读它时
+            # 撞上 WinError 5。这里翻译成人话，否则前端只显示「拒绝访问」。
+            raise RuntimeError(
+                f"无法读取音频文件：{e}\n"
+                "这是杀毒软件（Windows Defender 等）正在扫描文件导致的。\n"
+                "请稍等几秒后重试，或将文件所在目录加入杀毒软件白名单。"
+            ) from e
         out["effectiveChunkSecs"] = effective
         out["modelCeilingSecs"] = ceiling
         self._emit("vad-preview", out)

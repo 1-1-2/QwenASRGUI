@@ -307,6 +307,15 @@ class WebViewServer:
                         return self._json({"ok": True, "removed":
                                            server.batch_queue.clear_finished()})
                     return self._err(404, "unknown api")
+                except PermissionError as e:
+                    # Windows Defender / 杀软扫描文件时会锁定它，导致 ffmpeg 或
+                    # Python 的 open() 撞上 WinError 5。str(e) 只有「拒绝访问」，
+                    # 这里补上用户能理解的上下文。
+                    return self._err(500, (
+                        f"文件访问被拒绝：{e}\n"
+                        "这是杀毒软件（Windows Defender 等）正在扫描文件导致的。\n"
+                        "请稍等几秒后重试，或将文件所在目录加入杀毒软件白名单。"
+                    ))
                 except Exception as e:
                     return self._err(500, str(e))
 
@@ -398,7 +407,33 @@ class WebViewServer:
                 tmp_dir = Path(tempfile.mkdtemp(prefix="asr_web_"))
                 ext = Path(filename).suffix or ".wav"
                 in_path = tmp_dir / ("upload" + ext)
-                in_path.write_bytes(data)
+                try:
+                    in_path.write_bytes(data)
+                except PermissionError as e:
+                    # Windows Defender / 杀软扫描 %TEMP% 时会锁定新建的文件，
+                    # write_bytes 撞上 WinError 5。这里必须说清楚是临时目录的
+                    # 问题，否则前端只显示「[WinError 5] 拒绝访问」，用户以为
+                    # 是原始文件的问题。
+                    try:
+                        import shutil as _sh
+                        _sh.rmtree(tmp_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+                    return None, None, self._err(500, (
+                        f"无法写入临时文件（{tmp_dir}）：{e}\n"
+                        "这是杀毒软件（Windows Defender 等）正在扫描 %TEMP% 导致的。\n"
+                        "请稍等几秒后重试，或将 %TEMP% 目录加入杀毒软件白名单。"
+                    ))
+                except OSError as e:
+                    try:
+                        import shutil as _sh
+                        _sh.rmtree(tmp_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+                    return None, None, self._err(500, (
+                        f"无法写入临时文件（{tmp_dir}）：{e}\n"
+                        "请检查磁盘空间是否充足，或 %TEMP% 目录是否有写入权限。"
+                    ))
                 opts = {
                     "path": str(in_path),
                     "name": filename,
