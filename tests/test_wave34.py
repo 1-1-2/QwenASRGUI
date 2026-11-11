@@ -138,6 +138,12 @@ def main() -> int:
     r.check("readme documents download center", "下载中心" in txt and "aria2c" in txt)
     r.check("readme points updates at fork", "1-1-2/QwenASRGUI" in txt)
     r.check("readme states 5-minute trial", "前 5 分钟" in txt)
+    # Wave 7.2: 使用者问「日志在哪」，才发现日志位置只写在代码注释里。
+    r.check("readme points at launcher.log", "launcher.log" in txt and
+            "LOCALAPPDATA" in txt)
+    r.check("readme explains edge-profile is isolated", "edge-profile" in txt)
+    r.check("readme distinguishes subtitles\ from browser downloads",
+            "正式字幕输出目录" in txt and "下载" in txt)
 
     print("\n[Wave 4 / B7] update source points at this fork")
     import version as ver

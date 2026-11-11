@@ -350,11 +350,21 @@ INT8 权重单份就有 1.2~4.4GB，内嵌会让安装包变成数 GB，且不�
   _internal\\             程序本体、依赖库与前端资源（请勿删除或单独移动）
   ffmpeg\\                可选，随附的 ffmpeg.exe
   ov_models\\             模型权重目录（首次启动时自动填充）
-  subtitles\\             字幕输出目录
-  longform_state\\        长音频断点与逐段记录（运行时生成）
+  subtitles\\             正式字幕输出目录（每次识别完成自动写入）
+  longform_state\\        长音频断点、逐段记录与批量上传中转（运行时生成）
   settings.json          设置（运行时生成）
   build_manifest.json    本包的构建清单与依赖版本
   使用说明.txt           本文件
+
+  说明：「字幕存档」按钮是另外导出一份到浏览器的下载目录（通常是 下载\\），
+  不影响 subtitles\\ 里的正式文件。
+
+【出问题了看哪里】
+启动器日志：%LOCALAPPDATA%\\QwenASR-WebView\\launcher.log
+  把这段路径粘到资源管理器地址栏即可打开。启动失败、闪退、窗口打不开时
+  会写在这里（单文件上限 1MB，超了自动重建）。
+Edge 的窗口配置在同目录的 edge-profile\\，与日常 Edge 完全隔离；
+  删掉它只会重置窗口状态，不影响任何数据。
 
 【为什么是文件夹而不是单个 EXE】
 单文件版每次启动都要把约 200MB 解压到临时目录，更新时也要整包替换。
@@ -430,6 +440,7 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None,
             "失败": slim_report["失败"],
             "跳过原因": slim_report["跳过原因"],
         },
+        "体积构成": size_breakdown(internal),
         "随附 Python 源码": py_sources(),
         "静态资源": [src for src, _ in STATIC_DATA],
         "依赖版本": dep_versions(),
@@ -452,6 +463,38 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None,
             if p.is_file():
                 z.write(p, Path(APP_NAME) / p.relative_to(stage))
     return zip_path
+
+
+def size_breakdown(internal: Path, top: int = 14) -> list[dict]:
+    """把 _internal/ 拆成「谁占了体积」，供排查「能不能再瘦」时直接看。
+
+    只做统计，不做判断：哪些能删是另一回事（`slim_openvino` 里有白名单保护）。
+    Python 包按顶层目录/模块聚合，其余按文件。
+    """
+    rows: list[tuple[str, int]] = []
+    if not internal.is_dir():
+        return []
+    for item in internal.iterdir():
+        try:
+            if item.is_dir():
+                rows.append((item.name + "/", dir_size(item)))
+            elif item.is_file():
+                rows.append((item.name, item.stat().st_size))
+        except OSError:
+            continue
+    rows.sort(key=lambda r: -r[1])
+    total = sum(r[1] for r in rows) or 1
+    out = [{"名称": n, "MB": round(sz / 1048576, 1),
+            "占比": round(sz * 100 / total, 1)} for n, sz in rows[:top]]
+    out.append({"名称": "（其余）", "MB": round((total - sum(r[1] for r in rows[:top])) / 1048576, 1),
+                "占比": round((total - sum(r[1] for r in rows[:top])) * 100 / total, 1)})
+    return out
+
+
+def print_size_breakdown(internal: Path) -> None:
+    print("\n=== _internal 体积构成 ===")
+    for row in size_breakdown(internal):
+        print(f"  {row['MB']:8.1f} MB  {row['占比']:5.1f}%  {row['名称']}")
 
 
 def dir_size(path: Path) -> int:
@@ -555,6 +598,10 @@ def main() -> int:
 
     ff = Path(args.ffmpeg) if args.ffmpeg else None
     zip_path = make_package(args.version, args.sha, ff, slim=not args.no_slim)
+    # 体积构成：只打印，不改任何东西。回答「哪个占大头」靠它，不靠猜。
+    if internal.is_dir():
+        print_size_breakdown(internal)
+
     print(f"\n发行包：{zip_path}")
     print(f"大小：{zip_path.stat().st_size / 1024 / 1024:.1f} MB")
 
