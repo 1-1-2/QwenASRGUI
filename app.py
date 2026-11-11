@@ -1165,7 +1165,21 @@ class RealtimeManager:
 # 因此整段 GUI 放进 `if not _WEBVIEW_BUILD:`。打包 WebView 版时由
 # build_release.py 设 QWENASR_WEBVIEW_BUILD=1，导入 app.py 只执行到推理核心；
 # 直接跑 `python app.py`（Tk 界面）完全不受影响。
-_WEBVIEW_BUILD = os.environ.get("QWENASR_WEBVIEW_BUILD", "") == "1"
+#
+# ⚠ 构建期的环境变量不会跟着 exe 发出去（2026-11-11 的真实崩溃就死在这）：
+#   build_release.py 只是把 QWENASR_WEBVIEW_BUILD=1 传给 PyInstaller 的**分析
+#   子进程**，用于「别把 tkinter 静态收进包」。而 exe 在用户机器上运行时这个
+#   变量根本不存在 → 下面求值为 False → 真的去 import tkinter → 包里没有 →
+#     RuntimeError: 無法載入本程式核心模組（webview_server）：No module named 'tkinter'
+#   判据必须另有运行时来源，且要与「构建期看到的世界」一致：冻结版只有一个入口
+#   （app_webview.py），发行包刻意不带 tkinter/tcl，所以 frozen 就是 WebView 版。
+def _is_webview_build() -> bool:
+    if os.environ.get("QWENASR_WEBVIEW_BUILD", "") == "1":
+        return True
+    return bool(getattr(sys, "frozen", False))
+
+
+_WEBVIEW_BUILD = _is_webview_build()
 
 if not _WEBVIEW_BUILD:
     import tkinter as tk

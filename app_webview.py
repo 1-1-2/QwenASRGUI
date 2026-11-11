@@ -183,6 +183,9 @@ def _install_crash_log():
 
     def _hook(exc_type, exc, tb):
         try:
+            # 带完整链条：只写最后一行会丢掉「真正的元凶」（例如
+            #   webview_backend → ffmpeg_utils → customtkinter → tkinter 缺 tkinter
+            # 的关键信息全在中间那些 from 链里）。
             sys.stderr.write("".join(traceback.format_exception(exc_type, exc, tb)))
             sys.stderr.flush()
         except Exception:

@@ -115,7 +115,13 @@ if hasattr(os, "add_dll_directory") and os.path.isdir(internal):
 # 包内依赖优先，其次是宿主解释器的 stdlib / site-packages
 sys.path.insert(0, host)
 sys.path.insert(1, internal)
-os.environ["QWENASR_WEBVIEW_BUILD"] = "1"
+# 关键：要复刻 exe 的**运行时**条件，而不是构建时的条件。
+# 这里刻意【不设】QWENASR_WEBVIEW_BUILD —— 那个变量只在 PyInstaller 分析
+# 子进程里存在，exe 在用户机器上跑的时候是没有的。设置它会让诊断假绿
+# （2026-11-11 的诊断就是这样连续两轮被糊弄过去）。运行时唯一的判据是
+# sys.frozen。
+sys.frozen = True
+os.environ.pop("QWENASR_WEBVIEW_BUILD", None)
 # 发行包刻意不带的，按「已缺失」处理 —— 与 exe 里的真实情况一致
 for name in ("tkinter", "customtkinter", "darkdetect", "scipy"):
     sys.modules[name] = None

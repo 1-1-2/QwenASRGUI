@@ -27,7 +27,16 @@ ROOT = Path(__file__).resolve().parent.parent
 
 BLOCKED = ("tkinter", "customtkinter", "darkdetect", "scipy")
 
-# 子进程里运行的探针：封掉依赖后，把启动器的依赖链整条 import 一遍
+# 子进程里运行的探针：封掉依赖后，把启动器的依赖链整条 import 一遍。
+#
+# 关键点：探针模拟的是 exe 的**运行时**，不是构建时。
+#   · 必须设 sys.frozen = True —— 这是冻结版唯一可靠的「我是打包版」判据；
+#   · 必须【不设】QWENASR_WEBVIEW_BUILD —— 那个变量只在 PyInstaller 分析
+#     子进程里出现，用户机器上根本没有。
+# 这两条曾经反过来写过（只设环境变量、不设 frozen），于是探针在
+# app.py 的 `if not _WEBVIEW_BUILD:` 处顺利绕过了 tkinter，而真机没有那个
+# 变量 → 直接 import tkinter → 打包版启动即崩。模拟与真实条件不一致，
+# 就会把「必崩」测成「全绿」。
 PROBE = textwrap.dedent('''
     import os
     import sys
@@ -42,7 +51,8 @@ PROBE = textwrap.dedent('''
             return None
 
     sys.meta_path.insert(0, Blocker())
-    os.environ["QWENASR_WEBVIEW_BUILD"] = "1"      # 打包时的同一开关
+    sys.frozen = True                             # 与 exe 一致
+    os.environ.pop("QWENASR_WEBVIEW_BUILD", None) # exe 运行时不存在
 
     failed = []
     for mod in {mods!r}:
@@ -130,11 +140,51 @@ def missing_from_chain() -> tuple[list[str], set[str]]:
     return sorted(closure - set(CHAIN) - allowed), closure
 
 
+# 复刻 exe 运行时的最小条件：frozen=True、无 QWENASR_WEBVIEW_BUILD、tkinter 缺失。
+FROZEN_PROBE = textwrap.dedent('''
+    import os, sys
+    from importlib.abc import MetaPathFinder
+
+    class Blocker(MetaPathFinder):
+        def find_spec(self, name, path=None, target=None):
+            if name.split(".")[0] in {blocked!r}:
+                raise ImportError("%s blocked (release env)" % name)
+            return None
+
+    sys.meta_path.insert(0, Blocker())
+    sys.frozen = True
+    os.environ.pop("QWENASR_WEBVIEW_BUILD", None)
+
+    import app
+    print("WEBVIEW_BUILD=" + repr(bool(getattr(app, "_WEBVIEW_BUILD", None))))
+    print("TK_LOADED=" + repr("tkinter" in sys.modules))
+''')
+
+
+def _run_frozen_probe() -> dict[str, str]:
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT)
+    env.pop("QWENASR_WEBVIEW_BUILD", None)
+    env.pop("PYTHONHOME", None)
+    p = subprocess.run([sys.executable, "-c", FROZEN_PROBE.format(blocked=BLOCKED)],
+                       cwd=str(ROOT), capture_output=True, text=True,
+                       timeout=300, env=env)
+    out = {}
+    for line in (p.stdout or "").splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip()
+    if not out:
+        out["_error"] = ((p.stdout or "") + (p.stderr or ""))[-400:]
+    return out
+
+
 def run_probe(mods: list[str]) -> tuple[list, str]:
     code = PROBE.format(blocked=BLOCKED, mods=mods)
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT)
-    env["QWENASR_WEBVIEW_BUILD"] = "1"
+    # 刻意不设 QWENASR_WEBVIEW_BUILD：exe 运行时没有它（见 PROBE 的注释）。
+    env.pop("QWENASR_WEBVIEW_BUILD", None)
     env.pop("PYTHONHOME", None)
     p = subprocess.run([sys.executable, "-c", code], cwd=str(ROOT),
                        capture_output=True, text=True, timeout=300, env=env)
@@ -162,6 +212,18 @@ def main() -> int:
         r.check("WebViewServer 可构造", True)
     else:
         r.check("WebViewServer 可构造", False, "")
+
+    # 2b) 直接钉住 2026-11-11 的真正死因：app.py 用「构建期环境变量」判断自己
+    #     是不是 WebView 版。该变量只传给 PyInstaller 的分析子进程，exe 在用户
+    #     机器上运行时不存在 → 布尔值翻转 → 真的去 import tkinter → 包里没有。
+    #     这里在 frozen=True 且**没有**环境变量的条件下导入 app，断言两件事：
+    #     它认自己是 WebView 版、且全程没有碰过 tkinter。
+    o = _run_frozen_probe()
+    wb, tk = o.get("WEBVIEW_BUILD"), o.get("TK_LOADED")
+    r.check("frozen 且无环境变量时，app 仍认自己是 WebView 版", wb == "True",
+            o.get("_error") or f"_WEBVIEW_BUILD={wb}")
+    r.check("该条件下 app 全程未导入 tkinter", tk == "False",
+            o.get("_error") or f"tkinter in sys.modules={tk}")
 
     # 3) Tk 专用分页：允许失败，但必须给出「不拖累核心」的结论
     tk_only = ["endpoint_tab", "model_tab", "batch_tab", "subtitle_editor", "setting"]
