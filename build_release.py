@@ -198,6 +198,11 @@ HIDDEN_IMPORTS = [
     "ffmpeg_utils", "model_catalog", "longform_runner", "app_paths",
     "batch_queue", "single_instance", "run_log", "subtitle_extras",
     "release_manifest",
+    # 2026-11 啟動崩潰（TypeError: 'NoneType' object is not callable）之後補齊：
+    # 這些是專案內模組，過去只靠「靜態可追蹤」被收進包裡，任何一個漏收都會讓
+    # webview_backend 的匯入鏈斷掉，而斷點在 app_webview 的 except 裡被吞成
+    # WebViewServer = None。逐一明列，讓打包結果不再取決於可追蹤性。
+    "ui_text", "postprocess", "chatllm_engine",
 ]
 # customtkinter was removed from HIDDEN_IMPORTS on purpose (Wave 7): the WebView
 # UI is HTML, and `app.py` now guards its Tk GUI behind QWENASR_WEBVIEW_BUILD.

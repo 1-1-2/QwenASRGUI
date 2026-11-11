@@ -208,6 +208,45 @@ def main() -> int:
     r.check("crash handler writes a log and warns the user",
             "MessageBoxW" in hook_src and "format_exception" in hook_src)
 
+    # ── 6) 缺模組時必須是「看得懂的錯誤」，不是 TypeError ──────────────────
+    # 2026-11 使用者回報：打包版啟動即
+    #   TypeError: 'NoneType' object is not callable   (main 內 WebViewServer(...))
+    # 成因是 webview_server 匯入鏈缺模組 → 被 except 吞成 None。這裡鎖住兩件事：
+    #   a) main() 在 None 時先丟 RuntimeError（帶上原始 ImportError 訊息）
+    #   b) 匯入失敗時有把原因寫進日誌，不再靜默
+    main_src = ast.get_source_segment(src, main_fn) or ""
+    guard_at = main_src.find("if WebViewServer is None")
+    call_at = main_src.find("srv = WebViewServer(")
+    r.check("main() checks WebViewServer before calling it",
+            0 <= guard_at < call_at, f"guard@{guard_at} call@{call_at}")
+    guard_src = main_src[guard_at:call_at] if guard_at >= 0 else ""
+    r.check("the guard mentions the missing module",
+            "webview_server" in guard_src and "RuntimeError" in guard_src)
+
+    saved_mod = sys.modules.pop("webview_server", None)
+    sys.modules["webview_server"] = None          # import → ImportError
+    sys.modules.pop("app_webview", None)
+    try:
+        broken = importlib.import_module("app_webview")
+        r.check("import failure is recorded, not swallowed",
+                broken.WebViewServer is None and bool(broken._SERVER_IMPORT_ERR))
+        try:
+            broken.main()
+            r.check("main() turns a missing server into RuntimeError", False)
+        except RuntimeError as exc:
+            r.check("main() turns a missing server into RuntimeError",
+                    "webview_server" in str(exc), str(exc).splitlines()[0][:60])
+        except TypeError as exc:
+            # 就是使用者看到的那顆炸彈 —— 修好的版本不該再走到這裡
+            r.check("main() turns a missing server into RuntimeError", False,
+                    f"TypeError: {exc}")
+    finally:
+        sys.modules.pop("app_webview", None)
+        if saved_mod is not None:
+            sys.modules["webview_server"] = saved_mod
+        else:
+            sys.modules.pop("webview_server", None)
+
     passed = sum(r.items)
     print(f"\n结果：{passed}/{len(r.items)} 项通过")
     print("✅ 全部通过" if r.ok else "❌ 存在失败项")

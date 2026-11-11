@@ -38,6 +38,15 @@ try:
 except ImportError as _exc:      # --selftest must work without GUI deps
     WebViewServer = None
     _SERVER_IMPORT_ERR = str(_exc)
+    # 為何在這裡就喊出來：打包版一旦漏收模組（例如 webview_backend 依賴的
+    # ui_text 沒被 PyInstaller 收集），匯入鏈就會斷。原本這個 ImportError 被
+    # 靜默吞掉，一路走到 main() 才在 WebViewServer(...) 炸成
+    #   TypeError: 'NoneType' object is not callable
+    # —— 真正的凶手（少了哪個模組）完全看不到。故匯入期就寫進日誌。
+    try:
+        print(f"[app_webview] 無法匯入 webview_server：{_exc}")
+    except Exception:
+        pass
 
 APP_NAME = "聲音辨識小工具"
 WIN_W, WIN_H = 1180, 820
@@ -609,6 +618,15 @@ def main():
         else:
             print(f"[{APP_NAME}] 已有執行中的執行個體（未取得視窗網址），本次啟動結束。")
         return 0
+
+    # 匯入期兜底（見檔案上方 try/except）：缺模組時 WebViewServer 是 None，
+    # 若直接往下走會在 WebViewServer(...) 炸成 TypeError 而看不到真正原因。
+    # 這裡改成可讀的錯誤，並提示使用者去哪裡看日誌。
+    if WebViewServer is None:
+        raise RuntimeError(
+            f"無法載入本程式核心模組（webview_server）：{_SERVER_IMPORT_ERR}\n"
+            "安裝可能不完整，請重新解壓縮完整套件（勿只取出單一 exe）。"
+        )
 
     srv = WebViewServer(host="127.0.0.1", port=0)   # 隨機空閒埠，只綁回環
     srv.start()
