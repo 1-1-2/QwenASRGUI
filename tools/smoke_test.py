@@ -1,0 +1,242 @@
+"""smoke_test.py — 把打好的 ZIP 解开、就地跑一遍，确认「打不开 / 一启动就报错」。
+
+为什么必须在 CI 里做
+--------------------
+2026-11-11 的发布包构建全绿、校验全过，用户一启动却是：
+
+    TypeError: 'NoneType' object is not callable
+
+原因是包内少了 `ui_text.py`，`webview_server` 的导入链断掉，被启动器的
+except 吞成 `WebViewServer = None`。**静态校验（文件清单/manifest）发现不了
+这种事** —— 文件数对得上，缺的那一个恰好不在清单里。
+
+所以这里不看清单，只看行为：
+  1. 解压 ZIP，关键模块与 OpenVINO CPU 三件套必须在位
+  2. `exe --selftest` 必须返回 0，且日志里的 JSON 是 ok=true / server=measured
+     （server=skipped 视为失败 —— 那正是本次崩溃的形态）
+  3. 真正启动 GUI，等它把 `http://127.0.0.1:PORT` 写进日志
+  4. 全程不允许出现 crash.log；进程不许提前退出
+  5. 收尾 taskkill /T，别把 runner 弄脏
+
+用法：
+    python tools/smoke_test.py dist.zip
+    python tools/smoke_test.py dist.zip --workdir D:\\tmp\\smoke --wait 40
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import zipfile
+from pathlib import Path
+
+EXE_NAME = "QwenASR-WebView.exe"
+APP_DIR_NAME = "QwenASR-WebView"
+LOG_DIR_NAME = "聲音辨識小工具"        # 与 app_webview.APP_NAME 一致
+
+# 缺一个就说明这个包不可用（不是「可能会坏」，是「一定坏」）
+REQUIRED = [
+    f"{APP_DIR_NAME}/{EXE_NAME}",
+    f"{APP_DIR_NAME}/manifest.json",
+    f"{APP_DIR_NAME}/_internal/ui_text.py",
+    f"{APP_DIR_NAME}/_internal/webview_backend.py",
+    f"{APP_DIR_NAME}/_internal/webview_server.py",
+    f"{APP_DIR_NAME}/_internal/cluster_core.py",
+    f"{APP_DIR_NAME}/_internal/openvino/libs/openvino.dll",
+    f"{APP_DIR_NAME}/_internal/openvino/libs/openvino_intel_cpu_plugin.dll",
+]
+# 出现即说明瘦身没生效（白送体积，不是功能问题，但也别发出去）
+FORBIDDEN_PREFIX = [
+    f"{APP_DIR_NAME}/_internal/scipy/",
+    f"{APP_DIR_NAME}/_internal/scipy.libs/",
+    f"{APP_DIR_NAME}/_internal/openvino/libs/openvino_intel_gpu",
+    f"{APP_DIR_NAME}/_internal/openvino/libs/openvino_intel_npu",
+]
+
+
+def log_dir() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CACHE_HOME")
+    root = Path(base) if base else Path.home()
+    return root / LOG_DIR_NAME
+
+
+def read_log(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def tail(text: str, n: int = 25) -> str:
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    return "\n".join("      " + ln[:200] for ln in lines[-n:])
+
+
+def kill_tree(proc: subprocess.Popen) -> None:
+    """连子进程一起收掉：启动器会派生 Edge、crispasr.exe 等。"""
+    if proc.poll() is not None:
+        return
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=30)
+        else:
+            proc.kill()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=15)
+    except Exception:
+        pass
+
+
+class Checker:
+    def __init__(self):
+        self.failed: list[str] = []
+
+    def check(self, name: str, ok: bool, detail: str = "") -> bool:
+        print(f"  {'通过' if ok else '失败'}  {name}" + (f" — {detail}" if detail else ""),
+              flush=True)
+        if not ok:
+            self.failed.append(name)
+        return ok
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("zip_path")
+    ap.add_argument("--workdir", default="", help="解压目录（默认系统临时目录）")
+    ap.add_argument("--wait", type=float, default=40.0, help="等 GUI 就绪的秒数")
+    ap.add_argument("--keep", action="store_true", help="跑完不删解压目录")
+    args = ap.parse_args()
+
+    zp = Path(args.zip_path).resolve()
+    if not zp.is_file():
+        print(f"错误：找不到 ZIP：{zp}")
+        return 1
+    work = Path(args.workdir) if args.workdir else Path(
+        os.environ.get("RUNNER_TEMP") or os.environ.get("TEMP") or "/tmp") / "qwenasr_smoke"
+    if work.exists():
+        shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+
+    c = Checker()
+    print(f"\n=== 冒烟测试：{zp.name}（{zp.stat().st_size / 1048576:.1f} MB）===")
+
+    # ── 1) 解压 + 内容检查 ────────────────────────────────────────────────
+    t0 = time.time()
+    try:
+        with zipfile.ZipFile(zp) as z:
+            names = z.namelist()
+            z.extractall(work)
+    except Exception as exc:
+        print(f"错误：解压失败 {type(exc).__name__}: {exc}")
+        return 1
+    print(f"  解压 {len(names)} 个条目，用时 {time.time() - t0:.1f}s")
+
+    name_set = {n.replace("\\", "/") for n in names}
+    missing = [r for r in REQUIRED if r not in name_set]
+    c.check("必需文件齐全", not missing, ", ".join(Path(m).name for m in missing[:5]))
+    bad = [n for n in name_set if any(n.startswith(p) for p in FORBIDDEN_PREFIX)]
+    c.check("无 SciPy / GPU / NPU 残留", not bad, ", ".join(sorted(bad)[:3]))
+
+    exe = work / EXE_NAME / EXE_NAME
+    if not exe.is_file():
+        print(f"错误：解压后找不到 {exe}")
+        return 1
+
+    # ── 2) --selftest（无窗口，能捕获导入期错误）──────────────────────────
+    logs = log_dir()
+    launch_log = logs / "launcher.log"
+    crash_log = logs / "crash.log"
+    for p in (launch_log, crash_log):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+    print("\n  [1/3] --selftest")
+    try:
+        r = subprocess.run([str(exe), "--selftest"], cwd=str(work / EXE_NAME),
+                           capture_output=True, text=True, timeout=180)
+        code = r.returncode
+    except subprocess.TimeoutExpired:
+        code = -1
+    # windowed 版没有控制台，stdout 会被替换成日志替身 —— JSON 去日志里找
+    text = read_log(launch_log)
+    m = None
+    for line in text.splitlines():
+        if line.strip().startswith('{"ok"'):
+            try:
+                m = json.loads(line.strip())
+            except Exception:
+                pass
+    if not c.check("selftest 退出码为 0", code == 0, f"code={code}"):
+        print(tail(text))
+        return 1
+    c.check("selftest 输出可解析的 JSON", bool(m))
+    if m:
+        c.check("selftest ok=true", m.get("ok") is True, str(m.get("ok")))
+        # server=skipped 就是本次崩溃的形态：GUI 依赖没进包
+        c.check("server 已实测（非 skipped）", m.get("server") == "measured",
+                str(m.get("serverSkipReason") or m.get("server")))
+
+    # ── 3) 真正启动一次 GUI ───────────────────────────────────────────────
+    print("\n  [2/3] 启动 GUI")
+    for p in (launch_log, crash_log):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+    proc = subprocess.Popen([str(exe)], cwd=str(work / EXE_NAME))
+    url_ok = False
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            break
+        t = read_log(launch_log)
+        if re.search(r"http://127\.0\.0\.1:\d+", t):
+            url_ok = True
+            break
+        time.sleep(0.5)
+
+    alive = proc.poll() is None
+    text = read_log(launch_log)
+    c.check("进程启动后没有立即退出", alive,
+            "" if alive else f"exit={proc.returncode}")
+    c.check("已绑定本地端口并打印地址", url_ok, "" if url_ok else f"等待 {args.wait:.0f}s 未出现")
+    c.check("未产生 crash.log", not crash_log.exists(),
+            read_log(crash_log)[:300] if crash_log.exists() else "")
+
+    # 再多等两秒：有些崩溃发生在窗口创建之后
+    if alive:
+        time.sleep(2.5)
+        c.check("启动 2.5s 后仍存活", proc.poll() is None,
+                f"exit={proc.returncode}" if proc.poll() is not None else "")
+    c.check("全程未产生 crash.log", not crash_log.exists())
+
+    # ── 4) 收尾 ───────────────────────────────────────────────────────────
+    print("\n  [3/3] 收尾")
+    kill_tree(proc)
+    if not args.keep:
+        shutil.rmtree(work, ignore_errors=True)
+
+    if c.failed:
+        print(f"\n启动器日志尾部（{launch_log}）：")
+        print(tail(text))
+        print(f"\n结果：{len(c.failed)} 项失败 → {', '.join(c.failed)}")
+        print("❌ 冒烟测试未通过")
+        return 1
+    print("\n✅ 冒烟测试全部通过")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

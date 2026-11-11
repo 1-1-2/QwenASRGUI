@@ -79,15 +79,51 @@ def _make_stage(root: Path) -> Path:
     with (internal / "big_runtime.dll").open("wb") as f:
         f.truncate(160 * 1024 * 1024)
 
+    # 启动关键模块（2026-11-11 崩溃后新增的硬性要求）
+    for rel in ("ui_text.py", "webview_backend.py", "webview_server.py",
+                "cluster_core.py"):
+        (internal / rel).write_text("# stub", encoding="utf-8")
+    (stage / "使用说明.txt").write_text("stub", encoding="utf-8")
+
     (pkg / "archive_verify.json").write_text(json.dumps({
         "方式": "onedir 目录文件检查", "状态": "通过", "命中": [], "缺失": [],
     }, ensure_ascii=False), encoding="utf-8")
     (stage / "build_manifest.json").write_text(json.dumps({
         "随附 Python 源码": ["longform_runner.py"],
     }, ensure_ascii=False), encoding="utf-8")
-    (pkg / "QwenASR-WebView_test_windows-x64.zip").write_bytes(b"PK\x03\x04zip")
+    write_zip(pkg / "QwenASR-WebView_test_windows-x64.zip", stage)
     release_manifest.build_manifest(stage, version="test", sha="local")
     return stage
+
+
+# 与 tools/verify_package.check_zip_entries 的必备条目保持一致
+ZIP_MUST = [
+    "QwenASR-WebView/QwenASR-WebView.exe",
+    "QwenASR-WebView/manifest.json",
+    "QwenASR-WebView/使用说明.txt",
+    "QwenASR-WebView/_internal/ui_text.py",
+    "QwenASR-WebView/_internal/webview_backend.py",
+    "QwenASR-WebView/_internal/webview_server.py",
+    "QwenASR-WebView/_internal/cluster_core.py",
+    "QwenASR-WebView/_internal/openvino/libs/openvino.dll",
+    "QwenASR-WebView/_internal/openvino/libs/openvino_intel_cpu_plugin.dll",
+]
+
+
+def write_zip(zip_path: Path, stage: Path, skip=(), extra=()) -> Path:
+    """按真实发行包的布局写一个最小 ZIP（跳过 / 追加指定条目用于反例）。"""
+    import zipfile
+    names = [n for n in ZIP_MUST if n not in skip]
+    with zipfile.ZipFile(zip_path, "w") as z:
+        for rel in names:
+            src = stage / rel[len("QwenASR-WebView/"):]
+            if src.is_file():
+                z.write(src, rel)
+            else:                       # stage 里没有的给个占位内容
+                z.writestr(rel, b"stub")
+        for rel in extra:
+            z.writestr(rel, b"stub")
+    return zip_path
 
 
 def main() -> int:
@@ -182,6 +218,47 @@ def main() -> int:
             r.check("verify_package exits 1 on leaked user data", code2 == 1)
             r.check("error names the leaked directory",
                     "subtitles/ 不应出现在 _internal/ 内" in out2, out2.strip()[:200])
+        finally:
+            vp.ROOT = original_root
+
+    print("\n[zip entries] 逐个 ZIP 校验（主包 + noffmpeg 变体）")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        stage = _make_stage(root)
+        pkg = root / "release_pkg"
+        z1 = pkg / "QwenASR-WebView_test_windows-x64.zip"
+
+        r.check("主包条目检查通过", vp.check_zip_entries(z1) == [],
+                str(vp.check_zip_entries(z1)))
+
+        # 第二个 ZIP：noffmpeg 变体，只影响 ffmpeg/ 目录，不该影响必备模块
+        z2 = write_zip(pkg / "QwenASR-WebView_test_windows-x64-noffmpeg.zip", stage)
+        r.check("noffmpeg 变体条目检查通过", vp.check_zip_entries(z2) == [])
+
+        # 缺 ui_text.py —— 2026-11-11 那次崩溃的形态，必须被拦住
+        z3 = write_zip(root / "broken.zip", stage,
+                       skip=("QwenASR-WebView/_internal/ui_text.py",))
+        errs3 = vp.check_zip_entries(z3)
+        r.check("ZIP 缺 ui_text.py 被拦下", any("ui_text.py" in e for e in errs3),
+                str(errs3))
+
+        # scipy 混进来（69 MB 白送）
+        z4 = write_zip(root / "fat.zip", stage,
+                       extra=("QwenASR-WebView/_internal/scipy/__init__.py",))
+        errs4 = vp.check_zip_entries(z4)
+        r.check("ZIP 含 scipy 被拦下", any("scipy" in e for e in errs4), str(errs4))
+
+        # 两个 ZIP 同时存在时，main() 必须都接受（曾死板要求恰好 1 个）
+        original_root = vp.ROOT
+        vp.ROOT = root
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = vp.main()
+            out = buf.getvalue()
+            r.check("两个 ZIP 并存时 main() 仍通过", code == 0, out.strip()[:200])
+            r.check("两个 ZIP 都被点名检查", out.count("ZIP 条目检查通过") == 2,
+                    str(out.count("ZIP 条目检查通过")))
         finally:
             vp.ROOT = original_root
 

@@ -8,7 +8,7 @@
 因此改以零 numba 的組合取代 librosa.load：
 
   • soundfile（libsndfile）— 讀 wav / flac / ogg / mp3，回原生取樣率
-  • soxr（C 綁定）        — 高品質重採樣；缺則退 scipy.resample_poly；
+  • soxr（C 綁定）        — 高品質重採樣；缺則退頻域低通（見 _resample_fft）；
                             再缺則退 numpy 線性插值
   • ffmpeg 後援           — soundfile 讀不了的格式（m4a / aac / wma…）
                             先用 ffmpeg 轉 16k 單聲道 wav 再讀
@@ -28,8 +28,36 @@ SR = 16000
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
+def _resample_fft(data: np.ndarray, sr_in: int, sr_out: int) -> np.ndarray:
+    """頻域理想低通重採樣（等效帶限插值），取代原本的 scipy.resample_poly。
+
+    為什麼不用 scipy：整個 SciPy 在 Windows 包裡是 69 MB（scipy/ 49.7 +
+    scipy.libs/ 19.3，其中 OpenBLAS 一顆就 19 MB），而它在這裡只做一件事
+    —— 抗混疊重採樣。soxr（已隨包）才是主力，這條只是它缺席時的兜底。
+
+    做法：取 rFFT，保留目標奈奎斯特以下的頻段，逆變換到新長度，再按長度
+    比縮放振幅。下採樣時高於目標奈奎斯特的分量被直接丟棄 = 抗混疊；
+    上採樣時補零 = 帶限插值（比線性插值平滑，無階梯失真）。
+    邊界有週期性假設，對「整段語音一次性重採樣」無實質影響。
+    """
+    n_in = int(len(data))
+    if n_in < 2:
+        return np.asarray(data, dtype=np.float32)
+    n_out = max(1, int(round(n_in * sr_out / sr_in)))
+    if n_out == n_in:
+        return data.astype(np.float32, copy=False)
+
+    spec = np.fft.rfft(np.asarray(data, dtype=np.float64))
+    bins_out = n_out // 2 + 1
+    keep = min(len(spec), bins_out)
+    out = np.zeros(bins_out, dtype=complex)
+    out[:keep] = spec[:keep]
+    y = np.fft.irfft(out, n=n_out)
+    return (y * (n_out / n_in)).astype(np.float32)
+
+
 def _resample(data: np.ndarray, sr_in: int, sr_out: int) -> np.ndarray:
-    """重採樣（soxr → scipy → numpy 線性插值），皆不依賴 numba。"""
+    """重採樣（soxr → 頻域低通 → numpy 線性插值），皆不依賴 numba / scipy。"""
     if sr_in == sr_out:
         return data.astype(np.float32, copy=False)
     try:
@@ -38,10 +66,7 @@ def _resample(data: np.ndarray, sr_in: int, sr_out: int) -> np.ndarray:
     except Exception:
         pass
     try:
-        from math import gcd
-        from scipy.signal import resample_poly
-        g = gcd(int(sr_in), int(sr_out))
-        return resample_poly(data, sr_out // g, sr_in // g).astype(np.float32)
+        return _resample_fft(data, sr_in, sr_out)
     except Exception:
         n = max(1, int(round(len(data) * sr_out / sr_in)))
         xp = np.linspace(0, len(data) - 1, n)

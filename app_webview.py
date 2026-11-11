@@ -562,8 +562,13 @@ def _selftest() -> int:
     if WebViewServer is None:
         result["server"] = "skipped"
         result["serverSkipReason"] = _SERVER_IMPORT_ERR or "GUI dependencies absent"
+        # 打包版缺 GUI 依赖＝这个包是坏的（2026-11-11 的启动崩溃正是此形态）。
+        # 源码环境下依赖是可选的，跳过就好；frozen 下必须报错，否则 CI 的
+        # 冒烟测试会把「缺 ui_text.py 的包」判为通过。
+        if app_paths.is_frozen():
+            result["ok"] = False
         print(json.dumps(result, ensure_ascii=False))
-        return 0
+        return 0 if result["ok"] else 1
 
     import urllib.request
     t1 = _t.perf_counter()

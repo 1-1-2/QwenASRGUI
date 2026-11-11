@@ -352,8 +352,7 @@ class DiarizationEngine:
         指定人數模式：Average-linkage 層次聚類，強制分成 n 組。
         回傳 1-indexed 標籤列表。
         """
-        from scipy.cluster.hierarchy import linkage, fcluster
-        from scipy.spatial.distance import squareform
+        import cluster_core
 
         n = max(1, min(n, len(embeddings)))  # 限制在合理範圍
         if len(embeddings) <= n:
@@ -363,10 +362,9 @@ class DiarizationEngine:
         sim     = emb_mat @ emb_mat.T            # cosine similarity
         dist    = np.clip(1.0 - sim, 0.0, 2.0)  # cosine distance
         np.fill_diagonal(dist, 0.0)
-        condensed = squareform(dist, checks=False)
 
-        Z      = linkage(condensed, method="average")
-        labels = fcluster(Z, t=n, criterion="maxclust")   # 1-indexed
+        Z      = cluster_core.average_linkage(dist)
+        labels = cluster_core.fcluster_maxclust(Z, n)      # 1-indexed
         return labels.tolist()
 
     def _cluster_auto(
@@ -384,8 +382,7 @@ class DiarizationEngine:
 
         回傳 1-indexed 標籤列表。
         """
-        from scipy.cluster.hierarchy import linkage, fcluster
-        from scipy.spatial.distance import squareform
+        import cluster_core
 
         M = len(embeddings)
         if M < 2:
@@ -394,15 +391,14 @@ class DiarizationEngine:
         emb_mat = np.stack(embeddings)
         dist    = np.clip(1.0 - emb_mat @ emb_mat.T, 0.0, 2.0)
         np.fill_diagonal(dist, 0.0)
-        Z = linkage(squareform(dist, checks=False), method="average")
+        Z = cluster_core.average_linkage(dist)
 
         if M < 4:   # 樣本太少 silhouette 不可靠 → 退回固定閾值
-            return fcluster(Z, t=AUTO_DIST_THRESH,
-                            criterion="distance").tolist()
+            return cluster_core.fcluster_distance(Z, AUTO_DIST_THRESH).tolist()
 
         best_sil, best_labels = -1.0, None
         for k in range(2, min(MAX_AUTO_SPEAKERS, M - 1) + 1):
-            labels = fcluster(Z, t=k, criterion="maxclust")
+            labels = cluster_core.fcluster_maxclust(Z, k)
             sil = _silhouette_from_dist(dist, labels)
             if sil > best_sil:
                 best_sil, best_labels = sil, labels.tolist()

@@ -127,6 +127,41 @@ def check_openvino_slim(stage: Path) -> list[str]:
 
 
 
+def check_zip_entries(zip_path: Path) -> list[str]:
+    """直接看 ZIP 内的条目 —— 因为 stage 目录只保留最后一个变体。
+
+    stage 在打完 noffmpeg 变体后会被重建，无法代表前面那个 ZIP；
+    而「这个 ZIP 里到底有没有 ui_text.py」必须逐个 ZIP 验，不能靠目录状态推断。
+    """
+    import zipfile
+    must = [
+        "QwenASR-WebView/QwenASR-WebView.exe",
+        "QwenASR-WebView/manifest.json",
+        "QwenASR-WebView/使用说明.txt",
+        "QwenASR-WebView/_internal/ui_text.py",
+        "QwenASR-WebView/_internal/webview_backend.py",
+        "QwenASR-WebView/_internal/webview_server.py",
+        "QwenASR-WebView/_internal/cluster_core.py",
+        "QwenASR-WebView/_internal/openvino/libs/openvino.dll",
+        "QwenASR-WebView/_internal/openvino/libs/openvino_intel_cpu_plugin.dll",
+    ]
+    banned_prefix = [
+        "QwenASR-WebView/_internal/scipy/",
+        "QwenASR-WebView/_internal/scipy.libs/",
+        "QwenASR-WebView/_internal/openvino/libs/openvino_intel_gpu",
+        "QwenASR-WebView/_internal/openvino/libs/openvino_intel_npu",
+    ]
+    try:
+        with zipfile.ZipFile(zip_path) as z:
+            names = {n.replace("\\", "/") for n in z.namelist()}
+    except Exception as exc:
+        return [f"无法读取 ZIP：{type(exc).__name__}: {exc}"]
+    errs = [f"缺少 {n}" for n in must if n not in names]
+    errs += [f"不应包含 {n}" for n in sorted(names)
+             if any(n.startswith(p) for p in banned_prefix)]
+    return errs
+
+
 def _force_utf8():
     """Windows 控制台默认 cp1252 会让中文 print 抛 UnicodeEncodeError。"""
     for stream in (sys.stdout, sys.stderr):
@@ -158,10 +193,18 @@ def main() -> int:
         print("错误：构建清单缺少 longform_runner.py")
         return 1
 
+    # 主包 + 可选的 -noffmpeg 变体（见 build_release --noffmpeg-variant）
     zips = sorted(pkg.glob("*.zip"))
-    if len(zips) != 1:
-        print(f"错误：期望 1 个 ZIP，实际 {len(zips)}")
+    if not 1 <= len(zips) <= 2:
+        print(f"错误：期望 1~2 个 ZIP（主包 / noffmpeg 变体），实际 {len(zips)}")
         return 1
+    for zp in zips:
+        errs = check_zip_entries(zp)
+        if errs:
+            for err in errs:
+                print(f"错误：{zp.name} — {err}")
+            return 1
+        print(f"ZIP 条目检查通过：{zp.name}  {zp.stat().st_size/1048576:.1f} MB")
     stage = pkg / "QwenASR-WebView"
     exe = stage / "QwenASR-WebView.exe"
     internal = stage / "_internal"

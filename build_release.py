@@ -190,8 +190,10 @@ HIDDEN_IMPORTS = [
     "certifi", "proxy_tools", "bottle", "app", "webview_backend", "webview_server",
     "openvino", "openvino.runtime", "onnxruntime", "opencc",
     "sounddevice", "soxr", "soundfile", "kaldi_native_fbank",
-    "scipy", "scipy.cluster", "scipy.cluster.hierarchy",
-    "scipy.spatial", "scipy.spatial.distance", "scipy._lib.messagestream",
+    # SciPy 已整体移除（2026-11）：说话人聚类改用 cluster_core.py（自带
+    # average-linkage，与 scipy 输出逐位对齐），重采样改用频域低通。
+    # 这两处一改，69 MB 的 scipy/ + scipy.libs/ 就彻底不必进包了。
+    "cluster_core",
     "crisp_engine", "subtitle_lines", "cli_mode", "version", "updater",
     "fa_aligner", "api_server", "endpoint_tab", "segno", "cf_tunnel",
     "proc_guard", "diarize", "audio_io", "processor_numpy", "downloader",
@@ -213,6 +215,9 @@ HIDDEN_IMPORTS = [
 EXCLUDE_MODULES = [
     "torch", "torchvision", "torchaudio", "transformers", "qwen_asr",
     "triton", "bitsandbytes",
+    # 显式排除，别指望「没人 import 就不会被收」：numpy 的 hook 与若干
+    # 三方包的 __init__ 都可能顺手把 scipy 拖进来（会悄悄多出 69 MB）。
+    "scipy",
     "webview", "webview.platforms", "pythonnet", "clr", "clr_loader",
     # Wave 7: the shipped UI is HTML. app.py keeps its Tk GUI behind
     # QWENASR_WEBVIEW_BUILD, and these excludes are the belt to that braces:
@@ -335,6 +340,8 @@ INT8 权重单份就有 1.2~4.4GB，内嵌会让安装包变成数 GB，且不�
 
 【ffmpeg】
 {ffmpeg_line}
+（另有一個不含 ffmpeg 的 -noffmpeg 變體，體積更小；功能相同，只是首次處理
+  影片時要自行下載 ffmpeg。WAV 使用者選那個即可。）
 
 【长音频（1~5 小时网课）】
 所有输入统一走同一条流式路径：边读边分段、每组立刻写 SRT，不再按时长
@@ -394,7 +401,7 @@ def onedir_output(distpath: Path) -> Path:
 
 
 def make_package(version: str, sha: str, ffmpeg_exe: Path | None,
-                 slim: bool = True) -> Path:
+                 slim: bool = True, variant: str = "") -> Path:
     distpath = ROOT / "dist" / "webview"
     produced = onedir_output(distpath)
     exe = produced / f"{APP_NAME}.exe"
@@ -445,6 +452,15 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None,
             raise RuntimeError(
                 "精简未作用到最终目录，仍残留：" + ", ".join(sorted(set(leftover))[:5]))
 
+    # SciPy 不许出现在包里。它只服务两处（说话人聚类、重采样），现都已替换；
+    # 万一被 numpy hook 或某个三方包的 __init__ 间接拉进来，就是白送 69 MB，
+    # 而且不会有任何功能变化能让人察觉 —— 所以在打包端直接拦死。
+    scipy_left = [p.name for p in stage_internal.iterdir()
+                  if p.name.startswith("scipy")] if stage_internal.is_dir() else []
+    if scipy_left:
+        raise RuntimeError(
+            "包内出现 SciPy（应由 EXCLUDE_MODULES 拦住）：" + ", ".join(scipy_left))
+
     for d in ("ov_models", "subtitles", "longform_state"):
         (stage / d).mkdir(exist_ok=True)
         (stage / d / ".keep").write_text("", encoding="utf-8")
@@ -459,8 +475,10 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None,
         "平台": "windows-x64",
         "打包方式": "PyInstaller onedir / windowed（分层：EXE 在根，依赖在 _internal/）",
         "EXE 体积": exe.stat().st_size,
-        "_internal 体积": dir_size(internal),
+        # 必须统计已精简的发行目录；stat(dist) 会把删掉的 176 MB 又算回来
+        "_internal 体积": dir_size(stage_internal),
         "随附 ffmpeg": has_ffmpeg,
+        "变体": variant or "full",
         "OpenVINO 精简": {
             "启用": slim_report["启用"],
             "节省 MB": round(slim_report["节省字节"] / 1024 / 1024, 1),
@@ -468,7 +486,7 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None,
             "失败": slim_report["失败"],
             "跳过原因": slim_report["跳过原因"],
         },
-        "体积构成": size_breakdown(internal),
+        "体积构成": size_breakdown(stage_internal),
         "随附 Python 源码": py_sources(),
         "静态资源": [src for src, _ in STATIC_DATA],
         "依赖版本": dep_versions(),
@@ -482,7 +500,8 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None,
     from release_manifest import build_manifest
     build_manifest(stage, version, sha)
 
-    zip_path = ROOT / "release_pkg" / f"{APP_NAME}_{version}_windows-x64.zip"
+    zip_name = f"{APP_NAME}_{version}_windows-x64" + (f"-{variant}" if variant else "")
+    zip_path = ROOT / "release_pkg" / f"{zip_name}.zip"
     if zip_path.exists():
         zip_path.unlink()
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED,
@@ -548,6 +567,7 @@ REQUIRED_FILES = [
     "_internal/ui_text.py",
     "_internal/webview_backend.py",
     "_internal/webview_server.py",
+    "_internal/cluster_core.py",
     "manifest.json",
 ]
 
@@ -592,6 +612,8 @@ def main() -> int:
                     help="跳过 PyInstaller，仅用已有 EXE 组装 ZIP（调试用）")
     ap.add_argument("--no-slim", action="store_true",
                     help="保留完整 OpenVINO 组件（排查「设备消失」类问题时用）")
+    ap.add_argument("--noffmpeg-variant", action="store_true",
+                    help="主包带 ffmpeg 时，额外打一个 -noffmpeg 变体（CI 用）")
     args = ap.parse_args()
 
     print(f"源码目录：{ROOT}")
@@ -631,7 +653,16 @@ def main() -> int:
         print(f"_internal 体积：{dir_size(internal) / 1024 / 1024:.1f} MB")
 
     ff = Path(args.ffmpeg) if args.ffmpeg else None
-    zip_path = make_package(args.version, args.sha, ff, slim=not args.no_slim)
+
+    def _pack(ffmpeg_exe, variant=""):
+        """打一个变体包，并把它自己的验证结果写进该包的 manifest。"""
+        zp = make_package(args.version, args.sha, ffmpeg_exe,
+                          slim=not args.no_slim, variant=variant)
+        meta = json.loads((ROOT / "release_pkg" / APP_NAME / "build_manifest.json")
+                          .read_text(encoding="utf-8"))
+        return zp, meta
+
+    zip_path, meta = _pack(ff, "")
     # 体积构成：只打印，不改任何东西。回答「哪个占大头」靠它，不靠猜。
     # 统计对象必须是最终发行目录（已精简），统计 dist 中间产物会把已删掉的
     # 244.9 MB openvino/ 重新算进来 —— 那份数字对用户毫无意义。
@@ -665,6 +696,26 @@ def main() -> int:
     if verify["缺失"]:
         print("包内容存在缺失，构建判为失败")
         return 1
+
+    # ── 第二变体：不含 ffmpeg ─────────────────────────────────────────────
+    # 用途：只想转 WAV / 已有系统 ffmpeg 的用户可以少下 ~100 MB。
+    # 只有「主包确实带了 ffmpeg」时才值得再打一个，否则两个包一模一样。
+    if args.noffmpeg_variant:
+        if meta.get("随附 ffmpeg"):
+            print("\n=== 打不含 ffmpeg 的变体 ===")
+            zp2, meta2 = _pack(None, "noffmpeg")
+            v2 = verify_onedir(ROOT / "release_pkg" / APP_NAME)
+            print(f"  发行包：{zp2.name}")
+            print(f"  大小：{zp2.stat().st_size / 1024 / 1024:.1f} MB"
+                  f"  状态：{v2['状态']}")
+            if v2["缺失"]:
+                print("  缺失：", v2["缺失"])
+                return 1
+            (ROOT / "release_pkg" / "archive_verify_noffmpeg.json").write_text(
+                json.dumps(v2, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"  变体 manifest：随附 ffmpeg = {meta2.get('随附 ffmpeg')}")
+        else:
+            print("\n主包未随附 ffmpeg → 跳过 noffmpeg 变体（两者会完全相同）")
     return 0
 
 
