@@ -162,8 +162,39 @@
   模型名（`TEA-ASR-1.1 台灣國語 Q8`）与语言名（`繁體中文`）按惯例不翻译，已显式豁免。
   离屏渲染 43 → **57 项**，并已确认「故意回退修复 → 断言失败」有效。
 
+### Wave 8 · 去掉 SciPy / 打包首次自证可启动 / 那个 `No module named 'tkinter'`
+
+三件事有同一个背景：**之前的校验都只看文件清单，而清单对得上并不代表能启动。**
+
+- **SciPy 整体移除，省 69 MB**（`_internal` 348.1 → 171.4 MB，ZIP 133.2 → 101.8 MB）。
+  它只服务两处：聚类（`linkage` + `fcluster`）与重采样（`resample_poly`）。
+  换成 `cluster_core.py`（average-linkage + Lance-Williams）与
+  `audio_io._resample_fft`（频域理想低通）。与 SciPy 对拍 400 组随机数据，
+  Z 矩阵逐位一致、两种 `fcluster` 划分完全相同；10 kHz 降到 16 kHz 后 RMS = 0（抗混叠成立）。
+  顺带必须删掉 `requirements.txt` 里的 `librosa` —— 代码里根本没 import 它，
+  它却经 `scikit-learn` 把 SciPy 悄悄拖回构建环境。
+- **CI 里真跑一遍打好的包**（`tools/smoke_test.py`）：解 ZIP → 真 exe `--selftest`
+  （断言 `ok=true`、`server=measured`）→ 真启动 GUI → 等 `http://127.0.0.1:PORT` →
+  `/health` 必须 200 → 观察存活与 `crash.log`。这条闸上线后连抓两个真缺陷。
+  判定刻意只看**后果**：曾经用「日志里有没有 `No module named`」当条件，
+  修好之后只要日志残留一条已处理的旧告警就会假红。
+- **`No module named 'tkinter'` 的真正根因**：`app.py` 拿 `QWENASR_WEBVIEW_BUILD`
+  这个**只传给 PyInstaller 分析子进程**的环境变量当运行期判据。exe 里没有它 →
+  判为 Tk 版 → 真去 `import tkinter` → 包里刻意没带 → 一启动就死。
+  改判据为 `环境变量 或 sys.frozen`（冻结版只有 `app_webview.py` 一个入口）。
+  **它之所以躲过好几轮排查**：冒烟测试的诊断脚本和 `test_release_env` 的探针都
+  主动设了那个变量，等于替 exe 补上了它不该有的东西 —— 模拟比真机宽松，必崩测成全绿。
+  两处已改为 `sys.frozen = True` 且显式不设该变量，回滚修复会立刻在本地变红。
+- **`--noffmpeg-variant`**：完整包（101.8 MB，随附 ffmpeg）之外另出 64.7 MB 变体。
+  ZIP 内根目录名带 `-noffmpeg`，两个包解压到同一处不会互相覆盖。
+- **`tools/gh_download.py`**：反代拿到的 302 指向 Azure Blob、字节不经反代，
+  单连接实测 14 KB/s。Blob 支持 `Range`（206），改 16 连接 × 1.5 MB 分片后
+  **0.33 MB/s，165.5 MB 用 496 秒**（约 24×）。
+
 ## 验证口径
 
-本地回归全绿（21 套，断言数见 `tests/test_*.py`）、离屏渲染 57/57、远端 CI 全绿。
-**全部使用 mock ASR**，真实权重未加载；Windows 实机与 3–5 小时完整任务未复验。
+本地回归全绿（24 套，断言数见 `tests/test_*.py`）、离屏渲染 57/57、远端 CI 全绿；
+Windows 发行构建**每次都会解包真跑**（`tools/smoke_test.py`），两个变体实测
+端口绑定成功、`/health` 200、无 `crash.log`。
+**全部使用 mock ASR**，真实权重未加载；人工实机验收与 3–5 小时完整任务未做。
 详见 `docs/验证边界.md`。
