@@ -109,10 +109,14 @@ def check_openvino_slim(stage: Path) -> list[str]:
     步骤没生效，包会白白大出几十 MB）。
     """
     errors: list[str] = []
-    libs = stage / "_internal" / "openvino" / "libs"
+    internal = stage / "_internal"
+    libs = internal / "openvino" / "libs"
     if not libs.is_dir():
         return ["缺少 _internal/openvino/libs/（OpenVINO 未随包）"]
-    present = {p.name for p in libs.glob("*")}
+    # 必须在整棵 _internal 里找，不能只看 openvino/libs/：PyInstaller 会把
+    # libs/*.dll 另拷一份到 _internal/ 根（隐式二进制依赖），只查 libs/
+    # 会让「没精简干净」从这里溜过去（2026-11-11 实际发生过）。
+    present = {p.name for p in internal.rglob("*") if p.is_file()}
     for name in OV_KEEP:
         if name not in present:
             errors.append(f"缺少 OpenVINO 必需组件 {name}（CPU 推理会直接失败）")

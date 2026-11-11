@@ -77,6 +77,13 @@ def make_tree(root: Path) -> Path:
     inc = stage / "_internal" / "openvino" / "include" / "oneapi" / "tbb"
     inc.mkdir(parents=True)
     (inc / "flow_graph.h").write_bytes(b"\0" * 120_000)
+    # 复现 2026-11-11 Windows 构建失败：PyInstaller 解析 --hidden-import openvino
+    # 时，会把 libs/*.dll 另拷一份到 _internal/ 根。只删 openvino/libs/ 的版本
+    # 会漏下这一整套（GPU/NPU 插件），包白白大几十 MB 还被判「未精简」。
+    for name in ("openvino_intel_gpu_plugin.dll", "openvino_intel_npu_plugin.dll",
+                 "openvino_tensorflow_frontend.dll", "openvino_intel_cpu_plugin.dll",
+                 "openvino.dll", "openvino_ir_frontend.dll"):
+        (stage / "_internal" / name).write_bytes(b"\0" * 1_000_000)
     (stage / "_internal" / "openvino" / "_pyopenvino" ).mkdir(parents=True, exist_ok=True)
     (stage / "_internal" / "openvino" / "_pyopenvino" / "__init__.pyi").write_bytes(b"\0" * 60_000)
     return stage
@@ -111,6 +118,12 @@ def main() -> int:
         r.check("python frontend bindings removed",
                 not (internal / "openvino" / "frontend").exists())
         # 纯开发物：C++ 头文件与 .pyi 类型存根，运行时 import 不会碰。
+        r.check("duplicate DLL copy at _internal/ root is also slimmed",
+                not (internal / "openvino_intel_gpu_plugin.dll").exists() and
+                not (internal / "openvino_intel_npu_plugin.dll").exists())
+        r.check("essential DLL copy at root is preserved",
+                (internal / "openvino_intel_cpu_plugin.dll").exists() and
+                (internal / "openvino.dll").exists())
         r.check("C++ headers removed (nested include/)",
                 not (internal / "openvino" / "include").exists())
         r.check("type stubs removed (*.pyi)",
@@ -121,7 +134,10 @@ def main() -> int:
         r.check("verifier accepts the slimmed package", not errors, "; ".join(errors[:3]))
 
         # ...and reject both regressions.
-        (internal / "openvino" / "libs" / "openvino_intel_cpu_plugin.dll").unlink()
+        # 真实缺失意味着两处副本都没了（libs/ 与 _internal/ 根）。
+        # 只删 libs/ 那份不算缺失 —— 校验器现在扫全树，这正是期望行为。
+        for p_cpu in internal.rglob("openvino_intel_cpu_plugin.dll"):
+            p_cpu.unlink()
         errs = vp.check_openvino_slim(stage)
         r.check("verifier catches a missing CPU plugin",
                 any("CPU" in e or "cpu_plugin" in e for e in errs), str(errs[:2]))

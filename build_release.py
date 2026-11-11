@@ -146,29 +146,34 @@ def slim_openvino(internal: Path) -> dict:
         result["跳过原因"] = f"必需组件缺失，放弃精简：{missing}"
         return result
 
+    # 全树搜索，不只 openvino/libs/：PyInstaller 在解析 --hidden-import openvino 时
+    # 会按二进制依赖把 libs/*.dll 另拷一份到 _internal/ 根（与 --add-data 的那份并存），
+    # 只删带目录的那一份会留下一整套 GPU/NPU 插件 —— 这正是 2026-11-11 那次
+    # Windows 构建报「未精简」的原因：精简确实删了 74.5 MB，但另一份没动。
     for pattern in OPENVINO_DROP_PATTERNS:
-        for p in list(libs.glob(pattern)):
-            if p.name in OPENVINO_MUST_KEEP:
+        for p in list(internal.rglob(pattern)):
+            if p.name in OPENVINO_MUST_KEEP or not p.is_file():
                 continue
             try:
                 size = p.stat().st_size
                 p.unlink()
-                result["删除"].append(p.name)
+                rel = p.relative_to(internal).as_posix()
+                result["删除"].append(rel)
                 result["节省字节"] += size
             except OSError as exc:
                 result["失败"].append(f"{p.name}: {exc}")
     # include/ 与 .pyi 用嵌套 glob 处理：真实 wheel 里它们不止一级目录。
     for sub in OPENVINO_DROP_SUBDIRS + OPENVINO_DROP_HEADERS:
-        for d in list(ov_dir.glob(f"**/{sub}")):
+        for d in list(internal.glob(f"**/{sub}")):
             if d.is_dir():
                 try:
                     result["节省字节"] += dir_size(d)
                     shutil.rmtree(d)
-                    result["删除"].append(f"{d.relative_to(ov_dir).as_posix()}/")
+                    result["删除"].append(f"{d.relative_to(internal).as_posix()}/")
                 except OSError as exc:
                     result["失败"].append(f"{d.name}/: {exc}")
     if OPENVINO_DROP_PYI:
-        for p in list(ov_dir.rglob("*.pyi")):
+        for p in list((internal / "openvino").rglob("*.pyi")) if ov_dir.is_dir() else []:
             try:
                 size = p.stat().st_size
                 p.unlink()
