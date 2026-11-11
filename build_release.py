@@ -387,10 +387,13 @@ INT8 权重单份就有 1.2~4.4GB，内嵌会让安装包变成数 GB，且不�
   不影响 subtitles\\ 里的正式文件。
 
 【出问题了看哪里】
-启动器日志：%LOCALAPPDATA%\\QwenASR-WebView\\launcher.log
+启动器日志：%LOCALAPPDATA%\\聲音辨識小工具\\launcher.log
   把这段路径粘到资源管理器地址栏即可打开。启动失败、闪退、窗口打不开时
   会写在这里（单文件上限 1MB，超了自动重建）。
-Edge 的窗口配置在同目录的 edge-profile\\，与日常 Edge 完全隔离；
+  ※ 这是本程序**唯一**会写到程序目录以外的地方；设置、模型、字幕、断点
+     都还在程序目录里，方便整个文件夹搬走。
+Edge 的窗口配置在同一個資料夾的 edge-profile\\（即
+  %LOCALAPPDATA%\\聲音辨識小工具\\edge-profile\\），与日常 Edge 完全隔离；
   删掉它只会重置窗口状态，不影响任何数据。
 
 【为什么是文件夹而不是单个 EXE】

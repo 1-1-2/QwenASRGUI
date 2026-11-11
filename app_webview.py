@@ -141,6 +141,28 @@ def _log(msg: str):
         pass
 
 
+class _StartupClock:
+    """启动链路分段计时 —— 让「开了 10 秒才出窗口」变成可以指名的那一行。
+
+    为什么需要：使用者报「第二次启动前有 10s 的加载时间」，而我们能测到的
+    服务端构造只有几十毫秒。剩下那 9.x 秒到底在 Edge、在单实例锁、还是在
+    打完日志之后没人量的那一段，光看代码永远吵不出结论。把每一段都记进
+    launcher.log，下次谁再问就有数可看，不必再猜。
+    """
+
+    def __init__(self):
+        self._t0 = time.perf_counter()
+        self._last = self._t0
+
+    def mark(self, label: str) -> float:
+        now = time.perf_counter()
+        delta = (now - self._last) * 1000
+        total = (now - self._t0) * 1000
+        self._last = now
+        _log(f"[启动计时] {label}: +{delta:.0f}ms（累计 {total:.0f}ms）")
+        return total
+
+
 def _log_dir() -> Path | None:
     """啟動器日誌目錄：%LOCALAPPDATA%\\<APP_NAME>（非 Windows 用家目錄）。"""
     try:
@@ -651,7 +673,10 @@ def main():
     # launch hands the user to the existing window instead of racing on the
     # same settings / checkpoint / subtitle files.
     guard = SingleInstance()
+    # 單實例鎖：取得失敗代表已有另一個實例 → 直接結束（不是崩潰，日誌要說清楚）
+    clk = _StartupClock()
     owned, existing_url = guard.acquire()
+    clk.mark("取得單實例鎖")
     if not owned:
         if existing_url:
             _log(f"[{APP_NAME}] 已有執行中的執行個體，導向現有視窗：{existing_url}")
@@ -670,8 +695,10 @@ def main():
         )
 
     srv = WebViewServer(host="127.0.0.1", port=0)   # 隨機空閒埠，只綁回環
+    clk.mark("建立 WebViewServer")
     srv.start()
     guard.publish(srv.url)
+    clk.mark("HTTP 服務開始監聽")
     # 視窗外觀：讀持久化外觀偏好決定初始標題列深淺；註冊回呼，讓 UI 切換主題時
     # 視窗標題列即時跟著深/淺。
     global _initial_theme
@@ -690,6 +717,7 @@ def main():
             _log(f"[{APP_NAME}] 選擇的模型尚未下載 → 等使用者於模型頁確認後再下載。")
     except Exception:
         srv.backend.start_load()                     # 保底：判斷失敗仍嘗試載入
+    clk.mark("模型載入已排入背景（不阻塞開窗）")
     url = srv.url
     _log(f"[{APP_NAME}] {url}")
 
@@ -705,7 +733,9 @@ def main():
             _log(f"[{APP_NAME}] Native window unavailable, using Edge --app.")
     try:
         if not native_ok:
+            t_edge = time.perf_counter()
             proc = open_edge_app(url)
+            clk.mark("Edge 行程已拉啟")
             if proc is not None:
                 proc.wait()
             else:

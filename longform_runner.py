@@ -33,6 +33,7 @@ by the caller so the module can be tested without model weights.
 from __future__ import annotations
 
 import base64
+import collections
 import gc
 import json
 import os
@@ -274,6 +275,13 @@ def ffmpeg_pcm_stream(path: Path, ffmpeg: str = "ffmpeg", start_sec: float = 0.0
     """yield float32 PCM 块；ffmpeg 常驻子进程，绝不把整段读进内存。
 
     ``-ss`` 放在 ``-i`` 之后 → 音频精确 seek，断点续跑时时间轴不漂移。
+
+    关于 stderr：**必须收集，不能丢进 DEVNULL**。曾经这里写的是
+    ``stderr=subprocess.DEVNULL``，而 ffmpeg 的失败原因（文件被占用、路径无
+    权限、扩展名与实际内容不符、解复用器不支持…）**只出现在 stderr 里**。
+    丢掉之后，Windows 上的失败只剩下自己 OSError 的一句「[WinError 5] 拒绝
+    访问」——没有主词、没有文件、没有原因，使用者拿到的就是这么一句。
+    现在改成管道收集尾部若干行，失败时拼进异常消息。
     """
     cmd = [ffmpeg, "-v", "error", "-i", str(path)]
     if start_sec > 0:
@@ -281,10 +289,26 @@ def ffmpeg_pcm_stream(path: Path, ffmpeg: str = "ffmpeg", start_sec: float = 0.0
     cmd += ["-vn", "-ac", "1", "-ar", str(SR),
             "-f", "s16le", "-acodec", "pcm_s16le", "pipe:1"]
 
-    kw = dict(stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    kw = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
     if sys.platform == "win32":
         kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     proc = subprocess.Popen(cmd, **kw)
+    # stderr 必须持续抽干：管道写满（Windows 约 4 KB）后 ffmpeg 会阻塞，
+    # 表现为「转换卡住不动」，比报错更难查。读线程只留尾部若干行。
+    tail: collections.deque[str] = collections.deque(maxlen=8)
+
+    def _drain():
+        try:
+            for raw in iter(proc.stderr.readline, b""):
+                line = raw.decode("utf-8", "replace").rstrip()
+                if line:
+                    tail.append(line)
+        except Exception:
+            pass
+
+    _stderr_thread = threading.Thread(target=_drain, name="ffmpeg-stderr", daemon=True)
+    _stderr_thread.start()
+
     completed = False
     try:
         while True:
@@ -308,7 +332,9 @@ def ffmpeg_pcm_stream(path: Path, ffmpeg: str = "ffmpeg", start_sec: float = 0.0
                 proc.kill()
                 rc = proc.wait()
             if rc not in (0, None):
-                raise RuntimeError(f"ffmpeg 退出码 {rc}")
+                _stderr_thread.join(timeout=2)
+                raise RuntimeError(
+                    f"ffmpeg 退出码 {rc}：{_ffmpeg_reason(tail, path)}")
         else:
             # 消费者提前退出（取消 / 异常）：静默回收，不覆盖真实异常
             proc.kill()
@@ -316,6 +342,35 @@ def ffmpeg_pcm_stream(path: Path, ffmpeg: str = "ffmpeg", start_sec: float = 0.0
                 proc.wait(timeout=5)
             except Exception:
                 pass
+        try:
+            proc.stderr.close()
+        except Exception:
+            pass
+
+
+def _ffmpeg_reason(tail, path: Path) -> str:
+    """把 ffmpeg stderr 尾部整理成一句能照着动手的话。
+
+    Windows 的错误文本形如
+        [in#0 @ 0000021c] Error opening input: Permission denied
+        Error opening input file 002.m4a.
+    原样贴出去已经比「拒绝访问」强得多；这里再把最常见的几种翻译成中文，
+    让使用者不必自己猜「Permission denied」在哪一层。
+    """
+    lines = [x for x in tail if x.strip()]
+    raw = " | ".join(lines[-4:]) if lines else "(ffmpeg 未输出任何错误文本)"
+    low = raw.lower()
+    if "permission denied" in low:
+        hint = "（檔案被其他程式占用，或目前帳號對它／它所在的資料夾沒有讀取權限）"
+    elif "no such file" in low or "cannot find" in low:
+        hint = "（路徑不存在，或檔名在傳遞過程中被截斷）"
+    elif "invalid data" in low or "moov atom not found" in low:
+        hint = "（檔案內容不是它副檔名宣稱的格式，或檔案未下載完整）"
+    elif "is a directory" in low:
+        hint = "（給的是資料夾，不是音檔）"
+    else:
+        hint = ""
+    return f"{raw}{hint}"
 
 
 def wav_pcm_stream(path: Path, start_sec: float = 0.0):

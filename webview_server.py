@@ -69,16 +69,33 @@ _CONTENT_TYPES = {
 
 
 class _EventHub:
-    """SSE 廣播：每個連線一個 Queue，publish() 推給全部訂閱者。"""
+    """SSE 廣播：每個連線一個 Queue，publish() 推給全部訂閱者。
+
+    为什么要保留「最近状态」并在新订阅者接入时重放：
+    模型载入在线程里从 ``srv.start()`` 之后就开始跑，而 Edge 窗口要一会儿
+    才连上 ``/api/events``。加载期间推的「載入 VAD 模型…」「編譯 ASR 模型…」
+    在没有任何订阅者时**直接被丢掉**，用户看到的就是一个白屏卡十几秒，
+    然后突然变「已就绪」——中间发生过什么完全不可见，只能怀疑是不是卡死。
+    这里把最近一条 ``status`` / ``progress`` / ``warning`` 留下来，新连接
+    先补发再走实时流，冷启动的那段就看得见了。
+    """
+
+    # 这些事件是「当前状态」而非「一次性动作」，重放有意义。
+    # progress / download 之类的瞬时进度不重放（重放一条过期的 47% 只会误导）。
+    _STICKY = ("status", "warning")
 
     def __init__(self):
         self._subs: set[queue.Queue] = set()
         self._lock = threading.Lock()
+        self._sticky: dict[str, dict] = {}
 
     def subscribe(self) -> queue.Queue:
         q: queue.Queue = queue.Queue()
         with self._lock:
             self._subs.add(q)
+            # 先补发最近状态（如果有），让晚连上的页面也知道现在处于什么状态
+            for ev, payload in self._sticky.items():
+                q.put({"event": ev, "payload": payload})
         return q
 
     def unsubscribe(self, q: queue.Queue):
@@ -88,6 +105,8 @@ class _EventHub:
     def publish(self, event: str, payload: dict):
         msg = {"event": event, "payload": payload}
         with self._lock:
+            if event in self._STICKY:
+                self._sticky[event] = payload      # 记住，供晚连上的页面补发
             subs = list(self._subs)
         for q in subs:
             try:
@@ -400,11 +419,40 @@ class WebViewServer:
                 return tmp_dir, opts, None
 
             def _cleanup_upload(self, tmp_dir):
+                """刪掉本次上傳的臨時目錄；失敗要說出來，不能靜默。
+
+                以前是 ``shutil.rmtree(tmp_dir, ignore_errors=True)``。Windows 上
+                這個呼叫很容易失敗：ffmpeg / crispasr 子程序剛被 kill、句柄尚未
+                真正釋放，rmtree 立刻撞上 WinError 5。ignore_errors 把它吞掉，
+                結果是**每轉錄一次就在 %TEMP% 留一份完整音檔**（幾百 MB 到幾 GB
+                的講座音檔），跑幾次就把系統碟塞滿，而且完全沒有痕跡。
+                現在改成：重試幾次（給作業系統一點時間放手），仍失敗就記進
+                run log —— 讓使用者知道去哪清，也讓我們知道它是真故障。
+                """
                 if not tmp_dir:
                     return
+                import shutil
+                import time as _t
+                last = None
+                for attempt in range(4):
+                    try:
+                        shutil.rmtree(tmp_dir)
+                        return
+                    except FileNotFoundError:
+                        return                      # 已經不見了 = 目的達成
+                    except OSError as exc:
+                        last = exc
+                        # WinError 5/32（被占用）都是暫態，退讓後再來一次
+                        _t.sleep(0.15 * (attempt + 1))
+                    except Exception as exc:        # 非預期錯誤：沒必要重試
+                        last = exc
+                        break
                 try:
-                    import shutil
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    server.hub.publish("warning", {
+                        "code": "temp_cleanup",
+                        "message": (f"暫存檔清理失敗，可手動刪除：{tmp_dir}"
+                                    f"（{type(last).__name__}: {last}）"),
+                    })
                 except Exception:
                     pass
 

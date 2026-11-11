@@ -143,6 +143,14 @@ _QWEN_CASR_MODELS = ("qwen3", "qwen3-ja", "tea")
 # 各 crispasr-Qwen 模型在下載訊息中的中文註記
 _QWEN_CASR_NOTE = {"qwen3-ja": "（日語動漫）", "tea": "（台灣國語）"}
 
+# Qwen GGUF 量化的**唯一**缺省值。首啟種子（_seed_defaults）與所有讀取側
+# （_load_crispasr / selected_model_present / health / set_model …）都必須引用
+# 這一個常數。曾經兩邊各寫一份字面量：種子寫 q4、讀取缺省寫 q8 —— 於是
+# 「首啟下載 q4 → 載入時找 q8 → 再下一遍」，而模型還沒到位時自動載入路径
+# 會在啟動當下拉起一次數百 MB 的下載（使用者看到的就是「首次開啟閃退，
+# 但 settings.json 已建立成功」）。用常數把兩邊釘在一起，改一處即全改。
+_QWEN_QUANT_DEFAULT = "q4"
+
 
 def _qwen_casr_dl(crisp_model: str):
     """依 crisp_model 回傳對應的 (檔名, 存在檢查, 下載) 三個下載器函式。
@@ -346,7 +354,7 @@ class WebBackend:
             return                       # 既有設定 → 不覆寫
         cur.setdefault("backend", "crispasr")
         cur.setdefault("crisp_model", "qwen3")
-        cur.setdefault("crisp_qwen_quant", "q4")
+        cur.setdefault("crisp_qwen_quant", _QWEN_QUANT_DEFAULT)
         try:
             f.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
@@ -551,7 +559,7 @@ class WebBackend:
             # 自動推斷 --backend qwen3-1.7b）。標準版與日語動漫版共用此路徑，僅來源/
             # 檔名不同（由 _qwen_casr_dl 分派）。Q4/Q8 兩量化，缺檔自動下載（cstr repo）。
             fname_fn, check_fn, download_fn = _qwen_casr_dl(crisp_model)
-            qquant = s.get("crisp_qwen_quant", "q8")
+            qquant = s.get("crisp_qwen_quant", _QWEN_QUANT_DEFAULT)
             model_dir = Path(s.get("model_dir", str(getattr(core, "_DEFAULT_MODEL_DIR",
                                                             BASE_DIR / "ov_models"))))
             model_path = model_dir / fname_fn(qquant)
@@ -636,7 +644,7 @@ class WebBackend:
                 cm = s.get("crisp_model", "breeze")
                 if cm in _QWEN_CASR_MODELS:
                     _, check_fn, _ = _qwen_casr_dl(cm)
-                    return check_fn(model_dir, s.get("crisp_qwen_quant", "q8"))
+                    return check_fn(model_dir, s.get("crisp_qwen_quant", _QWEN_QUANT_DEFAULT))
                 return quick_check_breeze(cd, s.get("crisp_quant", "q5"))
             if be == "chatllm":
                 return ((self._chatllm_dir() / "qwen3-asr-1.7b.bin").exists()
@@ -1359,7 +1367,7 @@ class WebBackend:
         if backend == "crispasr":
             cm = s.get("crisp_model", "breeze")
             quant = (s.get("crisp_quant", "q5") if cm == "breeze"
-                     else s.get("crisp_qwen_quant", "q8"))   # qwen3 量化也納入識別
+                     else s.get("crisp_qwen_quant", _QWEN_QUANT_DEFAULT))   # qwen3 量化也納入識別
             # 加速版本也納入識別：換 Vulkan↔CUDA 等同換核心，需重啟才生效
             return ("crispasr", cm, quant, self._crisp_variant())
         return ("chatllm",)
@@ -1373,10 +1381,10 @@ class WebBackend:
             if cm == "tea":
                 return ("Qwen", _TEA_CASR_QUANT_LABEL["q8"])
             if cm == "qwen3-ja":
-                qq = s.get("crisp_qwen_quant", "q8")
+                qq = s.get("crisp_qwen_quant", _QWEN_QUANT_DEFAULT)
                 return ("Qwen", _QWEN_JA_CASR_QUANT_LABEL.get(qq, _QWEN_JA_CASR_QUANT_LABEL["q8"]))
             if cm == "qwen3":
-                qq = s.get("crisp_qwen_quant", "q8")
+                qq = s.get("crisp_qwen_quant", _QWEN_QUANT_DEFAULT)
                 return ("Qwen", _QWEN_CASR_QUANT_LABEL.get(qq, _QWEN_CASR_QUANT_LABEL["q8"]))
             q = s.get("crisp_quant", "q5")
             return ("Whisper (Breeze)", _BREEZE_QUANT_LABEL.get(q, _BREEZE_QUANT_LABEL["q5"]))
@@ -1443,7 +1451,7 @@ class WebBackend:
                 cm = patch.get("crisp_model", "breeze")
                 if cm in _QWEN_CASR_MODELS:
                     _, check_fn, _ = _qwen_casr_dl(cm)
-                    return check_fn(model_dir, patch.get("crisp_qwen_quant", "q8"))
+                    return check_fn(model_dir, patch.get("crisp_qwen_quant", _QWEN_QUANT_DEFAULT))
                 return quick_check_breeze(self._crispasr_dir(),
                                           patch.get("crisp_quant", "q5"))
             if backend == "chatllm":
@@ -1661,7 +1669,7 @@ class WebBackend:
         vmeta = variants_meta.get(variant, variants_meta["vulkan"])
         core_ok = quick_check_crispasr(crispasr_dir, variant)
         crisp_quant = s.get("crisp_quant", "q5")
-        qwen_quant = s.get("crisp_qwen_quant", "q8")
+        qwen_quant = s.get("crisp_qwen_quant", _QWEN_QUANT_DEFAULT)
         fa_quant = s.get("crisp_fa_quant", "q5")
         _variant_label = vmeta.get('short') or vmeta['label']
         crisp = {

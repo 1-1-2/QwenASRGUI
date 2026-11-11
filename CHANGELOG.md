@@ -191,10 +191,53 @@
   单连接实测 14 KB/s。Blob 支持 `Range`（206），改 16 连接 × 1.5 MB 分片后
   **0.33 MB/s，165.5 MB 用 496 秒**（约 24×）。
 
+### Wave 9 · 首启闪退、那 10 秒、以及 `[WinError 5] 拒绝访问`
+
+使用者报三件事，其中两件是**同一种病**：出错之后，现场没有留下任何可查的东西。
+
+- **首启闪退查无实据，是因为日志路径本身就写错了。**
+  `使用说明.txt` 让使用者去 `%LOCALAPPDATA%\QwenASR-WebView\launcher.log`，
+  而 `_log_dir()` 用的是 `APP_NAME`（`聲音辨識小工具`）；`edge-profile` 也被说成
+  「程序目录下的」子目录，实际在 `%LOCALAPPDATA%` 里。照说明去翻只会翻到空目录，
+  于是「闪退」永远只能靠猜。改法：说明改成真实路径，并加测试钉住
+  「说明里的目录名 == `APP_NAME`」，以后再改名字会立刻变红。
+- **首启种子的量化值与所有读取侧的缺省值不一致。**
+  `_seed_defaults()` 写 `crisp_qwen_quant = "q4"`，而 `_load_crispasr` /
+  `selected_model_present` / health / `set_model` 等七处读取的缺省是 `"q8"`。
+  后果是「首启下 q4 → 载入时找 q8 → 再下一遍 q8」；模型一个都没到位时，
+  自动载入路径还会在启动当下静默拉起一次数百 MB 的下载 —— 这正是
+  「第一次打开闪退，但 settings.json 已建立成功」的形态（种子先落盘，
+  下载在后台炸掉）。改为单一常量 `_QWEN_QUANT_DEFAULT`，种子与读取共引同一个。
+- **`[WinError 5] 拒绝访问` 没有任何上下文，因为 ffmpeg 的 stderr 被丢进了 DEVNULL。**
+  ffmpeg 打不开输入文件的真正原因（`Permission denied` / `No such file` /
+  `moov atom not found` / `Is a directory`）**只在 stderr 里**，而
+  `ffmpeg_pcm_stream()` 写的是 `stderr=subprocess.DEVNULL`，失败时只抛一句
+  `ffmpeg 退出码 N`。于是使用者拿到的就只有自己 OSError 的那半句。
+  改为管道收集 + 独立线程抽干（不抽干会因管道写满把 ffmpeg 堵死，表现成
+  「转换卡住」），失败时把 ffmpeg 原话连同中文提示一起抛出来。
+- **临时目录清理 `ignore_errors=True` 等于每次转写都在 `%TEMP%` 留一份音频。**
+  子程序刚被 kill、句柄还没释放时 rmtree 会撞 WinError 5，被 `ignore_errors`
+  静默吞掉，跑几次就能把系统盘塞满且毫无痕迹。改为退让重试 4 次，
+  仍失败则写进 run log 并告诉使用者去哪删。
+- **那 10 秒**：本地实测 Python 侧全链路 **57 ms**（建 server 51 / 监听 3 /
+  判定 3），所以不在后端。真正的问题是**这段时间完全没有反馈**：模型加载在
+  `srv.start()` 之后立刻开跑，而 `_EventHub` 只广播给当前订阅者、**没有回放**，
+  Edge 还没连上 SSE 时推的「載入 VAD 模型…」「編譯 ASR 模型…」全被丢掉，
+  用户看到的就是白屏卡住再突然「已就绪」。改为 hub 记住最近的 `status` /
+  `warning`，新连接先补发再接实时流（瞬时 `progress` 刻意不重放，重放一条
+  过期的 47% 只会误导）。同时在启动器里加了分段计时，每段写进 `launcher.log`
+  （`[启动计时] … +51ms（累计 51ms）`），下次再有「开得慢」可以直接指名。
+
 ## 验证口径
 
-本地回归全绿（24 套，断言数见 `tests/test_*.py`）、离屏渲染 57/57、远端 CI 全绿；
+本地回归全绿（25 套，断言数见 `tests/test_*.py`）、离屏渲染 57/57、远端 CI 全绿；
 Windows 发行构建**每次都会解包真跑**（`tools/smoke_test.py`），两个变体实测
 端口绑定成功、`/health` 200、无 `crash.log`。
 **全部使用 mock ASR**，真实权重未加载；人工实机验收与 3–5 小时完整任务未做。
 详见 `docs/验证边界.md`。
+
+Wave 9 的额外实测：ffmpeg 失败三条路径（不存在 / 伪造扩展名 / 传目录）都拿到了
+原文与中文提示；正常路径 60 秒音频 960000 样本、耗时 0.03 s；造 2.5 MB
+stderr 噪声验证抽干线程有效（1.36 s 读完、无阻塞）。
+「那 10 秒」在 Windows 真机上仍未复现（本机无桌面，Edge 冷启动那一段测不到），
+但分段计时已落地，下次可从 `launcher.log` 直接读出归属。
