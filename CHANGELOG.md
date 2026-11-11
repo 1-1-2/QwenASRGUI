@@ -236,6 +236,23 @@
   往往正是要对照的那一次。`stdout` / `stderr` 现在共享同一个 fanout，只有一份
   文件句柄，两个流交错时顺序不再乱。
 
+### Wave 10 · 切分预检说人话 / Edge 脱离 Job Object
+
+用户反馈的两个问题在同一份 `launcher.log` 里同时暴露：
+
+- **`[21:06:36] ✕ 切分预检失败：vad_sess is required for VAD preview`**
+  模型未下载时点「切分预检」，`vad_preview()` 需要 Silero VAD 的 ONNX session，
+  但引擎是空壳（`vad_sess=None`），直接抛了内部技术词。改为明确提示
+  「模型尚未載入，無法進行切分預檢。請先到「模型」頁下載並載入模型，再重新嘗試。」，
+  同样的提示也用在「开始转换」上。
+- **首次启动依旧"闪退"**：`launcher.log` 证明 Python 侧两次都成功（34ms 拉起 Edge），
+  "闪退"是 Edge 窗口消失。根因是 `proc_guard` 的 Job Object（`KILL_ON_JOB_CLOSE`）
+  把 Edge 也圈在内 —— Python 退出时 Job handle 关闭 → Edge 被连杀。
+  第一次启动 Edge profile 是空的，冷启动慢（3-5 秒白屏），用户以为闪退就关了。
+  修法：Edge 启动加 `CREATE_BREAKAWAY_FROM_JOB`（`0x01000000`），脱离 Job；
+  同时记录 Edge PID、退出码、存活时间，下次「闪退」时日志能直接看出 Edge
+  是正常关闭还是异常退出。
+
 ## 验证口径
 
 本地回归全绿（25 套，断言数见 `tests/test_*.py`）、离屏渲染 57/57、远端 CI 全绿；
@@ -252,3 +269,5 @@ stderr 噪声验证抽干线程有效（1.36 s 读完、无阻塞）。
 正确轮换为 `.1`。
 「那 10 秒」在 Windows 真机上仍未复现（本机无桌面，Edge 冷启动那一段测不到），
 但分段计时已落地，下次可从 `launcher.log` 直接读出归属。
+Wave 10：vad_preview 错误提示含「模型尚未載入」+「下載」动作指引 + 不是 ValueError；
+Edge 脱离 Job Object（`CREATE_BREAKAWAY_FROM_JOB`）+ 退出码/存活时间日志。
