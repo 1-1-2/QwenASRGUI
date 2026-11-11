@@ -260,6 +260,7 @@ class WebBackend:
         self._theme_cb = None            # 主題變更回呼（app_webview 用來同步視窗標題列深淺）
         self._lock = threading.Lock()
         self._seed_defaults()            # 首次啟動（無 backend）→ 種子預設模型
+        self._adopt_existing_quant()     # 既有設定缺量化 → 沿用磁碟上已有的那份
         self._apply_runtime_prefs()      # 啟動即套用持久化偏好（VAD/簡繁/鏡像/格式）
         self._install_download_hook()    # classified download events → SSE / run log
 
@@ -359,6 +360,48 @@ class WebBackend:
             f.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
+
+    def _adopt_existing_quant(self):
+        """settings 沒寫量化時，沿用「磁碟上已經有的那一份」，不要害人白下載。
+
+        背景：`_seed_defaults()` 只在 settings 完全沒有 backend 時動手。從舊版
+        升上來的使用者大多**已經有 backend**，於是 `crisp_qwen_quant` 這個鍵
+        根本不存在，讀取時一律落到缺省值。
+
+        這就出事了：缺省值原本是 `q8`，改成 `q4` 之後，一個早就下好 q8 的使用者
+        會突然被判定成「模型不就緒」，然後在啟動當下開始下載另一個 q4 —— 明明
+        手邊那份能用，卻要為一個純內部的預設值改動再等十幾分鐘。
+
+        所以在這裡補一次「就地面化」：沒有顯式設定時，先看哪個量化檔真的存在，
+        存在就把它寫進 settings（一次，之後就是顯式值）。都沒有才交給缺省值。
+        代價是啟動多兩次 `Path.exists()`，可以忽略。
+        """
+        f = Path(getattr(core, "SETTINGS_FILE", BASE_DIR / "settings.json"))
+        try:
+            cur = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+        except Exception:
+            return
+        if not cur or cur.get("crisp_qwen_quant"):
+            return                       # 已顯式指定 → 尊重使用者
+        if cur.get("backend") != "crispasr":
+            return                       # 不是 crispasr 就與量化無關
+        if cur.get("crisp_model", "breeze") not in _QWEN_CASR_MODELS:
+            return                       # breeze 系列用 crisp_quant，另有一套
+        try:
+            from downloader import quick_check_qwen3_asr_gguf
+        except Exception:
+            return
+        model_dir = Path(cur.get("model_dir") or
+                         str(getattr(core, "_DEFAULT_MODEL_DIR", BASE_DIR / "ov_models")))
+        for q in ("q8", _QWEN_QUANT_DEFAULT):   # q8 先試：舊缺省，多數老使用者是它
+            try:
+                if quick_check_qwen3_asr_gguf(model_dir, q):
+                    cur["crisp_qwen_quant"] = q
+                    f.write_text(json.dumps(cur, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+                    return
+            except Exception:
+                continue
 
     # ── 事件推送 ────────────────────────────────────────────
     def _emit(self, event: str, payload: dict):

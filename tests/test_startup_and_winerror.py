@@ -312,6 +312,69 @@ def test_readme_log_path_matches_code(c: Checker):
             "%LOCALAPPDATA%\\\\QwenASR-WebView" not in br)
 
 
+# ─────────────────────────────────────────────────────────────
+# 5. 升級不得讓老使用者白下載一次模型
+# ─────────────────────────────────────────────────────────────
+def test_adopt_existing_quant(c: Checker):
+    """settings 沒寫量化時，必須沿用磁碟上已有的那份。
+
+    背景：缺省值從 q8 改成 q4 之後，一個早就下好 q8 的老使用者會被判成
+    「模型不就緒」，然後在啟動當下開始下載另一個 q4 —— 明明手邊那份能用。
+    `_adopt_existing_quant()` 就是為了堵這件事。
+    """
+    import json
+    import sys
+    import tempfile
+
+    sys.path.insert(0, str(ROOT))
+    import webview_backend as wb
+
+    def run(settings, files):
+        td = Path(tempfile.mkdtemp())
+        md = td / "ov_models"
+        md.mkdir()
+        sf = td / "settings.json"
+        sf.write_text(json.dumps(settings, ensure_ascii=False), encoding="utf-8")
+        for n in files:
+            (md / n).write_bytes(b"x" * 5000)      # 够大，绕过 LFS pointer 判定
+        old = (wb.core.SETTINGS_FILE, getattr(wb.core, "_DEFAULT_MODEL_DIR", None))
+        wb.core.SETTINGS_FILE = sf
+        wb.core._DEFAULT_MODEL_DIR = md
+        try:
+            class Fake(wb.WebBackend):
+                def __init__(self):
+                    pass
+            Fake()._adopt_existing_quant()
+            return json.loads(sf.read_text(encoding="utf-8")).get("crisp_qwen_quant")
+        finally:
+            wb.core.SETTINGS_FILE, wb.core._DEFAULT_MODEL_DIR = old
+
+    base = {"backend": "crispasr", "crisp_model": "qwen3"}
+    q8f, q4f = "qwen3-asr-1.7b-q8_0.gguf", "qwen3-asr-1.7b-q4_k.gguf"
+
+    c.check("已有 q8 → 沿用 q8（不重下）", run(base, [q8f]) == "q8")
+    c.check("已有 q4 → 沿用 q4", run(base, [q4f]) == "q4")
+    c.check("都没有 → 不写（交给缺省）", run(base, []) is None)
+    c.check("两个都有 → 优先 q8（旧缺省，覆盖面更大）",
+            run(base, [q8f, q4f]) == "q8")
+    c.check("显式 q4 不被磁盘上的 q8 覆盖",
+            run({**base, "crisp_qwen_quant": "q4"}, [q8f]) == "q4")
+    c.check("显式 q8 不被磁盘上的 q4 覆盖",
+            run({**base, "crisp_qwen_quant": "q8"}, [q4f]) == "q8")
+    c.check("非 crispasr 后端不动它", run({"backend": "openvino"}, [q8f]) is None)
+    c.check("breeze 模型不动它（它用 crisp_quant）",
+            run({**base, "crisp_model": "breeze"}, [q8f]) is None)
+
+
+def test_adopt_is_wired(c: Checker):
+    """迁移必须在 __init__ 里被调用，否则等于没写。"""
+    fn = _funcs(BL).get("__init__")
+    called = bool(fn) and any(
+        isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "_adopt_existing_quant" for n in ast.walk(fn))
+    c.check("__init__ 调用 _adopt_existing_quant", called)
+
+
 def main() -> int:
     c = Checker()
     print("== 首启量化一致性 ==")
@@ -325,6 +388,9 @@ def main() -> int:
     test_main_keeps_survivor_free(c)
     print("== 使用说明指向的日志路径 ==")
     test_readme_log_path_matches_code(c)
+    print("== 升级不害老用户重下模型 ==")
+    test_adopt_existing_quant(c)
+    test_adopt_is_wired(c)
     print()
     print(f"{c.total - c.failed}/{c.total} 通过")
     return 1 if c.failed else 0
@@ -333,6 +399,9 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
 if __name__ == "__main__":
     raise SystemExit(main())
