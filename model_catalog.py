@@ -384,6 +384,19 @@ def import_local_bundle(src_dir: Path, model_root: Path, bundle: dict) -> dict:
 # L2: human-readable manifest + ready-to-run downloader commands
 # ---------------------------------------------------------------------------
 
+def _manifest_path(path: Path) -> str:
+    """Render a path in a manifest with POSIX separators on every OS.
+
+    The download manifest is a human-readable text artefact that users copy
+    into aria2c / download managers. Emitting os-native separators made it
+    differ between Linux and Windows (``ov_models/qwen3_asr_int8`` vs
+    ``ov_models\\qwen3_asr_int8``), which broke the Wave 2 regression on the
+    Windows runner. Windows file APIs and aria2c both accept forward slashes,
+    so ``as_posix()`` is safe here and makes the output deterministic.
+    """
+    return Path(path).as_posix()
+
+
 def build_manifest_text(model_root: Path, bundle_ids: list[str],
                         mirror_base: str = "", doc: dict | None = None) -> str:
     """Produce a .txt list with URLs, target paths, hashes and aria2c commands."""
@@ -392,7 +405,7 @@ def build_manifest_text(model_root: Path, bundle_ids: list[str],
     lines: list[str] = []
     lines.append("QwenASRGUI · model download manifest")
     lines.append("=" * 60)
-    lines.append(f"Target root : {Path(model_root).resolve()}")
+    lines.append(f"Target root : {_manifest_path(Path(model_root).resolve())}")
     lines.append(f"Mirror      : {mirror_base or '(official, no mirror)'}")
     lines.append("")
     lines.append("IMPORTANT: size_bytes / sha256 are shown as UNKNOWN unless verified")
@@ -401,7 +414,7 @@ def build_manifest_text(model_root: Path, bundle_ids: list[str],
     all_cmds: list[str] = []
     for b in chosen:
         lines.append(f"[{b['id']}] {b['label']}")
-        lines.append(f"  target : {bundle_dir(model_root, b)}")
+        lines.append(f"  target : {_manifest_path(bundle_dir(model_root, b))}")
         if b.get("size_hint"):
             lines.append(f"  approx : {b['size_hint']} (from {b.get('size_hint_source', 'source')}; estimate only)")
         lines.append("")
@@ -417,7 +430,7 @@ def build_manifest_text(model_root: Path, bundle_ids: list[str],
             if hint:
                 lines.append(f"      approx  : {hint} (estimate, not for progress)")
             dest = bundle_dir(model_root, b) / f["name"]
-            all_cmds.append(f'aria2c -x 8 -s 8 -k 1M -c -d "{dest.parent}" -o "{f["name"]}" "{urls[0]}"')
+            all_cmds.append(f'aria2c -x 8 -s 8 -k 1M -c -d "{_manifest_path(dest.parent)}" -o "{f["name"]}" "{urls[0]}"')
         lines.append("")
     lines.append("=" * 60)
     lines.append("aria2c commands (copy / paste, resumable, multi-connection)")
@@ -430,6 +443,6 @@ def build_manifest_text(model_root: Path, bundle_ids: list[str],
     lines.append("Hugging Face CLI alternative (optional external tool, not bundled):")
     for b in chosen:
         if b.get("target_dir"):
-            lines.append(f'# hf download <repo> --local-dir "{bundle_dir(model_root, b)}"')
+            lines.append(f'# hf download <repo> --local-dir "{_manifest_path(bundle_dir(model_root, b))}"')
     lines.append("")
     return "\n".join(lines)

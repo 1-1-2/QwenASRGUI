@@ -125,30 +125,46 @@ jobs:
         shell: bash
         run: |
           set +e
-          # Chain with && so a failure in ANY suite makes the block non-zero.
-          # The previous brace-group only reported the last command's exit code,
-          # which silently hid failures in earlier suites.
-          { python tests/make_fixture.py --minutes 0.5 \
-            && python tests/test_wave1.py \
-            && python tests/test_wave15.py \
-            && python tests/test_wave2.py \
-            && python tests/test_layout.py \
-            && python tests/test_release_manifest.py \
-            && python tests/test_verify_package.py \
-            && python tests/test_batch_queue.py \
-            && python tests/test_ui_ops.py \
-            && python tests/test_wave5.py \
-            && python tests/test_docs.py \
-            && python tests/test_integration.py \
-            && python tests/test_longform_runner.py --minutes 0.5 --skip-ffmpeg \
-              --real-vad ov_models/silero_vad_v4.onnx; } > /tmp/tests.log 2>&1
-          code=$?
-          tail -80 /tmp/tests.log
-          if [ "$code" -ne 0 ]; then
-            tail -160 /tmp/tests.log > /tmp/tests_tail.log
-            echo "::error title=tests-log-b64::$(base64 -w0 /tmp/tests_tail.log)"
+          # Run EVERY suite and aggregate failures. Two earlier shapes were both
+          # wrong: a brace-group with `code=$?` only reported the last command's
+          # exit code (hiding Windows-only failures), and an &&-chain stopped at
+          # the first failure (hiding everything after it). This loop prints a
+          # compact PASS/FAIL summary and fails the build if ANY suite failed.
+          : > /tmp/tests.log
+          failed=""
+          run_suite() {
+            name="$1"; shift
+            echo "===== $name =====" >> /tmp/tests.log 2>&1
+            if "$@" >> /tmp/tests.log 2>&1; then
+              echo "PASS  $name"
+            else
+              echo "FAIL  $name"
+              failed="$failed $name"
+            fi
+          }
+          run_suite "fixture" python tests/make_fixture.py --minutes 0.5
+          run_suite "wave1" python tests/test_wave1.py
+          run_suite "wave15" python tests/test_wave15.py
+          run_suite "wave2" python tests/test_wave2.py
+          run_suite "layout" python tests/test_layout.py
+          run_suite "release_manifest" python tests/test_release_manifest.py
+          run_suite "verify_package" python tests/test_verify_package.py
+          run_suite "batch_queue" python tests/test_batch_queue.py
+          run_suite "ui_ops" python tests/test_ui_ops.py
+          run_suite "wave5" python tests/test_wave5.py
+          run_suite "docs" python tests/test_docs.py
+          run_suite "integration" python tests/test_integration.py
+          run_suite "longform_runner" python tests/test_longform_runner.py \
+            --minutes 0.5 --skip-ffmpeg --real-vad ov_models/silero_vad_v4.onnx
+          echo "----- last 120 lines of /tmp/tests.log -----"
+          tail -120 /tmp/tests.log
+          if [ -n "$failed" ]; then
+            echo "::error title=failed-suites::$failed"
+            echo "::error title=tests-log-b64::$(base64 -w0 /tmp/tests.log)"
+            exit 1
           fi
-          exit "$code"
+          echo "All pre-package regressions passed"
+          exit 0
 
       - name: Download optional ffmpeg.exe
         if: ${{ inputs.bundle_ffmpeg != false }}

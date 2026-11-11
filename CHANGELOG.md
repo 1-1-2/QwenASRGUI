@@ -90,7 +90,14 @@
   纯用户数据目录不得进入 `_internal/`，`_internal/ov_models/` 只允许资源白名单；
   白名单由 `build_release.STATIC_DATA` 单一事实源派生，杜绝再次出现两份名单互相打架。
   新增 `tests/test_verify_package.py`（20/20）覆盖合法布局与 8 类越界，并接入 CI 与打包前回归。
-  同时修正 `release.yml` 回归块原先只取最后一条命令退出码、会吞掉中间测试失败的问题。
+  同时修正 `release.yml` 回归块的门禁缺陷：原写法 `{ ... }` 配 `code=$?` 只取最后一条命令的
+  退出码，会吞掉中间套件的失败；中途改成 `&&` 串联后虽能拦截，却会在第一个失败处短路、
+  看不到后续问题。最终改为逐套 `run_suite` 聚合，打印 PASS/FAIL 摘要，任一套失败即判构建失败。
+- **修复 Windows 专属回归失败（下载清单路径分隔符）**：`build_manifest_text()` 原先直接用
+  `str(Path)`，在 Windows 上输出 `ov_models\qwen3_asr_int8`，与 `tests/test_wave2.py` 断言的
+  正斜杠不符；这个失败此前一直被上面的旧门禁吞掉。新增 `_manifest_path()` 统一以
+  `as_posix()` 输出（aria2c / Windows 文件 API 都接受正斜杠），使清单跨平台确定性一致；
+  测试补上「不得出现原生反斜杠」断言，在 Linux CI 就能提前拦住。`tests/test_wave2.py` 60/60。
 - **简体优先**：`README.md` 保持简体，繁体为 `README.zh-Hant.md` 及 `.zh-Hant.md` 分册；
   回推上游前再评估是否反向。
 

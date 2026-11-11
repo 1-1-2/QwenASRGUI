@@ -242,6 +242,14 @@ def main() -> int:
     r.check("manifest marks unknown hash", "sha256  : UNKNOWN" in text)
     r.check("manifest labels estimates", "estimate only" in text)
     r.check("manifest contains target dir", "ov_models/qwen3_asr_int8" in text)
+    # The manifest is a copy/paste artefact: paths must use POSIX separators on
+    # every OS. On Windows a bare str(Path) would emit backslashes here. This
+    # assertion runs on Linux CI too, so it pins the contract before a Windows
+    # build ever sees it.
+    r.check("manifest paths are OS-independent (no native backslashes)",
+            "ov_models\\qwen3_asr_int8" not in text and
+            all("\\" not in ln for ln in text.splitlines()
+                if ln.strip().startswith("target :")))
     r.check("manifest does not invent numeric bytes",
             "size_bytes  :" not in text and "bytes  :" not in text)
 
