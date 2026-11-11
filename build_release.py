@@ -542,6 +542,12 @@ REQUIRED_FILES = [
     "_internal/prompt_template.json",
     "_internal/webview_assets/index.html",
     "_internal/ov_models/silero_vad_v4.onnx",
+    # 2026-11 启动崩溃的教训：ui_text 漏收会让 webview_backend 的导入链断掉，
+    # 而 app_webview 的兜底会把它变成一句「'NoneType' object is not callable」。
+    # 在打包端直接挡：这几个模块必须在，缺一个就别发版。
+    "_internal/ui_text.py",
+    "_internal/webview_backend.py",
+    "_internal/webview_server.py",
     "manifest.json",
 ]
 
