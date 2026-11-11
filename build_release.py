@@ -122,6 +122,12 @@ OPENVINO_MUST_KEEP = [
 
 # Python 侧的死重：被 openvino 包带进来的 OpenVINO 自己的前端 Python 绑定。
 OPENVINO_DROP_SUBDIRS = ["frontend"]
+# 纯 C++ 头文件目录（OneAPI TBB 等），运行时零用途。
+OPENVINO_DROP_HEADERS = ["include"]
+
+# 运行时完全用不到的纯开发物：C++ 头文件（include/，约 5 MB）与类型存根
+# （*.pyi，约 1 MB）。两者只在编译/写代码时被读取，import 不会碰。
+OPENVINO_DROP_PYI = True
 
 
 def slim_openvino(internal: Path) -> dict:
@@ -151,15 +157,25 @@ def slim_openvino(internal: Path) -> dict:
                 result["节省字节"] += size
             except OSError as exc:
                 result["失败"].append(f"{p.name}: {exc}")
-    for sub in OPENVINO_DROP_SUBDIRS:
-        d = ov_dir / sub
-        if d.is_dir():
+    # include/ 与 .pyi 用嵌套 glob 处理：真实 wheel 里它们不止一级目录。
+    for sub in OPENVINO_DROP_SUBDIRS + OPENVINO_DROP_HEADERS:
+        for d in list(ov_dir.glob(f"**/{sub}")):
+            if d.is_dir():
+                try:
+                    result["节省字节"] += dir_size(d)
+                    shutil.rmtree(d)
+                    result["删除"].append(f"{d.relative_to(ov_dir).as_posix()}/")
+                except OSError as exc:
+                    result["失败"].append(f"{d.name}/: {exc}")
+    if OPENVINO_DROP_PYI:
+        for p in list(ov_dir.rglob("*.pyi")):
             try:
-                result["节省字节"] += dir_size(d)
-                shutil.rmtree(d)
-                result["删除"].append(f"{sub}/")
+                size = p.stat().st_size
+                p.unlink()
+                result["删除"].append(p.name)
+                result["节省字节"] += size
             except OSError as exc:
-                result["失败"].append(f"{sub}/: {exc}")
+                result["失败"].append(f"{p.name}: {exc}")
     return result
 
 HIDDEN_IMPORTS = [

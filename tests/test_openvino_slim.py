@@ -73,6 +73,12 @@ def make_tree(root: Path) -> Path:
     front = stage / "_internal" / "openvino" / "frontend"
     (front / "onnx").mkdir(parents=True)
     (front / "onnx" / "py_onnx_frontend.pyd").write_bytes(b"\0" * 4096)
+    # 真实 wheel 里的纯开发物：C++ 头文件（嵌套两级）与类型存根。
+    inc = stage / "_internal" / "openvino" / "include" / "oneapi" / "tbb"
+    inc.mkdir(parents=True)
+    (inc / "flow_graph.h").write_bytes(b"\0" * 120_000)
+    (stage / "_internal" / "openvino" / "_pyopenvino" ).mkdir(parents=True, exist_ok=True)
+    (stage / "_internal" / "openvino" / "_pyopenvino" / "__init__.pyi").write_bytes(b"\0" * 60_000)
     return stage
 
 
@@ -104,6 +110,11 @@ def main() -> int:
                 "openvino_auto_plugin.dll" in left and "openvino_hetero_plugin.dll" in left)
         r.check("python frontend bindings removed",
                 not (internal / "openvino" / "frontend").exists())
+        # 纯开发物：C++ 头文件与 .pyi 类型存根，运行时 import 不会碰。
+        r.check("C++ headers removed (nested include/)",
+                not (internal / "openvino" / "include").exists())
+        r.check("type stubs removed (*.pyi)",
+                not list((internal / "openvino").rglob("*.pyi")))
 
         # The verifier must accept the slimmed tree...
         errors = vp.check_openvino_slim(stage)

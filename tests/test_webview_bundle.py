@@ -36,6 +36,11 @@ class Result:
         self.items.append(bool(ok))
         print(f"  {'通过' if ok else '失败'}  {name}" + (f" — {detail}" if detail else ""))
 
+    def skip(self, name, why):
+        # 不算通过也不算失败：依赖不在的环境（如 CI runner）无法验证这一项，
+        # 但也不能因此判红 —— 否则「本机装了 customtkinter 才绿」的假象会一直存在。
+        print(f"  --   {name}（跳过：{why}）")
+
     @property
     def ok(self):
         return all(self.items)
@@ -55,6 +60,11 @@ print(json.dumps({
     "ctk": "customtkinter" in sys.modules,
 }))
 """
+
+
+def _has_module(name: str) -> bool:
+    import importlib.util
+    return importlib.util.find_spec(name) is not None
 
 
 def _probe(env_extra: dict) -> dict | None:
@@ -92,12 +102,20 @@ def main() -> int:
         r.check("customtkinter is never imported", not wb["ctk"])
 
     # ── default / Tk mode (no regression for `python app.py`) ─────────────
-    tk = _probe({"QWENASR_WEBVIEW_BUILD": ""})
-    r.check("app.py imports in Tk mode", tk is not None)
-    if tk:
-        r.check("Tk App still defined", tk["has_app"])
-        r.check("inference core still present", tk["has_engine"])
-        r.check("Tk mode does load tkinter", tk["tk"])
+    # Tk 模式需要 customtkinter；CI runner 不装它，本地也不一定有。
+    # 依赖缺失时跳过（见 Result.skip），不要把它当成「代码坏了」。
+    has_ctk = _has_module("customtkinter")
+    if not has_ctk:
+        for name in ("app.py imports in Tk mode", "Tk App still defined",
+                     "inference core still present", "Tk mode does load tkinter"):
+            r.skip(name, "环境未安装 customtkinter")
+    else:
+        tk = _probe({"QWENASR_WEBVIEW_BUILD": ""})
+        r.check("app.py imports in Tk mode", tk is not None)
+        if tk:
+            r.check("Tk App still defined", tk["has_app"])
+            r.check("inference core still present", tk["has_engine"])
+            r.check("Tk mode does load tkinter", tk["tk"])
 
     # ── static checks on the build & launcher ─────────────────────────────
     build_src = (ROOT / "build_release.py").read_text(encoding="utf-8")
