@@ -166,7 +166,39 @@ def main() -> int:
     # The CLI must expose the escape hatch.
     src = (ROOT / "build_release.py").read_text(encoding="utf-8")
     r.check("--no-slim escape hatch exists", '"--no-slim"' in src)
-    r.check("manifest records what was removed", '"OpenVINO 精简"' in src)
+    # ── 端到端：精简必须作用在**最终打包目录**上 ─────────────────────
+    # 2026-11-11 连续三次 Windows 构建失败的真因：make_package() 把
+    # dist/ 里的中间产物传给了 slim_openvino()，最终包里一个字节没少，
+    # 但报告写着「省了 176 MB」。只测 slim_openvino() 本身永远抓不到。
+    from unittest import mock as _mock
+    e2e_root = Path(tempfile.mkdtemp()) / "e2e"
+    produced = e2e_root / "dist" / "webview" / br.APP_NAME
+    p_internal = produced / "_internal"
+    (p_internal / "openvino" / "libs").mkdir(parents=True)
+    (produced / (br.APP_NAME + ".exe")).write_bytes(b"MZ" + b"\0" * 100)
+    for name, size in (("openvino_intel_cpu_plugin.dll", 2_000_000),
+                       ("openvino.dll", 1_000_000),
+                       ("openvino_ir_frontend.dll", 100_000),
+                       ("openvino_intel_gpu_plugin.dll", 5_000_000),
+                       ("openvino_intel_npu_compiler.dll", 9_000_000)):
+        (p_internal / "openvino" / "libs" / name).write_bytes(b"\0" * size)
+    (p_internal / "webview_assets").mkdir()
+    (p_internal / "webview_assets" / "index.html").write_text("<html>", encoding="utf-8")
+    (p_internal / "models.json").write_text('{"bundles": []}', encoding="utf-8")
+    with _mock.patch.object(br, "ROOT", e2e_root):
+        br.make_package("test", "abc1234", None, slim=True)
+    staged = e2e_root / "release_pkg" / br.APP_NAME / "_internal"
+    staged_names = {q.name for q in staged.rglob("*") if q.is_file()}
+    r.check("end-to-end: final package has no GPU/NPU payload",
+            "openvino_intel_gpu_plugin.dll" not in staged_names and
+            "openvino_intel_npu_compiler.dll" not in staged_names,
+            str(sorted(staged_names)[:6]))
+    r.check("end-to-end: final package keeps the CPU path",
+            {"openvino_intel_cpu_plugin.dll", "openvino.dll",
+             "openvino_ir_frontend.dll"} <= staged_names)
+
+
+    r.check("manifest records what was removed (manifest 记下了精简动作)", '"OpenVINO 精简"' in src)
 
     passed = sum(r.items)
     print(f"\n结果：{passed}/{len(r.items)} 项通过")

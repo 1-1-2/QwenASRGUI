@@ -416,14 +416,29 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None,
 
     # Trim OpenVINO before the ZIP is written: the deletion has to happen on
     # the staged tree, otherwise the savings never reach the download.
+    #
+    # 这里必须用 stage_internal（打包目录里的那份），不能用上面的 `internal`
+    # ——那是 dist/ 里的构建中间产物。传错会「精简报告很好看、最终包一个字节
+    # 都没少」，2026-11-11 的三次 Windows 构建都是这么失败的。
+    stage_internal = stage / "_internal"
     slim_report = {"启用": False, "删除": [], "失败": [], "节省字节": 0, "跳过原因": "--no-slim"}
     if slim:
-        slim_report = slim_openvino(internal)
+        slim_report = slim_openvino(stage_internal)
         print(f"\nOpenVINO 精简：删除 {len(slim_report['删除'])} 项，"
               f"省 {slim_report['节省字节'] / 1024 / 1024:.1f} MB"
               + (f"（跳过：{slim_report['跳过原因']}）" if slim_report["跳过原因"] else ""))
         if slim_report["失败"]:
             print("  删除失败：", slim_report["失败"][:5])
+
+    # 精简作用对象自检：在最终目录里再数一遍，删不动就直接失败。
+    # 这条曾经被漏掉，代价是三次构建才发现「报告说省了 176 MB，包里没变」。
+    if slim and slim_report.get("启用"):
+        leftover = [n for pat in OPENVINO_DROP_PATTERNS
+                    for n in (p.name for p in stage_internal.rglob(pat))
+                    if n not in OPENVINO_MUST_KEEP]
+        if leftover:
+            raise RuntimeError(
+                "精简未作用到最终目录，仍残留：" + ", ".join(sorted(set(leftover))[:5]))
 
     for d in ("ov_models", "subtitles", "longform_state"):
         (stage / d).mkdir(exist_ok=True)
