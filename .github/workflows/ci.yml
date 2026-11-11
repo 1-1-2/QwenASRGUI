@@ -100,7 +100,8 @@ jobs:
             tests/test_batch_api.py tests/test_ui_ops.py tests/test_wave5.py \
             tests/test_release_manifest.py tests/test_docs.py \
             ui_text.py downloader.py tests/test_i18n_contract.py \
-            tests/test_punct_contract.py tools/gen_download_doc.py
+            tests/test_punct_contract.py tools/gen_download_doc.py \
+            tools/verify_package.py tests/test_verify_package.py
 
       - name: Frontend syntax check
         run: |
@@ -124,6 +125,12 @@ jobs:
 
       - name: Wave 3 regression (manifest / delta / smooth upgrade / rollback)
         run: python tests/test_release_manifest.py
+
+      - name: Wave 3 regression (staged package layout contract)
+        # Guards the ov_models/ dual-purpose rule: shipped VAD/mel resources
+        # belong in _internal/ov_models/, user data must stay beside the
+        # launcher. A plain name-based ban once broke the Windows build.
+        run: python tests/test_verify_package.py
 
       - name: Wave 4 regression (server-side batch queue)
         run: |

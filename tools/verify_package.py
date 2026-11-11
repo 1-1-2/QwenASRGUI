@@ -7,6 +7,19 @@
   4. 分层产物结构正确：启动器在包根，依赖在 _internal/，且 _internal/ 体积合理
      （onefile 时代用「EXE > 20MB」防空壳；onedir 下启动器本身只有几 MB，
       体积门槛改看 _internal/）
+  5. 用户数据与随包只读资源各在其位（见 check_layout）
+
+注意 ``ov_models/`` 是同名双用途目录：
+
+  * 启动器旁 ``ov_models/``   -> 用户数据（按需下载的识别权重），更新时不动
+  * ``_internal/ov_models/``  -> 随包只读资源（Silero VAD、mel filters），
+    由 build_release.py 的 STATIC_DATA 经 ``--add-data`` 放进分层目录，
+    app.py::_find_vad_model() 通过 resource_path() 在此查找。
+
+G2 落地时的一条旧规则按名字一刀切，禁止 ``ov_models/`` 出现在 _internal/，
+与构建脚本自相矛盾，导致 release 工作流打包成功后在校验步失败。这里改成
+按「内容」判定：_internal/ov_models/ 允许且只允许随包资源白名单，纯用户
+数据目录（subtitles/、longform_state/、ffmpeg/）仍然严禁进入 _internal/。
 """
 
 from __future__ import annotations
@@ -16,6 +29,69 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# 用户可写数据目录：必须在启动器旁，绝不能进会被整包替换的 _internal/。
+USER_DATA_DIRS = ("ov_models", "subtitles", "longform_state")
+
+# app.py::_find_vad_model() 额外接受的旧名，不在 STATIC_DATA 里但属随包资源。
+LEGACY_VAD_NAMES = frozenset({"silero_vad.onnx"})
+
+
+def shipped_ov_assets() -> frozenset[str]:
+    """_internal/ov_models/ 允许出现的随包只读资源。
+
+    单一事实源来自 build_release.STATIC_DATA，而不是在这里再抄一份名单：
+    本次构建失败的根因正是「构建脚本说可以、校验脚本说不行」。以后往包里
+    新增随包资源，只需改 STATIC_DATA，校验规则自动跟随，不会再自相矛盾。
+    """
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from build_release import STATIC_DATA
+    names = {Path(src).name for src, dst in STATIC_DATA if dst == "ov_models"}
+    return frozenset(names | LEGACY_VAD_NAMES)
+
+
+def check_layout(stage: Path, assets: frozenset[str] | None = None) -> list[str]:
+    """返回包结构错误列表；空列表表示结构合法。
+
+    单独抽出成纯函数，便于 tests/test_verify_package.py 用临时目录树直接
+    覆盖合法布局与各类越界情形，无需真的打一个 200 MB 的包。``assets``
+    仅供测试显式注入；正式运行一律用 shipped_ov_assets() 的派生结果。
+    """
+    errors: list[str] = []
+    internal = stage / "_internal"
+    allowed = shipped_ov_assets() if assets is None else assets
+
+    for d in USER_DATA_DIRS:
+        if not (stage / d).is_dir():
+            errors.append(f"缺少用户数据目录 {d}/")
+
+    # 纯用户数据目录一旦出现在 _internal/，整包更新会把它删掉。
+    for d in ("subtitles", "longform_state", "ffmpeg"):
+        if (internal / d).exists():
+            errors.append(f"{d}/ 不应出现在 _internal/ 内")
+
+    shipped = internal / "ov_models"
+    if shipped.is_dir():
+        for p in sorted(shipped.rglob("*")):
+            if p.is_dir():
+                # 随包资源是扁平的两个文件；任何子目录都意味着模型包被误收。
+                errors.append(
+                    f"{p.relative_to(stage).as_posix()}/ 是子目录，"
+                    "但 _internal/ov_models/ 只允许扁平的 VAD / mel 资源文件")
+                continue
+            rel = p.relative_to(stage).as_posix()
+            if p.name not in allowed:
+                errors.append(
+                    f"{rel} 不是允许的随包只读资源"
+                    "（_internal/ov_models/ 只允许 VAD 与 mel filters）")
+        vad = "silero_vad_v4.onnx"
+        if not (shipped / vad).is_file() and vad in allowed:
+            errors.append(f"_internal/ov_models/ 缺少随包 VAD 模型 {vad}")
+    else:
+        errors.append("缺少 _internal/ov_models/ 随包只读资源目录")
+
+    return errors
 
 
 
@@ -74,14 +150,13 @@ def main() -> int:
               f"疑似依赖未完整收集")
         return 1
 
-    # User data must live beside the launcher, never inside _internal/.
-    for d in ("ov_models", "subtitles", "longform_state"):
-        if not (stage / d).is_dir():
-            print(f"错误：缺少用户数据目录 {d}/")
-            return 1
-        if (internal / d).exists():
-            print(f"错误：{d}/ 不应出现在 _internal/ 内")
-            return 1
+    # 用户数据必须在启动器旁；_internal/ov_models/ 则是随包只读资源，
+    # 两者同名但用途不同，按内容判定而不是按目录名一刀切。
+    layout_errors = check_layout(stage)
+    if layout_errors:
+        for err in layout_errors:
+            print(f"错误：{err}")
+        return 1
 
     # G7: verify the content-addressed manifest of the staged package.
     import sys

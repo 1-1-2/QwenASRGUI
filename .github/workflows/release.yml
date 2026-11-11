@@ -125,20 +125,23 @@ jobs:
         shell: bash
         run: |
           set +e
-          { python tests/make_fixture.py --minutes 0.5
-            python tests/test_wave1.py
-            python tests/test_wave15.py
-            python tests/test_wave2.py
-            python tests/test_layout.py
-            python tests/test_release_manifest.py
-            python tests/test_batch_queue.py
-            python tests/test_ui_ops.py
-            python tests/test_wave5.py
-            python tests/test_docs.py
-            python tests/test_integration.py
-            python tests/test_longform_runner.py --minutes 0.5 --skip-ffmpeg \
-              --real-vad ov_models/silero_vad_v4.onnx
-          } > /tmp/tests.log 2>&1
+          # Chain with && so a failure in ANY suite makes the block non-zero.
+          # The previous brace-group only reported the last command's exit code,
+          # which silently hid failures in earlier suites.
+          { python tests/make_fixture.py --minutes 0.5 \
+            && python tests/test_wave1.py \
+            && python tests/test_wave15.py \
+            && python tests/test_wave2.py \
+            && python tests/test_layout.py \
+            && python tests/test_release_manifest.py \
+            && python tests/test_verify_package.py \
+            && python tests/test_batch_queue.py \
+            && python tests/test_ui_ops.py \
+            && python tests/test_wave5.py \
+            && python tests/test_docs.py \
+            && python tests/test_integration.py \
+            && python tests/test_longform_runner.py --minutes 0.5 --skip-ffmpeg \
+              --real-vad ov_models/silero_vad_v4.onnx; } > /tmp/tests.log 2>&1
           code=$?
           tail -80 /tmp/tests.log
           if [ "$code" -ne 0 ]; then

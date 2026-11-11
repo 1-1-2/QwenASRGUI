@@ -82,11 +82,20 @@
   用于对旧文件或用户手工改过的字幕生成副本，不覆盖原档。
 - **自动更新采用 A 方案**：维持「检查更新 = 打开发行页，手动下载覆盖」，
   不投入差量自动更新器；`docs/打包与升级.md` 已把「自动更新未实现」改成准确描述。
+- **修复 Windows 包校验误判**：`ov_models/` 是同名双用途目录——启动器旁是用户权重，
+  `_internal/ov_models/` 是随包只读资源（Silero VAD、Mel filters）。G2 遗留的按名一刀切规则
+  禁止它出现在 `_internal/`，与 `build_release.py`、`app.py::_find_vad_model()` 自相矛盾，
+  导致首个真实 Windows 构建在打完 198 MB ZIP 后才于校验步失败。
+  `tools/verify_package.py` 抽出 `check_layout()` 改为按内容判定：用户数据目录必须在启动器旁，
+  纯用户数据目录不得进入 `_internal/`，`_internal/ov_models/` 只允许资源白名单；
+  白名单由 `build_release.STATIC_DATA` 单一事实源派生，杜绝再次出现两份名单互相打架。
+  新增 `tests/test_verify_package.py`（20/20）覆盖合法布局与 8 类越界，并接入 CI 与打包前回归。
+  同时修正 `release.yml` 回归块原先只取最后一条命令退出码、会吞掉中间测试失败的问题。
 - **简体优先**：`README.md` 保持简体，繁体为 `README.zh-Hant.md` 及 `.zh-Hant.md` 分册；
   回推上游前再评估是否反向。
 
 ## 验证口径
 
-本地回归全绿（各套断言数见 `tests/test_*.py`）、离屏渲染 33/33、远端 CI 全绿。
+本地回归全绿（各套断言数见 `tests/test_*.py`）、离屏渲染 39/39、远端 CI 全绿。
 **全部使用 mock ASR**，真实权重未加载；Windows 实机与 3–5 小时完整任务未复验。
 详见 `docs/验证边界.md`。
