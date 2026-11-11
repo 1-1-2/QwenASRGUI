@@ -154,3 +154,6 @@ tests/_tmp/
 # 构建产物不入库
 release_pkg/
 ffmpeg/
+
+# ── 本地离屏渲染验证产物（不进仓库）──
+_offscreen_out/

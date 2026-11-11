@@ -16,6 +16,7 @@
 | 判断「验证过没有」 | [验证边界](验证边界.md) |
 | 离线下载模型需要哪些文件 | [模型下载清单](模型下载清单.md)（生成物，不翻译） |
 | 参与贡献、遵守文档与注释约定 | [风格规范](风格规范.md) |
+| 新增 / 修改界面文案、理解三语 i18n 契约 | [多语文案契约](多语文案契约.md) |
 | 看版本历史 / 第三方许可 | [CHANGELOG](../CHANGELOG.md) · [NOTICE](../NOTICE) |
 | 看明暗双主题架构图 | [architecture.svg](architecture.svg) · [architecture-dark.svg](architecture-dark.svg) · [源](architecture.mmd) |
 

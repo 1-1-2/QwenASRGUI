@@ -126,8 +126,9 @@ def main() -> int:
                 '"/api/logs"' in server and '"/api/logs/clear"' in server)
         r.check("backend owns a RunLog", "self.run_log = RunLog" in backend
                 and "def get_logs(" in backend)
-        r.check("status/progress messages feed the log",
-                'self.run_log.add(msg' in backend)
+        r.check("status/progress messages feed the log (structured values flattened)",
+                'self.run_log.add(_t.plain(msg)' in backend
+                and 'import ui_text as _t' in backend)
 
         # B5.2 stable enum
         r.check("language select uses stable enum values",
@@ -144,9 +145,13 @@ def main() -> int:
 
         # H6/H7 backend text localisation
         r.check("i18n exposes L() for backend strings",
-                "function L(text, keyHint)" in i18n and " L," in i18n)
-        r.check("traditional->simplified map exists",
-                "function toSimplified(" in i18n and "S2S_PAIRS" in i18n)
+                "function L(value, keyHint)" in i18n and " L," in i18n)
+        r.check("H6/H7 structured key+vars dictionary exists",
+                "const M = {" in i18n and "function renderMsg(" in i18n
+                and "msgKeys" in i18n and "ui_text.py" in i18n)
+        r.check("Simplified conversion is word-level first (no misaligned char pairs)",
+                "function toSimplified(" in i18n and "W2S_WORDS" in i18n
+                and "const S2S = {" in i18n and "S2S_PAIRS" not in i18n)
         r.check("English phrase dictionary exists", "EN_MAP" in i18n)
         r.check("model card labels are localised at display time",
                 "I18N.L(m.label)" in appjs and "o.value = m.label;" in appjs)

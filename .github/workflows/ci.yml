@@ -99,7 +99,8 @@ jobs:
             subtitle_extras.py release_manifest.py tests/test_batch_queue.py \
             tests/test_batch_api.py tests/test_ui_ops.py tests/test_wave5.py \
             tests/test_release_manifest.py tests/test_docs.py \
-            tools/gen_download_doc.py
+            ui_text.py downloader.py tests/test_i18n_contract.py \
+            tests/test_punct_contract.py tools/gen_download_doc.py
 
       - name: Frontend syntax check
         run: |
@@ -137,6 +138,13 @@ jobs:
 
       - name: Wave 6 regression (bilingual docs / generated artefacts)
         run: python tests/test_docs.py
+
+      - name: H6/H7 + C1 contract regressions
+        # i18n contract loads the real i18n.js in Node and probes the real
+        # backend APIs; punct contract asserts resume == full run byte for byte.
+        run: |
+          python tests/test_i18n_contract.py
+          python tests/test_punct_contract.py
 
       - name: Wave 3/4 regression (window / persistence / live subtitles)
         # Pure static + mock Runner checks; no GUI, no .NET, no model weights.

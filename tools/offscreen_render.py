@@ -159,6 +159,30 @@ def main() -> int:
               if page.locator("#view-file").count() else
               page.locator("#progress").count() > 0)
 
+        # H6/H7: the backend now emits {k, v, t} instead of prose. Verify the
+        # real browser renders the three hand written locales, both through
+        # I18N.L() and through the actual SSE progress handler.
+        structured = {
+            "k": "msg.backend.same",
+            "v": {"label": "CPU · OpenVINO INT8"},
+            "t": "「CPU · OpenVINO INT8」已是目前使用的核心。",
+        }
+        wanted = {
+            "hant": "「CPU · OpenVINO INT8」已是目前使用的核心。",
+            "hans": "「CPU · OpenVINO INT8」已是当前使用的核心。",
+            "en": "CPU · OpenVINO INT8 is already the active engine.",
+        }
+        for lang, want in wanted.items():
+            got = page.evaluate("""([lang, payload]) => {
+              window.I18N.setLang(lang);
+              window.QwenAPI._emit('progress', {pct: 12, status: payload});
+              return window.I18N.L(payload);
+            }""", [lang, structured])
+            check(f"H6/H7 structured message renders in {lang}", got == want, got)
+            shown = page.locator("#prog-status").text_content()
+            check(f"H6/H7 progress SSE paints {lang}", shown == want, shown)
+        page.evaluate("window.I18N.setLang('hant')")
+
         # Inject the exact Wave 4 SSE payloads the backend emits.
         page.evaluate("""() => {
           const api = window.QwenAPI;

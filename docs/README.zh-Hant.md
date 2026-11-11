@@ -16,6 +16,7 @@
 | 判斷「驗證過沒有」 | [驗證邊界](驗證邊界.zh-Hant.md) |
 | 離線下載模型需要哪些檔案 | [模型下載清單](模型下载清单.md)（產物，不翻譯） |
 | 參與貢獻、遵守文件與註解約定 | [風格規範](風格規範.zh-Hant.md) |
+| 新增／修改介面文案、理解三語 i18n 契約 | [多語文案契約](多語文案契約.zh-Hant.md) |
 | 看版本歷史 / 第三方授權 | [CHANGELOG](../CHANGELOG.md) · [NOTICE](../NOTICE) |
 | 看明暗雙主題架構圖 | [architecture.svg](architecture.svg) · [architecture-dark.svg](architecture-dark.svg) · [原始檔](architecture.mmd) |
 

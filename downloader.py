@@ -581,42 +581,64 @@ def recommend_crispasr_variant(hw: dict | None = None) -> dict:
         cuda_key = "cuda13" if (drv is None or drv >= _CUDA13_MIN_DRIVER) else "cuda12"
 
     recommended = _CRISPASR_DEFAULT_VARIANT       # 一律以 Vulkan 為預設
+    # H6/H7: alongside the legacy `reason` string, publish the structured key
+    # and variables so the WebView can render all three UI languages. CTk and
+    # other callers keep consuming the plain `reason` unchanged.
     if not hw.get("gpus"):
+        reason_key, reason_vars = "accel.reason.noGpu", {}
         reason = ("未偵測到顯示卡資訊，先以 Vulkan 版為預設——它在沒有獨立顯卡時"
                   "會自動退回 CPU 推理，最不會出事。")
     elif has_nv:
         names = "、".join(g["name"] for g in hw["gpus"] if g["vendor"] == "nvidia")
+        reason_key = "accel.reason.nvidia"
+        reason_vars = {"names": names, "cuda": _CRISPASR_VARIANTS[cuda_key]['label']}
         reason = (f"偵測到 NVIDIA 顯示卡（{names}）。預設仍用 Vulkan（僅 34 MB、"
                   f"實測速度接近）；若要壓榨 Qwen3-ASR 的極速，可改選 "
                   f"{_CRISPASR_VARIANTS[cuda_key]['label']}。")
     elif "amd" in vendors or "intel" in vendors:
         names = "、".join(g["name"] for g in hw["gpus"]
                           if g["vendor"] in ("amd", "intel"))
+        reason_key = "accel.reason.amdIntel"
+        reason_vars = {"vendor": 'AMD' if 'amd' in vendors else 'Intel',
+                       "names": names}
         reason = (f"偵測到 {'AMD' if 'amd' in vendors else 'Intel'} 顯示卡"
                   f"（{names}）。CrispASR 的 Windows 版沒有 ROCm／SYCL，"
                   f"Vulkan 就是這張卡的最佳解。")
     else:
+        reason_key, reason_vars = "accel.reason.noAccel", {}
         reason = "未偵測到可加速的顯示卡，使用 Vulkan 版（會自動退回 CPU 推理）。"
 
     options = []
     for key, meta in _CRISPASR_VARIANTS.items():
         suitable, note = True, ""
+        note_key, note_vars = "", {}
         if key in ("cuda12", "cuda13"):
             if not has_nv:
                 suitable, note = False, "需要 NVIDIA 顯示卡"
+                note_key = "accel.note.needNvidia"
             elif key == "cuda13" and drv is not None and drv < _CUDA13_MIN_DRIVER:
                 suitable, note = False, (f"需要 {_CUDA13_MIN_DRIVER:.0f} 以上的驅動"
                                          f"（目前 {drv:.2f}）")
+                note_key = "accel.note.driverTooOld"
+                note_vars = {"min": f"{_CUDA13_MIN_DRIVER:.0f}", "cur": f"{drv:.2f}"}
             elif key != cuda_key:
                 note = "驅動版本建議改用另一個 CUDA 版本"
+                note_key = "accel.note.otherCuda"
         elif key == "cpu-legacy":
             note = "只有在一般 CPU 版閃退時才需要"
-        options.append({"key": key, "label": meta["label"],
-                        "size_mb": meta["size_mb"], "desc": meta["desc"],
-                        "recommended": key == recommended,
-                        "suitable": suitable, "note": note})
+            note_key = "accel.note.legacyOnly"
+        options.append({
+            "key": key, "label": meta["label"],
+            "size_mb": meta["size_mb"], "desc": meta["desc"],
+            "recommended": key == recommended,
+            "suitable": suitable, "note": note,
+            "i18n": {"label": f"accel.opt.{key}.label",
+                     "desc": f"accel.opt.{key}.desc",
+                     "note": note_key, "vars": note_vars},
+        })
 
     return {"recommended": recommended, "reason": reason,
+            "i18n_reason": {"key": reason_key, "vars": reason_vars},
             "hardware": hw, "options": options}
 
 # Breeze-ASR-26 GGML（phate334）三種量化

@@ -2,20 +2,27 @@
 
 Design decision (important)
 ---------------------------
-Both features operate on a **completed SRT and write a separate file**. They
-never touch the streaming Runner, the checkpoint, or the JSONL. Reasons:
+C1 is applied **in place to the final SRT by the streaming Runner**, exactly
+once, when the task reaches ``done``. C2 writes a separate file.
 
-* The streaming path writes SRT line-by-line and A2 guarantees resume is
-  byte-identical to a full run. Any per-group "look back and edit the previous
-  line" would break that contract (and would need to be replayed from JSONL on
-  resume).
-* The project decision for optional enrichments is explicit: "do not drop the
-  feature, chain it in cheaply, failure must not affect the SRT". A separate
-  output file is the cheapest safe chain.
+Why in-place is safe (this is the whole design):
+
+* The Runner still appends every group immediately, unchanged. Refinement is a
+  pure function over the *complete* SRT and is applied only on the ``done``
+  path, never on ``paused`` (cancel). A full run and a cancelled-then-resumed
+  run therefore both execute the same single rewrite over the same byte-identical
+  raw SRT, so A2 (resume == full run, byte for byte) still holds.
+* ``done`` short-circuits on subsequent starts, so the rewrite is never applied
+  twice (the refinement is intentionally not idempotent).
+* The checkpoint stores frame/SRT indices, not file offsets, so rewriting text
+  in place cannot desynchronise resume. JSONL keeps the raw lines and remains
+  the source of truth for enrichments.
+* A manual API can still produce a separate ``*.punct.srt`` copy for old files.
 
 Outputs
 -------
-    <name>.punct.srt     refined punctuation (C1)
+    <name>.srt           refined in place on done (C1)
+    <name>.punct.srt     optional manual copy (C1)
     <name>.handout.md    Markdown lecture notes (C2)
     <name>.handout.txt   plain-text lecture notes (C2)
 
@@ -68,6 +75,10 @@ def parse_srt(text: str) -> list[dict]:
             "start": _ts_to_sec(*m.groups()[:4]),
             "end": _ts_to_sec(*m.groups()[4:]),
             "text": body,
+            # Keep the original timestamp line verbatim. The Runner rewrites
+            # only the text lines of a finished SRT; re-formatting timestamps
+            # would change bytes that A2 compares.
+            "ts": lines[ts_idx].strip(),
         })
     return out
 
@@ -75,11 +86,12 @@ def parse_srt(text: str) -> list[dict]:
 def format_srt(entries: list[dict]) -> str:
     parts = []
     for i, e in enumerate(entries, 1):
-        parts.append(f"{i}\n{_sec_to_ts(e['start'])} --> {_sec_to_ts(e['end'])}\n{e['text']}\n")
+        ts = e.get("ts") or f"{_sec_to_ts(e['start'])} --> {_sec_to_ts(e['end'])}"
+        parts.append(f"{i}\n{ts}\n{e['text']}\n")
     return "\n".join(parts)
 
 
-def refine_punctuation(entries: list[dict]) -> list[dict]:
+def refine_punctuation(entries: list[dict], cjk_only: bool = False) -> list[dict]:
     """C1: deterministic cross-segment punctuation refinement.
 
     Rules (Chinese lecture audio, VAD-grouped lines):
@@ -93,21 +105,30 @@ def refine_punctuation(entries: list[dict]) -> list[dict]:
        line, which gets a full stop.
     4. Empty lines are preserved verbatim (never invent text).
 
+    ``cjk_only`` leaves non-Chinese lines untouched. The Runner turns it on so
+    synthetic English test fixtures and mixed-language transcripts do not get
+    Chinese commas injected into Latin sentences.
+
     Only ``text`` changes; timestamps and indices are untouched. The function
-    is pure, so identical input always yields identical output - which is why
-    this can be re-run safely on any SRT.
+    is pure, so identical input always yields identical output - but note it is
+    NOT idempotent (a comma we added can become a full stop on a second pass),
+    which is why the Runner applies it exactly once on the ``done`` path.
     """
     out = [dict(e) for e in entries]
     for e in out:
         e["text"] = e["text"].strip()
     # Rule 1: leading punctuation
     for e in out:
+        if cjk_only and not _has_cjk(e["text"]):
+            continue
         while e["text"] and e["text"][0] in _ALL_PUNCT:
             e["text"] = e["text"][1:].lstrip()
     # Rules 2-3 need the next line's first character.
     for i, e in enumerate(out):
         text = e["text"]
         if not text:
+            continue
+        if cjk_only and not _has_cjk(text):
             continue
         last = text[-1]
         nxt = out[i + 1]["text"] if i + 1 < len(out) else ""
@@ -125,14 +146,27 @@ def refine_punctuation(entries: list[dict]) -> list[dict]:
     return out
 
 
-def refine_srt_file(srt_path: Path | str) -> Path:
-    """Write ``<stem>.punct.srt`` next to the source; atomic replace."""
+def refine_srt_text(raw: str, cjk_only: bool = True) -> str:
+    """Return ``raw`` with cross-segment punctuation refined, text lines only.
+
+    Original index and timestamp lines are preserved verbatim. Used by the
+    Runner's single ``done``-path rewrite; see the module docstring for why this
+    keeps A2 (resume == full run) intact.
+    """
+    entries = parse_srt(raw)
+    if not entries:
+        return raw
+    return format_srt(refine_punctuation(entries, cjk_only=cjk_only))
+
+
+def refine_srt_file(srt_path: Path | str, inplace: bool = False) -> Path:
+    """Write a refined copy (``*.punct.srt``) or replace the source in place."""
     src = Path(srt_path)
     entries = parse_srt(src.read_text(encoding="utf-8-sig"))
     if not entries:
         raise ValueError("SRT 中沒有可處理的字幕行")
-    dst = src.with_suffix(".punct.srt")
-    _atomic_write(dst, format_srt(refine_punctuation(entries)))
+    dst = src if inplace else src.with_suffix(".punct.srt")
+    _atomic_write(dst, format_srt(refine_punctuation(entries, cjk_only=inplace)))
     return dst
 
 
@@ -206,6 +240,10 @@ def build_handout(entries: list[dict], fmt: str = "md", title: str = "",
 
 def _is_cjk(ch: str) -> bool:
     return bool(ch) and ("\u4e00" <= ch <= "\u9fff" or ch in _ALL_PUNCT)
+
+
+def _has_cjk(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
 def export_handout_file(srt_path: Path | str, fmt: str = "md",

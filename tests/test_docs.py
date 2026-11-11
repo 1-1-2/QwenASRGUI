@@ -42,6 +42,7 @@ def main() -> int:
         ("docs/功能矩阵.md", "docs/功能矩陣.zh-Hant.md"),
         ("docs/验证边界.md", "docs/驗證邊界.zh-Hant.md"),
         ("docs/风格规范.md", "docs/風格規範.zh-Hant.md"),
+        ("docs/多语文案契约.md", "docs/多語文案契約.zh-Hant.md"),
     ]
     for hans, hant in pairs:
         a, b = ROOT / hans, ROOT / hant

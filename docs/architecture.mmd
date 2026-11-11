@@ -17,7 +17,7 @@ flowchart TB
     X["StreamEnhancer<br/>词级 / 说话人（可选）"]
   end
   subgraph OUT["输出"]
-    O["SRT · JSONL · checkpoint<br/>rich.json · punct.srt · handout.md"]
+    O["SRT（done 时原地修正） · JSONL · checkpoint<br/>rich.json · punct.srt（手动副本） · handout.md"]
   end
   subgraph LAYOUT["onedir 分层"]
     EXE["QwenASR-WebView.exe"]

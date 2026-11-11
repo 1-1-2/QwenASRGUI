@@ -21,6 +21,7 @@ from pathlib import Path
 import app as core          # 重用 ASREngine / 常數 / 診斷函式（__main__ guard 保護）
 import app_paths
 from run_log import RunLog
+import ui_text as _t
 
 # Application directory for user data (settings / models / subtitles / checkpoints).
 # Deliberately not Path(__file__).parent: when frozen that points into the
@@ -44,9 +45,7 @@ BASE_DIR = app_paths.app_dir()
 #     不污染主推 CASR-Qwen 的 UI；舊用戶仍可見、可切。
 #   • 系統自檢：同條件下 health_check 會列出 chatllm 核心（DLL／模型／FA）就緒狀況。
 _CHATLLM_LABEL = "Qwen3-ASR-1.7B Q8（Vulkan · 相容）"
-_CHATLLM_AMD_NOTE = ("⚠️ chatllm 核心在部分 AMD 內顯／APU 有已知相容問題，且核心二進位"
-                     "未隨安裝包提供（保留供既有使用者向下相容）；若遇當機或無輸出，"
-                     "建議改用「Qwen · CRISPASR/Vulkan」核心。")
+_CHATLLM_AMD_NOTE = _t.msg("profile.note.chatllm")
 _MODEL_CATALOG = [
     ("Qwen", "Qwen3-ASR-0.6B",              "openvino", {"cpu_model_size": "0.6B"}),
     ("Qwen", "Qwen3-ASR-1.7B INT8",         "openvino", {"cpu_model_size": "1.7B"}),
@@ -77,9 +76,7 @@ _TEA_CASR_QUANT_LABEL = {"q8": "TEA-ASR-1.1 台灣國語 Q8 (CRISPASR)"}
 #   • 乾淨人聲：辨識最佳，且**原生輸出繁體**（免簡繁轉換）
 #   • 配樂較重的段落／歌曲：該段可能整段無輸出（模型直接吐 EOS）
 # 這是模型的域外行為，不是包裝層可修的，故如實標示讓使用者自行選材。
-_TEA_DOMAIN_NOTE = ("⚠️ TEA-ASR 為「台灣國語日常人聲」特化模型：乾淨人聲最準且原生輸出繁體，"
-                    "但背景配樂較重的段落或歌曲可能整段無輸出。音樂類素材請改用 "
-                    "Qwen3-ASR-1.7B（通用）或 Whisper Breeze。")
+_TEA_DOMAIN_NOTE = _t.msg("profile.note.tea")
 # 模型標籤 → 提醒文字（目前只有 TEA 有；chatllm 的提醒仍依 backend 給）
 _MODEL_NOTES = {_TEA_CASR_QUANT_LABEL["q8"]: _TEA_DOMAIN_NOTE}
 
@@ -98,8 +95,8 @@ _MODEL_NOTES = {_TEA_CASR_QUANT_LABEL["q8"]: _TEA_DOMAIN_NOTE}
 _BASIC_PROFILES = [
     {
         "key":   "zh",
-        "title": "中文（標準）",
-        "desc":  "一般用途首選：中文為主、斷句與標點最完整，長影片／會議／訪談都適用。",
+        "title": _t.msg("profile.zh.title"),
+        "desc":  _t.msg("profile.zh.desc"),
         "picks": {
             "gpu":  ("Qwen", _QWEN_CASR_QUANT_LABEL["q8"]),
             "igpu": ("Qwen", _QWEN_CASR_QUANT_LABEL["q4"]),
@@ -108,9 +105,8 @@ _BASIC_PROFILES = [
     },
     {
         "key":   "tea",
-        "title": "繁體中文 TEA（乾淨聲音）",
-        "desc":  "台灣國語特化：原生輸出繁體與台灣用語，中英夾雜也保得住。"
-                 "限乾淨人聲（訪談、質詢、講座）。",
+        "title": _t.msg("profile.tea.title"),
+        "desc":  _t.msg("profile.tea.desc"),
         "note":  _TEA_DOMAIN_NOTE,
         "picks": {
             "gpu":  ("Qwen", _TEA_CASR_QUANT_LABEL["q8"]),
@@ -120,9 +116,8 @@ _BASIC_PROFILES = [
     },
     {
         "key":   "ja",
-        "title": "日本語",
-        "desc":  "日語／動漫特化：日文歌詞與台詞辨識明顯較佳，且輸出保留日文原生漢字"
-                 "（不會被誤轉成繁體字形）。",
+        "title": _t.msg("profile.ja.title"),
+        "desc":  _t.msg("profile.ja.desc"),
         "picks": {
             "gpu":  ("Qwen", _QWEN_JA_CASR_QUANT_LABEL["q8"]),
             "igpu": ("Qwen", _QWEN_JA_CASR_QUANT_LABEL["q4"]),
@@ -131,9 +126,8 @@ _BASIC_PROFILES = [
     },
     {
         "key":   "twmix",
-        "title": "國台語混合（高速）",
-        "desc":  "Whisper Breeze-ASR-26：繁中／台語特化且速度極快，適合大量批次。"
-                 "模型不輸出標點，字幕改以長度切行（斷句較平）。",
+        "title": _t.msg("profile.twmix.title"),
+        "desc":  _t.msg("profile.twmix.desc"),
         "picks": {
             "gpu":  ("Whisper (Breeze)", _BREEZE_QUANT_LABEL["q8"]),
             "igpu": ("Whisper (Breeze)", _BREEZE_QUANT_LABEL["q5"]),
@@ -142,8 +136,7 @@ _BASIC_PROFILES = [
     },
 ]
 # 沒有顯示卡時，非中文用途只剩 GGUF 模型可用 → 據實提醒會比較慢
-_BASIC_CPU_SLOW_NOTE = ("此用途沒有純 CPU 的專用模型，將以 CrispASR 在處理器上執行，"
-                        "速度會明顯較慢；若可接受請直接下載，或改選「中文（標準）」。")
+_BASIC_CPU_SLOW_NOTE = _t.msg("profile.note.cpuSlow")
 # crispasr-Qwen 系列的 crisp_model 值（皆走 --backend qwen3-1.7b、同置 ov_models/、
 # 共用 crisp_qwen_quant，差別只在權重與下載來源）。"breeze" 不在此列。
 _QWEN_CASR_MODELS = ("qwen3", "qwen3-ja", "tea")
@@ -272,9 +265,11 @@ class WebBackend:
             hint = payload.get("hint") or ""
             name = payload.get("file") or ""
             if kind == "download-source-switch":
-                self._st(f"下載來源切換：{name}（{payload.get('code', '')}）{hint}")
+                self._st(_t.msg("progress.downloadSource", name=name,
+                                code=payload.get('code', ''), hint=hint))
             elif kind == "download-retry":
-                self._st(f"重試 {payload.get('attempt', 1)}：{name} {hint}")
+                self._st(_t.msg("progress.retry", attempt=payload.get('attempt', 1),
+                                name=name, hint=hint))
 
         try:
             _dl.set_download_event_hook(_hook)
@@ -282,8 +277,7 @@ class WebBackend:
             # warning (run log + UI banner), not a silent fallback.
             _dl.set_ssl_insecure_hook(
                 lambda reason: self._emit("warning", {
-                    "message": "SSL 憑證驗證已降級（" + str(reason) +
-                               "）：下載的模型檔無法驗證來源，請在可信網路環境中使用。",
+                    "message": _t.msg("warn.sslInsecure", reason=str(reason)),
                     "code": "ssl_insecure"}))
         except Exception:
             pass
@@ -320,7 +314,7 @@ class WebBackend:
             out_dir = BASE_DIR
         path = out_dir / "模型下載清單.txt"
         path.write_text(text, encoding="utf-8")
-        self._st(f"已輸出下載清單：{path}")
+        self._st(_t.msg("progress.manifest", path=path))
         return {"ok": True, "path": str(path), "bytes": path.stat().st_size,
                 "bundle_count": len(ids) if ids else len(doc["bundles"])}
 
@@ -331,7 +325,8 @@ class WebBackend:
         doc = mc.load_catalog()
         bundle = mc.get_bundle(bundle_id, doc)
         result = mc.import_local_bundle(Path(src_dir), root, bundle)
-        self._st(f"匯入本地模型：{bundle_id} → {result['message']}")
+        self._st(_t.msg("progress.importLocal", bundle=bundle_id,
+                                message=result['message']))
         return result
 
     # ── 首次啟動預設：1.7B Qwen on CRISPASR Q4（多數機器跑得動）─────────────
@@ -365,7 +360,7 @@ class WebBackend:
             msg = payload.get("message") or payload.get("status")
             if msg:
                 level = "warn" if event in ("warning",) else "info"
-                self.run_log.add(msg, level=level, source=event)
+                self.run_log.add(_t.plain(msg), level=level, source=event)
         if self._on_event:
             try:
                 self._on_event(event, payload)
@@ -409,7 +404,8 @@ class WebBackend:
             head = str(e).splitlines()[0][:110] if str(e) else type(e).__name__
             # GPU 核心載入失敗 → 退回 CPU(OpenVINO)，但明確告知(非靜默回退)
             if backend != "openvino":
-                self._emit("progress", {"pct": 0, "status": f"{backend} 載入失敗，改用 CPU 核心…"})
+                self._emit("progress", {"pct": 0, "status":
+                    _t.msg("progress.gpuFallback", backend=backend)})
                 try:
                     self._load_openvino()
                     self._loaded = True
@@ -482,7 +478,7 @@ class WebBackend:
         if use_17b:
             from downloader import quick_check_1p7b, download_1p7b
             if not quick_check_1p7b(model_dir):
-                self._st("下載 1.7B 模型（約 4.3 GB）…")
+                self._st(_t.msg("progress.download17b"))
                 download_1p7b(model_dir, progress_cb=self._dl_progress)
         eng = core.ASREngine1p7B() if use_17b else core.ASREngine()
         eng.load(device="CPU", model_dir=model_dir, cb=self._st, cpu_threads=cpu_threads)
@@ -510,7 +506,7 @@ class WebBackend:
     def _download_chatllm_bin(self, model_path: Path):
         import urllib.request
         from downloader import _ssl_ctx
-        self._st("下載 chatllm 模型（~2.3 GB）…")
+        self._st(_t.msg("progress.downloadChatllm"))
         url = "https://huggingface.co/dseditor/Collection/resolve/main/qwen3-asr-1.7b.bin"
         model_path.parent.mkdir(parents=True, exist_ok=True)
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; QwenASR)"})
@@ -546,7 +542,7 @@ class WebBackend:
         # crispasr.exe 核心一律需要。帶 variant 檢查 → 版本升級或使用者改選
         # 加速版本時都會判定為「不就緒」而重新下載對應的 zip。
         if not quick_check_crispasr(crispasr_dir, variant):
-            self._st("下載 CrispASR 核心…")
+            self._st(_t.msg("progress.downloadCrisp"))
             download_crispasr_core(crispasr_dir, progress_cb=self._dl_progress,
                                    variant=variant)
 
@@ -562,12 +558,13 @@ class WebBackend:
             if not check_fn(model_dir, qquant):
                 _note = _QWEN_CASR_NOTE.get(crisp_model, "")
                 _name = "TEA-ASR-1.1" if crisp_model == "tea" else "Qwen3-ASR-1.7B"
-                self._st(f"下載 {_name}{_note} {qquant.upper()} GGUF…")
+                self._st(_t.msg("progress.downloadGguf", name=_name, note=_note,
+                                quant=qquant.upper()))
                 download_fn(model_dir, qquant, progress_cb=self._dl_progress)
         else:
             model_path = crispasr_dir / breeze_filename(quant)
             if not quick_check_breeze(crispasr_dir, quant):
-                self._st(f"下載 Breeze-ASR-26 {quant.upper()} 模型…")
+                self._st(_t.msg("progress.downloadBreeze", quant=quant.upper()))
                 download_breeze(crispasr_dir, quant, progress_cb=self._dl_progress)
         aligner_path = None
         if fa_enabled:
@@ -575,7 +572,7 @@ class WebBackend:
                 aligner_path = crispasr_dir / aligner_gguf_filename(fa_quant)
             else:
                 try:
-                    self._st("下載時間軸對齊器…")
+                    self._st(_t.msg("progress.downloadAligner"))
                     download_aligner_gguf(crispasr_dir, fa_quant, progress_cb=self._dl_progress)
                     aligner_path = crispasr_dir / aligner_gguf_filename(fa_quant)
                 except Exception:
@@ -593,12 +590,12 @@ class WebBackend:
             "modelReady": bool(getattr(self.engine, "ready", False)),
             "loading": self._loading,
             "error": self._load_err,
-            "backend": self._backend_label(active, "CPU · OpenVINO INT8"),
+            "backend": self._backend_label(active, _t.render("status.backendCpu")),
             "backendKey": self._persisted_backend(),       # 已記住的核心選擇
             "activeBackend": active,                        # 實際載入中的核心
             "device": "GPU" if active in ("chatllm", "crispasr") else "CPU",
             "version": self._app_version(),
-            "appName": "聲音辨識小工具",
+            "appName": _t.render("status.appName"),
             # 是否已有「任一組」模型下載完成（資訊用）
             "hasAnyModel": self._has_any_model(),
             # 目前選擇的模型是否已就緒 → 前端決定開始頁（就緒=語音轉文字／否=模型頁等下載）
@@ -776,12 +773,14 @@ class WebBackend:
                                           (_want_diar, _diar_ok, "说话人分离")):
                 if _wanted and not _ok:
                     self._emit("status", {"message":
-                        f"{_label}模型未安装，本次跳过，字幕不受影响"})
+                        _t.msg("progress.enrichSkipped", label=_label)})
             mins = (_duration or 0) / 60
             self._emit("progress", {"pct": 0, "status":
-                (f"试跑前 {TRIAL_MINUTES} 分钟 · " if trial else "") +
-                f"音频 {mins:.0f} 分钟 · 分段增量落盘 · 生效切分 {_effective} 秒 · "
-                f"预估常驻约 {_ram_mb / 1024:.1f} GB"})
+                _t.msg("progress.runInfo",
+                       trial=(_t.render("progress.trialPrefix", {"mins": TRIAL_MINUTES})
+                              if trial else ""),
+                       mins=f"{mins:.0f}", chunk=_effective,
+                       ram=f"{_ram_mb / 1024:.1f}")})
 
             # 語言：空字串 / 自動偵測 / auto → None（讓引擎自動偵測）
             _lang = (opts.get("language") or "").strip()
@@ -1044,7 +1043,7 @@ class WebBackend:
             from downloader import quick_check_ffmpeg, download_ffmpeg
             dest = get_default_ffmpeg_dest()
             if not quick_check_ffmpeg(dest):
-                self._st("下載 ffmpeg（影片音軌提取）…")
+                self._st(_t.msg("progress.downloadFfmpeg"))
                 download_ffmpeg(dest, progress_cb=self._dl_progress)
             return self._resolve_ffmpeg()
         except Exception:
@@ -1069,7 +1068,7 @@ class WebBackend:
         model_dir = self._model_dir()
         diar_dir = model_dir / "diarization"
         if not quick_check_diarization(model_dir):
-            self._st("下載說話者分離模型（約 32 MB）…")
+            self._st(_t.msg("progress.downloadDiar"))
             download_diarization(diar_dir, progress_cb=self._dl_progress)
         eng = DiarizationEngine(diar_dir)
         if getattr(eng, "ready", False):
@@ -1094,7 +1093,7 @@ class WebBackend:
             from downloader import quick_check_aligner, download_aligner
             model_dir = self._model_dir()
             if not quick_check_aligner(model_dir):
-                self._st("下載時間軸對齊模型（約 939 MB）…")
+                self._st(_t.msg("progress.downloadFa"))
                 download_aligner(model_dir, progress_cb=self._dl_progress)
             if hasattr(self.engine, "_load_aligner"):
                 self.engine._load_aligner(cb=self._st)
@@ -1172,15 +1171,33 @@ class WebBackend:
             info = recommend_crispasr_variant()
         except Exception as e:
             traceback.print_exc()
-            return {"ok": False, "error": f"硬體偵測失敗：{e}", "options": []}
+            return {"ok": False,
+                    "error": _t.render("progress.accelProbeFailed", {"error": e}),
+                    "options": []}
         installed = installed_crispasr_info(self._crispasr_dir())
         selected  = self._crisp_variant()
+        # H6/H7: downloader publishes structured keys next to the legacy
+        # Chinese strings. Translate option cards and the recommendation here
+        # so the WebView receives localisable payloads; CTk keeps using the
+        # plain strings straight from downloader.
+        options = []
+        for op in info.get("options", []):
+            op = dict(op)
+            ii = op.pop("i18n", None)
+            if ii:
+                op["label"] = _t.msg(ii["label"])
+                op["desc"] = _t.msg(ii["desc"])
+                if ii.get("note"):
+                    op["note"] = _t.msg(ii["note"], **ii.get("vars", {}))
+            options.append(op)
+        ri = info.get("i18n_reason")
+        reason = _t.msg(ri["key"], **ri["vars"]) if ri else info["reason"]
         return {
             "ok": True,
             "selected": selected,
             "recommended": info["recommended"],
-            "reason": info["reason"],
-            "options": info["options"],
+            "reason": reason,
+            "options": options,
             "hardware": info["hardware"],
             "installed": installed,          # {"version","variant"}；None＝尚未安裝
             "latest": _CRISPASR_VERSION,
@@ -1194,7 +1211,8 @@ class WebBackend:
         from downloader import crispasr_variants, installed_crispasr_info, _CRISPASR_VERSION
         variants = crispasr_variants()
         if variant not in variants:
-            return {"ok": False, "message": f"未知的加速版本：{variant}"}
+            return {"ok": False,
+                    "message": _t.msg("msg.accel.unknown", variant=variant)}
         self._persist_setting("crisp_variant", variant)
         meta = variants[variant]
         installed = installed_crispasr_info(self._crispasr_dir())
@@ -1202,14 +1220,17 @@ class WebBackend:
                  and installed.get("variant") == variant)
         if fresh:
             return {"ok": True, "variant": variant, "restartRequired": False,
-                    "message": f"已選用「{meta['label']}」（核心已就緒）。"}
+                    "message": _t.msg("msg.accel.ready",
+                                      label=_t.msg(f"accel.opt.{variant}.label"))}
         return {"ok": True, "variant": variant, "restartRequired": True,
-                "message": (f"已記住「{meta['label']}」。下次載入模型時會下載該版本"
-                            f"核心（約 {meta['size_mb']} MB），請重新啟動程式以套用。")}
+                "message": _t.msg("msg.accel.remembered",
+                                  label=_t.msg(f"accel.opt.{variant}.label"),
+                                  size=meta['size_mb'])}
 
     def list_devices(self) -> dict:
         import platform
-        devices = [{"kind": "cpu", "name": platform.processor() or "CPU", "note": "使用中"}]
+        devices = [{"kind": "cpu", "name": platform.processor() or "CPU",
+                    "note": _t.msg("device.inUse")}]
         diag = {"level": None, "text": ""}
 
         vk, source = self._probe_gpu_devices()
@@ -1217,19 +1238,21 @@ class WebBackend:
             for d in (vk.get("devices") if vk else []) or []:
                 gb = d.get("vram_free", 0) / (1024 ** 3)
                 devices.append({"kind": "gpu", "name": d.get("name", "GPU"),
-                                "note": f"{gb:.1f} GB 可用" if gb else ""})
+                                "note": _t.msg("device.vram", gb=f"{gb:.1f}") if gb else ""})
             if source is None:
                 # 沒有任何可用的偵測器（crispasr 與 chatllm 皆未就位）
                 diag = {"level": "info",
-                        "text": "GPU 偵測需要 CrispASR 核心；啟用 GPU 核心時會自動下載，"
-                                "之後即可在此列出可用的獨立顯示卡。目前僅 CPU 推理可用。"}
+                        "text": _t.msg("device.diag.noDetector")}
             elif vk and vk.get("error"):
                 diag = {"level": "warn",
-                        "text": f"GPU 偵測未完成（{source}）：{vk['error']}　已自動改用 CPU 推理。"}
+                        "text": _t.msg("device.diag.probeFailed", source=source,
+                                                      error=str(vk['error']))}
             elif not (vk and vk.get("devices")):
-                diag = {"level": "info", "text": "未偵測到可用的獨立 GPU，僅 CPU 推理可用。"}
+                diag = {"level": "info",
+                        "text": _t.msg("device.diag.noGpu")}
         except Exception as e:
-            diag = {"level": "warn", "text": f"GPU 偵測例外：{e}"}
+            diag = {"level": "warn",
+                    "text": _t.msg("device.diag.exception", error=str(e))}
         return {"devices": devices, "diag": diag}
 
     def _probe_gpu_devices(self):
@@ -1269,7 +1292,7 @@ class WebBackend:
     }
 
     @staticmethod
-    def _note_for(backend: str, model_label: str = "") -> str:
+    def _note_for(backend: str, model_label: str = "") -> dict | str:
         """該（核心, 模型）要顯示的提醒文字；沒有則空字串。
 
         chatllm 依 backend 給（AMD 內顯問題），TEA 等依模型標籤給（模型域限制）。
@@ -1302,14 +1325,13 @@ class WebBackend:
         active = getattr(self, "_active_backend", "openvino")
         if backend == active:
             return {"ok": True, "backend": backend, "restartRequired": False,
-                    "message": f"「{label}」已是目前使用的核心。"}
+                    "message": _t.msg("msg.backend.same", label=label)}
         if backend == "openvino":
             return {"ok": True, "backend": backend, "restartRequired": True,
-                    "message": f"已記住「{label}」。請重新啟動程式以套用新核心。"}
+                    "message": _t.msg("msg.backend.restart", label=label)}
         # GPU 核心：重啟後會全新載入（首次啟用會自動下載對應模型）
         return {"ok": True, "backend": backend, "restartRequired": True,
-                "message": (f"已記住「{label}」。請重新啟動程式以套用 —— "
-                            f"首次啟用該核心會在啟動時自動下載對應模型。")}
+                "message": _t.msg("msg.backend.firstRun", label=label)}
 
     def _persist_backend(self, backend: str):
         f = Path(getattr(core, "SETTINGS_FILE", BASE_DIR / "settings.json"))
@@ -1395,14 +1417,14 @@ class WebBackend:
         try:
             hw = detect_hardware()
         except Exception:
-            return "igpu", "無法偵測顯示卡，以一般配備為準給建議。"
+            return "igpu", _t.msg("hw.probeFailed")
         gpus = hw.get("gpus") or []
         if not gpus:
-            return "cpu", "未偵測到顯示卡 —— 以純處理器（CPU）推理為準給建議。"
+            return "cpu", _t.msg("hw.noGpu")
         names = "、".join(g["name"] for g in gpus)
         if hw.get("has_discrete"):
-            return "gpu", f"偵測到獨立顯示卡：{names} —— 可用最準的模型。"
-        return "igpu", f"偵測到內建顯示晶片：{names} —— 建議用較輕量的模型。"
+            return "gpu", _t.msg("hw.discrete", names=names)
+        return "igpu", _t.msg("hw.integrated", names=names)
 
     def _present_for(self, backend: str, patch: dict) -> bool:
         """某個目錄項（backend + settings patch）的模型檔是否已下載。
@@ -1454,7 +1476,8 @@ class WebBackend:
             _, _, be, patch = entry
             note = p.get("note", "")
             if tier == "cpu" and be != "openvino":
-                note = (note + "　" if note else "") + _BASIC_CPU_SLOW_NOTE
+                note = (_t.join(note, _BASIC_CPU_SLOW_NOTE) if note
+                        else _BASIC_CPU_SLOW_NOTE)
             profiles.append({
                 "key": p["key"], "title": p["title"], "desc": p["desc"],
                 "note": note,
@@ -1526,22 +1549,22 @@ class WebBackend:
         can_load_now = not loaded_or_loading
         restart = loaded_or_loading and identity_changed
         if can_load_now:
-            msg = (f"已選定「{core_label} · {model_label}」（{arch}）。"
-                   f"點「下載並載入模型」即可開始（不需重啟）。")
+            message = _t.msg("msg.model.selectedCanLoad", core=core_label,
+                            model=model_label, arch=arch)
         elif restart:
-            msg = (f"已記住「{core_label} · {model_label}」（{arch}）。"
-                   f"切換核心需重新啟動程式以套用。")
+            message = _t.msg("msg.model.selectedRestart", core=core_label,
+                            model=model_label, arch=arch)
         else:
-            msg = f"「{core_label} · {model_label}」已是目前使用的模型。"
+            message = _t.msg("msg.model.same", core=core_label, model=model_label)
         note = self._note_for(backend, model_label)
         if note:                          # chatllm AMD 問題／TEA 域限制 → 一併提醒
-            msg += "\n" + note
+            message = _t.msg("msg.model.withNote", message=message, note=note)
         return {
             "ok": True, "core": core_label, "model": model_label,
             "backend": backend, "arch": arch, "restartRequired": restart,
             "canLoadNow": can_load_now,
             "note": note,
-            "message": msg,
+            "message": message,
         }
 
     def request_load(self) -> dict:
@@ -1570,7 +1593,7 @@ class WebBackend:
             langs = None
         if not langs:
             langs = _COMMON_LANGS
-        return {"languages": [{"label": "自動偵測", "value": ""}]
+        return {"languages": [{"label": _t.msg("msg.lang.auto"), "value": ""}]
                 + [{"label": l, "value": l} for l in langs]}
 
     # ── 啟動自檢：每核心 × 每能力，實際探測檔案/鍵路是否就緒 ─────────────
@@ -1617,15 +1640,16 @@ class WebBackend:
         ov_size = s.get("cpu_model_size", "0.6B")
         ov_model_ok = quick_check_1p7b(model_dir) if "1.7B" in ov_size else quick_check(model_dir)
         ov = {
-            "label": "Qwen · OpenVINO（CPU）", "backend": "openvino",
+            "label": _t.msg("health.group.ov"), "backend": "openvino",
             "items": [
-                item("model", f"ASR 模型（{ov_size}）", ov_model_ok,
-                     "已下載", "未下載（啟用時自動下載）"),
-                item("vad", "語音分段 VAD（silero）", _vad_ok(), "已內建", "缺 VAD onnx", downloadable=False),
-                item("fa", "時間軸對齊 FA（ForcedAligner .bin）", quick_check_aligner(model_dir),
-                     "已下載", "未下載（約 939MB，啟用對齊時下載）"),
-                item("diar", "說話者分離（外部 ONNX）", diar_ok,
-                     "已下載", "未下載（約 32MB，啟用分離時下載）"),
+                item("model", _t.msg("health.ov.model", size=ov_size), ov_model_ok,
+                     _t.msg("state.downloaded"), _t.msg("state.notDownloaded")),
+                item("vad", _t.msg("health.ov.vad"), _vad_ok(),
+                     _t.msg("state.builtin"), _t.msg("state.vadMissing"), downloadable=False),
+                item("fa", _t.msg("health.ov.fa"), quick_check_aligner(model_dir),
+                     _t.msg("state.downloaded"), _t.msg("state.notDownloadedFa")),
+                item("diar", _t.msg("health.ov.diar"), diar_ok,
+                     _t.msg("state.downloaded"), _t.msg("state.notDownloadedDiar")),
             ],
         }
 
@@ -1639,40 +1663,41 @@ class WebBackend:
         crisp_quant = s.get("crisp_quant", "q5")
         qwen_quant = s.get("crisp_qwen_quant", "q8")
         fa_quant = s.get("crisp_fa_quant", "q5")
+        _variant_label = vmeta.get('short') or vmeta['label']
         crisp = {
-            "label": (f"CRISPASR（{vmeta.get('short') or vmeta['label']}："
-                      f"Whisper/Breeze + Qwen + TEA）"),
+            "label": _t.msg("health.group.crisp", variant=_variant_label),
             "backend": "crispasr",
             "items": [
-                item("core", (f"CrispASR {_CRISPASR_VERSION} 核心"
-                              f"（{vmeta.get('short') or vmeta['label']}）"),
-                     core_ok, "已下載",
-                     f"未下載或版本不符（約 {vmeta['size_mb']}MB，啟用時下載）"),
-                item("breeze", f"Whisper/Breeze 模型（{crisp_quant.upper()}）",
+                item("core", _t.msg("health.crisp.core", version=_CRISPASR_VERSION,
+                                    variant=_variant_label),
+                     core_ok, _t.msg("state.downloaded"),
+                     _t.msg("health.crisp.coreMissing", size=vmeta['size_mb'])),
+                item("breeze", _t.msg("health.crisp.breeze", quant=crisp_quant.upper()),
                      quick_check_breeze(crispasr_dir, crisp_quant),
-                     "已下載", "未下載（啟用時下載）"),
-                item("qwen", f"Qwen3-ASR-1.7B 模型（{qwen_quant.upper()}）",
+                     _t.msg("state.downloaded"), _t.msg("state.notDownloaded")),
+                item("qwen", _t.msg("health.crisp.qwen", quant=qwen_quant.upper()),
                      quick_check_qwen3_asr_gguf(model_dir, qwen_quant),
-                     "已下載", "未下載（啟用時下載）"),
-                item("qwen_ja", f"Qwen3-ASR-1.7B 日語動漫模型（{qwen_quant.upper()}）",
+                     _t.msg("state.downloaded"), _t.msg("state.notDownloaded")),
+                item("qwen_ja", _t.msg("health.crisp.qwenJa", quant=qwen_quant.upper()),
                      quick_check_qwen3_asr_ja_gguf(model_dir, qwen_quant),
-                     "已下載", "未下載（日語增強，啟用時下載）"),
-                item("tea", "TEA-ASR-1.1 台灣國語模型（Q8）",
+                     _t.msg("state.downloaded"), _t.msg("health.crisp.qwenJaMissing")),
+                item("tea", _t.msg("health.crisp.tea"),
                      quick_check_tea_asr_gguf(model_dir, "q8"),
-                     "已下載", "未下載（繁中／台灣用語增強，啟用時下載）"),
-                item("fa", f"時間軸對齊 FA（aligner gguf {fa_quant.upper()}）",
+                     _t.msg("state.downloaded"), _t.msg("health.crisp.teaMissing")),
+                item("fa", _t.msg("health.crisp.fa", quant=fa_quant.upper()),
                      quick_check_aligner_gguf(crispasr_dir, fa_quant),
-                     "已下載", "未下載（約 643MB，啟用時下載）"),
-                item("diar", "說話者分離（外部 ONNX，與 OpenVINO 共用）", diar_ok,
-                     "已下載", "未下載（約 32MB，啟用分離時下載）"),
+                     _t.msg("state.downloaded"), _t.msg("health.crisp.faMissing")),
+                item("diar", _t.msg("health.crisp.diar"), diar_ok,
+                     _t.msg("state.downloaded"), _t.msg("state.notDownloadedDiar")),
             ],
         }
 
         shared = [
-            item("ffmpeg", "FFmpeg（影片抽音軌用）", bool(ff),
-                 f"已偵測：{ff}" if ff else "", "未下載（轉錄影片時自動下載解壓）", downloadable=True),
-            item("diar_shared", "說話者分離模型（OpenVINO/CRISPASR 共用）", diar_ok,
-                 "已下載", "未下載（啟用分離時自動下載）"),
+            item("ffmpeg", _t.msg("health.shared.ffmpeg"), bool(ff),
+                 _t.msg("health.shared.ffmpegOk", path=str(ff)) if ff else "",
+                 _t.msg("health.shared.ffmpegMissing"), downloadable=True),
+            item("diar_shared", _t.msg("health.shared.diar"), diar_ok,
+                 _t.msg("state.downloaded"), _t.msg("health.shared.diarMissing")),
         ]
 
         cores = [ov, crisp]
@@ -1691,18 +1716,18 @@ class WebBackend:
             ]
             bin_ok = any(p and Path(p).exists() for p in bin_candidates)
             chatllm = {
-                "label": "Qwen · chatllm（Vulkan · 相容）", "backend": "chatllm",
+                "label": _t.msg("health.group.chatllm"), "backend": "chatllm",
                 "items": [
-                    item("core", "chatllm 核心（libchatllm.dll）", dll_ok,
-                         "已就緒", "未提供（核心未隨安裝包附帶，僅供既有使用者）",
+                    item("core", _t.msg("health.chatllm.core"), dll_ok,
+                         _t.msg("state.ready"), _t.msg("state.notProvided"),
                          downloadable=False),
-                    item("model", "Qwen3-ASR 模型（.bin）", bin_ok,
-                         "已下載", "未下載（約 2.3GB，啟用時自動下載）"),
-                    item("fa", "時間軸對齊 FA（ForcedAligner .bin）",
+                    item("model", _t.msg("health.chatllm.model"), bin_ok,
+                         _t.msg("state.downloaded"), _t.msg("health.chatllm.modelMissing")),
+                    item("fa", _t.msg("health.chatllm.fa"),
                          quick_check_aligner(model_dir),
-                         "已下載", "未下載（約 939MB，啟用對齊時下載）"),
-                    item("diar", "說話者分離（外部 ONNX，與 OpenVINO 共用）", diar_ok,
-                         "已下載", "未下載（約 32MB，啟用分離時下載）"),
+                         _t.msg("state.downloaded"), _t.msg("state.notDownloadedFa")),
+                    item("diar", _t.msg("health.crisp.diar"), diar_ok,
+                         _t.msg("state.downloaded"), _t.msg("state.notDownloadedDiar")),
                 ],
             }
             cores.append(chatllm)
@@ -1996,11 +2021,13 @@ class WebBackend:
                         }))
                 except Exception as e:
                     head = str(e).splitlines()[0][:120] if str(e) else type(e).__name__
-                    self._emit("tunnel", {"status": f"建立失敗：{head}",
+                    self._emit("tunnel", {"status": _t.msg("progress.tunnelFailed",
+                                                            error=head),
                                           "running": False, "url": "", "error": True})
 
             threading.Thread(target=worker, name="cf-tunnel", daemon=True).start()
-            return {"running": True, "url": "", "status": "建立中…"}
+            return {"running": True, "url": "",
+                    "status": _t.msg("progress.tunnelStarting")}
         self._stop_tunnel()
         return self.get_tunnel()
 

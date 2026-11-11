@@ -608,7 +608,8 @@ class LongformRunner:
                  fingerprint: str = "",
                  gc_every: int = 0,
                  vad_threshold: float = 0.5,
-                 detail_cb=None, segment_cb=None, enhancer=None):
+                 detail_cb=None, segment_cb=None, enhancer=None,
+                 refine_punct: bool = True):
         if vad_sess is None:
             raise ValueError("缺少 VAD session：请传入 engine.vad_sess")
         self.fingerprint = fingerprint or ""
@@ -638,6 +639,9 @@ class LongformRunner:
         # Optional best-effort enrichment (word timing / speakers). The runner
         # only forwards the PCM chunk; failures are contained in the enhancer.
         self.enhancer = enhancer
+        # C1: refine cross-segment punctuation in place once, on `done` only.
+        # Never on `paused` - see _finalize_punctuation() for the A2 rationale.
+        self.refine_punct = refine_punct
         self._seg_batch: list[dict] = []
         self._last_seg_flush = 0.0
         self._start_wall = time.monotonic()
@@ -712,6 +716,38 @@ class LongformRunner:
         self._queue_segment({"index": index, "start": round(start, 3),
                              "end": round(end, 3), "text": text})
         return index + 1
+
+    def _finalize_punctuation(self) -> None:
+        """C1: one-shot in-place punctuation refinement on the `done` path.
+
+        Why this does not break A2 (resume == full run, byte for byte):
+
+        * The raw SRT is a pure append-only stream of groups. Both a full run
+          and a cancelled-then-resumed run end with the identical raw bytes.
+        * This rewrite is a pure function of that complete raw SRT and runs
+          exactly once, at `done`. The `paused` path deliberately skips it, so
+          a resumed run appends to the *raw* file and only refines at the end.
+        * `done` short-circuits on later starts, so it is never applied twice
+          (the refinement is not idempotent).
+        * Checkpoints store frame/SRT indices, not byte offsets; JSONL keeps the
+          raw lines and stays the source of truth for enrichments.
+
+        Any failure here is swallowed: punctuation is an enhancement, and a
+        usable SRT must always survive even if this step fails.
+        """
+        if not self.refine_punct or not self.out_srt.is_file():
+            return
+        try:
+            from subtitle_extras import refine_srt_text
+            raw = self.out_srt.read_text(encoding="utf-8")
+            refined = refine_srt_text(raw, cjk_only=True)
+            if refined == raw:
+                return
+            tmp = self.out_srt.with_name(self.out_srt.name + ".tmp")
+            tmp.write_text(refined, encoding="utf-8")
+            tmp.replace(self.out_srt)
+        except Exception:
+            pass
 
     def run(self, audio_path, pcm_source=None, total_sec: float | None = None,
             resume: bool = True, limit_sec: float | None = None) -> dict:
@@ -955,6 +991,8 @@ class LongformRunner:
                     "peaks": peaks.to_bars(), "duration": peaks.duration,
                     "truncated": truncated}
 
+        # C1: refine the finished SRT in place (single pass, done path only).
+        self._finalize_punctuation()
         self.ckpt.save(frame, seg_index, "done",
                        fingerprint=self.fingerprint, vad_state="")
         self._emit(100, f"完成 · 共 {seg_index - 1} 条字幕",

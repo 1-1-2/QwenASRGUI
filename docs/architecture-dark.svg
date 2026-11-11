@@ -39,7 +39,7 @@
 <text x="125.0" y="461" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#94a3b8">词级 / 说话人 · 可选</text>
 <rect x="250" y="500" width="300" height="62" rx="9" fill="#0f3f3a" stroke="#2dd4bf" stroke-width="1.6"/>
 <text x="400.0" y="523" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#e2e8f0">输出</text>
-<text x="400.0" y="541" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#94a3b8">SRT · JSONL · checkpoint · rich.json · punct.srt · handout.md</text>
+<text x="400.0" y="541" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#94a3b8">SRT（done 时原地修正） · JSONL · checkpoint · rich.json · punct.srt（手动副本） · handout.md</text>
 <rect x="250" y="590" width="300" height="54" rx="9" fill="#4a3410" stroke="#fbbf24" stroke-width="1.6"/>
 <text x="400.0" y="613" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="600" fill="#e2e8f0">QwenASR-WebView.exe</text>
 <text x="400.0" y="631" text-anchor="middle" font-family="sans-serif" font-size="10.5" fill="#94a3b8">启动器（内容稳定）</text>

@@ -168,12 +168,11 @@
   $("#btn-warning-dismiss") && $("#btn-warning-dismiss").addEventListener("click", () => {
     const box = $("#global-warning"); if (box) { box.hidden = true; box.style.display = "none"; }
   });
-  // Backend warnings are localised when a dictionary key is supplied; the raw
-  // message is kept in the run log verbatim for diagnostics.
+  // Backend warnings carry a structured key+vars payload (ui_text.py); the
+  // verbatim Hant text is kept in the run log for diagnostics.
   API.on("warning", p => {
     if (!p) return;
-    const msg = p.code === "ssl_insecure" && I18N.t("warn.ssl") ? I18N.t("warn.ssl")
-              : (p.message || "");
+    const msg = I18N.L(p.message);
     if (msg) showGlobalWarning(msg);
   });
 
@@ -789,15 +788,15 @@
     if (!lastSrtPath) return;
     try {
       const r = await API.refinePunctuation(lastSrtPath);
-      logLine("✓ 跨段標點修正完成：" + r.path + "（" + r.lines + " 行）");
-    } catch (e) { logLine("✕ 跨段標點修正失敗：" + (e.message || e)); }
+      logLine(I18N.t("file.refineDone", {path: r.path, lines: r.lines}));
+    } catch (e) { logLine(I18N.t("file.refineFailed", {error: e.message || e})); }
   });
   $("#btn-export-handout") && $("#btn-export-handout").addEventListener("click", async () => {
     if (!lastSrtPath) return;
     try {
       const r = await API.exportHandout(lastSrtPath, "md");
-      logLine("✓ 講義已匯出：" + r.path + "（" + r.lines + " 行 / " + r.bytes + " bytes）");
-    } catch (e) { logLine("✕ 講義匯出失敗：" + (e.message || e)); }
+      logLine(I18N.t("file.handoutDone", {path: r.path, lines: r.lines, bytes: r.bytes}));
+    } catch (e) { logLine(I18N.t("file.handoutFailed", {error: e.message || e})); }
   });
 
   // ── H1: collapsible runtime log ─────────────────────────────────────
@@ -1078,8 +1077,9 @@
       // 已記住的選擇 vs 實際載入的架構不同 → 提示重啟
       const curArch = selectedArch();
       if (_modelOpt.activeArch && curArch && _modelOpt.activeArch !== curArch) {
-        modelMsg(`已記住「${_curCore} · ${$("#model-select").value}」（${curArch}），`
-          + `將於重新啟動後套用（目前以 ${_modelOpt.activeArch} 運行）。`, "info");
+        modelMsg(I18N.t("model.restartPending", {
+          core: _curCore, model: $("#model-select").value,
+          arch: curArch, active: _modelOpt.activeArch}), "info");
       } else modelMsg("", null);
       updateLoadBtn();              // 設定「下載並載入／前往轉錄」按鈕初始狀態
     } catch (e) {}
@@ -1100,7 +1100,7 @@
     if (d.diag && d.diag.text) {
       diag.hidden = false;
       diag.className = "banner " + (d.diag.level === "warn" ? "banner-warn" : "banner-info");
-      const txt = diag.querySelector("div"); if (txt) txt.innerHTML = escapeHtml(d.diag.text);
+      const txt = diag.querySelector("div"); if (txt) txt.innerHTML = escapeHtml(I18N.L(d.diag.text));
     } else diag.hidden = true;
   }
 
@@ -1170,7 +1170,8 @@
     const hw = $("#basic-hw");
     if (hw) {
       const t = hw.querySelector("div");
-      if (t) t.textContent = `${d.hardware}　加速方式：${d.accel}`;
+      if (t) t.textContent = I18N.t("model.hwSummary", {
+        hardware: I18N.L(d.hardware), accel: I18N.L(d.accel)});
     }
     host.innerHTML = "";
     (d.profiles || []).forEach(p => {
@@ -1224,14 +1225,14 @@
       card.dataset.variant = op.key;
       if (!op.suitable) { card.style.opacity = ".55"; }
       const tags = [];
-      if (op.recommended) tags.push("建議");
+      if (op.recommended) tags.push(I18N.t("accel.tagRecommended"));
       if (a.installed && a.installed.variant === op.key
-          && a.installed.version === a.latest) tags.push("已安裝");
+          && a.installed.version === a.latest) tags.push(I18N.t("accel.tagInstalled"));
       const tagHtml = tags.length
         ? ` <span class="chip chip-muted" style="font-weight:400">${tags.join(" · ")}</span>` : "";
       const noteHtml = op.note ? `　<span style="color:var(--warn,#b26a00)">${escapeHtml(I18N.L(op.note))}</span>` : "";
       card.innerHTML = `<span class="rd"></span><div class="info">
-        <div class="t">${escapeHtml(I18N.L(op.label))}　<span style="font-weight:400;color:var(--muted)">約 ${op.size_mb} MB</span>${tagHtml}</div>
+        <div class="t">${escapeHtml(I18N.L(op.label))}　<span style="font-weight:400;color:var(--muted)">${escapeHtml(I18N.t("accel.sizeMb", {size: op.size_mb}))}</span>${tagHtml}</div>
         <div class="d">${escapeHtml(I18N.L(op.desc || ""))}${noteHtml}</div></div>`;
       host.appendChild(card);
     });
@@ -1239,12 +1240,11 @@
     if (rb) {
       if (a.reason) {
         rb.hidden = false;
-        const t = rb.querySelector("div"); if (t) t.textContent = a.reason;
+        const t = rb.querySelector("div"); if (t) t.textContent = I18N.L(a.reason);
       } else rb.hidden = true;
     }
     accelMsg(a.needsDownload
-      ? `目前選定的核心尚未下載或版本不符（最新 ${a.latest}），會在下次載入模型時自動取得。`
-      : "", "info");
+      ? I18N.t("accel.needsDownload", {latest: a.latest}) : "", "info");
   }
   function accelMsg(text, level) {
     const el = $("#accel-msg"); if (!el) return;
@@ -1286,7 +1286,7 @@
       if (res && res.message) modelMsg(res.message, res.restartRequired ? "warn" : "info");
       else modelMsg("", null);
       updateLoadBtn(res);
-    } catch (err) { modelMsg("套用失敗：" + (err.message || err), "warn"); }
+    } catch (err) { modelMsg(I18N.t("model.applyFailed", {error: err.message || err}), "warn"); }
   }
   // 依 setModel 結果 + 目前載入狀態，決定「下載並載入」按鈕的文字/可用性
   async function updateLoadBtn(res) {
@@ -1314,14 +1314,14 @@
     _modelLoading = true; markBusy("model", true); btn.textContent = "下載／載入中…";
     $("#model-progress").hidden = false;
     setModelProg(0, "準備載入…");
-    modelMsg("正在下載並載入模型，請稍候——可留在本頁觀看進度。", "info");
+    modelMsg(I18N.t("model.loadingHint"), "info");
     try { await API.startLoad(); }
-    catch (err) { _modelLoading = false; markBusy("model", false); modelMsg("載入失敗：" + (err.message || err), "warn"); updateLoadBtn(); }
+    catch (err) { _modelLoading = false; markBusy("model", false); modelMsg(I18N.t("model.loadFailed", {error: err.message || err}), "warn"); updateLoadBtn(); }
   });
   function setModelProg(pct, status) {
     $("#model-prog-bar").style.width = pct + "%";
     $("#model-prog-pct").textContent = Math.round(pct) + "%";
-    if (status != null) $("#model-prog-status").textContent = status;
+    if (status != null) $("#model-prog-status").textContent = I18N.L(status);
   }
   function modelMsg(text, level) {
     const el = $("#model-msg");
@@ -1394,8 +1394,8 @@
     }
     const cs = $("#cf-status");
     cs.className = "cf-status" + (t.error ? " err" : (t.status === "ready" ? " ok" : ""));
-    cs.textContent = t.error ? t.status
-      : (t.status === "ready" ? "✅ 已建立對外網址（含金鑰，等同密碼）— 用完請關閉" : (t.status || ""));
+    cs.textContent = t.error ? I18N.L(t.status)
+      : (t.status === "ready" ? (I18N.t("ep.tunnelReady") || t.status) : (I18N.L(t.status) || ""));
   }
   $("#sw-tunnel").addEventListener("change", async e => {
     const on = e.target.checked;
@@ -1873,13 +1873,13 @@
       _modelLoading = false; markBusy("model", false);
       setModelProg(100, "完成");
       setTimeout(() => { $("#model-progress").hidden = true; }, 800);
-      modelMsg("模型已就緒。已為你切換到「語音轉文字」。", "info");
+      modelMsg(I18N.t("model.readySwitched"), "info");
       renderHealth();                 // 自檢色點刷新
       switchView("file");             // 完成 → 進入轉錄頁
     } else if (s && s.error && _modelLoading) {
       _modelLoading = false; markBusy("model", false);
       $("#model-progress").hidden = true;
-      modelMsg("載入失敗：" + s.error, "warn");
+      modelMsg(I18N.t("model.loadFailed", {error: s.error}), "warn");
       updateLoadBtn();
     }
   });
