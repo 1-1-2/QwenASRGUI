@@ -463,6 +463,47 @@ def test_log_writer_wired(c: Checker):
 
 
 
+
+
+
+def test_vad_preview_gives_actionable_error(c: Checker):
+    """模型未載入（vad_sess=None）時，錯誤訊息要告訴使用者下一步做什麼。
+
+    背景：使用者在模型未下載時點「切分預檢」，拿到的是
+    `ValueError: vad_sess is required for VAD preview` —— 完全看不出要幹嘛。
+    現在改成明確提示「請先到模型頁下載並載入模型」。
+    """
+    import sys
+    import tempfile
+    sys.path.insert(0, str(ROOT))
+    import webview_backend as wb
+
+    td = Path(tempfile.mkdtemp())
+    old = (wb.core.SETTINGS_FILE, getattr(wb.core, "_DEFAULT_MODEL_DIR", None))
+    wb.core.SETTINGS_FILE = td / "settings.json"
+    wb.core._DEFAULT_MODEL_DIR = td / "ov_models"
+    (td / "ov_models").mkdir(parents=True, exist_ok=True)
+    (td / "settings.json").write_text(
+        '{"backend":"crispasr","crisp_model":"qwen3","crisp_qwen_quant":"q4"}',
+        encoding="utf-8")
+    try:
+        b = wb.WebBackend()
+        b.engine = wb.core.ASREngine()   # 空殼：vad_sess=None
+        f = td / "fake.m4a"
+        f.write_bytes(b"x" * 100)
+        try:
+            b.vad_preview({"path": str(f)})
+            c.check("vad_preview 在 vad_sess=None 時應拋例外", False)
+        except Exception as e:
+            msg = str(e)
+            c.check("錯誤訊息含「模型尚未載入」", "模型尚未載入" in msg, msg[:60])
+            c.check("錯誤訊息含「下載」動作指引", "下載" in msg, msg[:60])
+            c.check("錯誤不是 ValueError（內部技術詞）",
+                    not isinstance(e, ValueError), type(e).__name__)
+    finally:
+        wb.core.SETTINGS_FILE, wb.core._DEFAULT_MODEL_DIR = old
+
+
 def main() -> int:
     c = Checker()
     print("== 首启量化一致性 ==")
@@ -479,6 +520,8 @@ def main() -> int:
     print("== 升级不害老用户重下模型 ==")
     test_adopt_existing_quant(c)
     test_adopt_is_wired(c)
+    print("== 预检错误是否可操作 ==")
+    test_vad_preview_gives_actionable_error(c)
     print("== 日志能否分清哪次启动 ==")
     test_log_lines_carry_timestamps(c)
     test_log_snapshot_per_run(c)
@@ -487,5 +530,6 @@ def main() -> int:
     print()
     print(f"{c.total - c.failed}/{c.total} 通过")
     return 1 if c.failed else 0
+
 if __name__ == "__main__":
     raise SystemExit(main())

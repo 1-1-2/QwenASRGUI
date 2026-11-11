@@ -1029,6 +1029,12 @@ class WebBackend:
         path = (opts or {}).get("path")
         if not path or not Path(path).exists():
             raise RuntimeError("請先選擇音檔，再進行切分預檢。")
+        # 模型未載入時 vad_sess 為 None，LongformRunner 會拋 ValueError ——
+        # 對使用者完全無用（看不出要幹嘛）。這裡攔下，給出可操作的提示。
+        if getattr(self.engine, "vad_sess", None) is None:
+            raise RuntimeError(
+                "模型尚未載入，無法進行切分預檢。\n"
+                "請先到「模型」頁下載並載入模型，完成後再試。")
         _ff = str(self._resolve_ffmpeg() or "ffmpeg")
         _st = self._settings_raw()
         ceiling = getattr(type(self.engine), "max_chunk_secs", None)

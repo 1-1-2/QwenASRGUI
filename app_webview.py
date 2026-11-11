@@ -644,9 +644,16 @@ def open_edge_app(url: str) -> subprocess.Popen | None:
     edge = _find_edge()
     if edge:
         args = [edge, *_app_mode_args(url)]
-        flags = 0x08000000 if sys.platform == "win32" else 0
+        # CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
+        #   BREAKAWAY_FROM_JOB 讓 Edge 脫離 Python 的 Job Object —— 否則 Python
+        #   退出時 Job handle 關閉，OS 會連帶殺掉 Edge，使用者看到的就是「視窗
+        #   閃一下就沒了」（第一次啟動尤其常見，因為 Edge 冷啟動慢，使用者以為
+        #   程式掛了就關掉，Python 隨後退出 → Edge 被殺）。
+        #   脫離後 Python 可以獨立退出，Edge 繼續存活。
+        flags = 0x08000000 | 0x01000000 if sys.platform == "win32" else 0
         try:
             proc = subprocess.Popen(args, creationflags=flags)
+            _log(f"[{APP_NAME}] Edge PID {proc.pid} 已啟動（脫離 Job Object）")
             _decorate_window_async()   # Edge --app 視窗同樣套白底黑字標題列 + 圖示
             return proc
         except Exception:
@@ -844,6 +851,14 @@ def main():
             clk.mark("Edge 行程已拉啟")
             if proc is not None:
                 proc.wait()
+                # 記錄 Edge 退出資訊：下次「視窗閃退」時能從這裡看出 Edge 是
+                # 正常關閉（exit 0）還是異常崩潰（非 0）或被外部殺掉。
+                edge_rc = proc.poll()
+                edge_alive = time.perf_counter() - t_edge
+                _log(f"[{APP_NAME}] Edge 已結束：退出碼 {edge_rc}，存活 {edge_alive:.1f}s")
+                if edge_rc not in (0, None) or edge_alive < 2.0:
+                    _log(f"[{APP_NAME}] ⚠ Edge 異常退出（退出碼 {edge_rc}，僅存活 "
+                         f"{edge_alive:.1f}s）——可能是 profile 初始化失敗或被防毒軟體攔截。")
             else:
                 threading.Event().wait()
     except KeyboardInterrupt:
