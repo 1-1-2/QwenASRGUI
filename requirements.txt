@@ -13,8 +13,11 @@ openvino>=2024.0.0
 onnxruntime>=1.17.0
 
 # 音訊處理
+# 刻意不列 librosa：它會在 import 階段拉起 numba，並且把 SciPy（69 MB）帶進
+# 發行包。本專案的聲音載入由 audio_io.py 以 soundfile + soxr + ffmpeg 完成，
+# 重採樣用自帶的頻域低通，說話人聚類用 cluster_core.py。見 docs/打包與升級.md。
 numpy>=1.24.0
-librosa>=0.10.0
+soundfile>=0.12.0
 sounddevice>=0.4.6
 
 # 中文轉換（簡轉繁）
