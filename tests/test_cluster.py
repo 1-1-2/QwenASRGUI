@@ -164,8 +164,26 @@ def test_against_scipy(r: Result):
 # ══════════════════════════════════════════════════════════════════════
 # 3) diarize 端到端（不加载模型，只调聚类方法）
 # ══════════════════════════════════════════════════════════════════════
+def _stub_optional_inference_deps():
+    """把 diarize 顶层的推理依赖换成空壳（如果宿主没装）。
+
+    diarize 顶层 `import onnxruntime` / `kaldi_native_fbank`，但本用例只调
+    `_cluster_fixed_n` / `_cluster_auto` —— 纯 numpy 的聚类，一行推理都不碰。
+    轻量 CI 只装 numpy，于是这两个 import 会把「换实现后分群是否一致」测成
+    「CI 装了什么」，白白挡住本套最有价值的那几条断言。
+    """
+    import types
+    for name in ("onnxruntime", "kaldi_native_fbank"):
+        try:
+            __import__(name)
+        except Exception:
+            sys.modules[name] = types.ModuleType(name)
+            print(f"        （宿主未装 {name}，用空壳顶替；本用例不碰推理）")
+
+
 def test_diarize_uses_it(r: Result):
     print("\n[diarize] 换实现后分群结果不变")
+    _stub_optional_inference_deps()
     import diarize
 
     eng = diarize.DiarizationEngine.__new__(diarize.DiarizationEngine)
