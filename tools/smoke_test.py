@@ -333,6 +333,17 @@ def main() -> int:
                 f"exit={proc.returncode}" if proc.poll() is not None else "")
     c.check("全程未产生 crash.log", not crash_log.exists())
 
+    # 把启动计时打出来。这些行由 app_webview._StartupClock 写在 launcher.log 里，
+    # 是回答「为什么开得慢」的唯一一手数据 —— 留在 CI 日志里，下次不必再猜。
+    stamps = [ln.strip() for ln in read_log(launch_log).splitlines()
+              if "启动计时" in ln]
+    if stamps:
+        print("\n  真机启动分段耗时：")
+        for ln in stamps:
+            print(f"    {ln}")
+    else:
+        print("\n  （launcher.log 无启动计时行 —— 若刚加过 _StartupClock，说明没生效）")
+
     # ── 4) 收尾 ───────────────────────────────────────────────────────────
     print("\n  [3/3] 收尾")
     kill_tree(proc)
