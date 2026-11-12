@@ -249,30 +249,8 @@
       }
       return MOCK.batch;
     },
-    // B4: the server owns the queue. Files are uploaded once, then a single
-    // background worker processes them. The UI only renders SSE snapshots.
-    async batchAdd(file, opts) {
-      if (MODE !== "web") return { ok: true, item: null, mock: true };
-      const fd = new FormData();
-      fd.append("file", file, file.name);
-      if (opts) {
-        if (opts.language) fd.append("language", opts.language);
-        fd.append("align", opts.align ? "1" : "0");
-        fd.append("diarize", opts.diarize ? "1" : "0");
-        if (opts.nSpeakers && opts.nSpeakers !== "auto") fd.append("n_speakers", String(opts.nSpeakers));
-        if (opts.hint) fd.append("hint", opts.hint);
-        if (opts.trial) fd.append("trial", "1");
-      }
-      const r = await fetch(withKey("/api/batch/add"), {
-        method: "POST", body: fd, headers: authHeaders(),
-      });
-      if (!r.ok) {
-        let msg = "HTTP " + r.status;
-        try { msg = (await r.json()).error?.message || msg; } catch {}
-        throw new Error(msg);
-      }
-      return r.json();
-    },
+    // Wave 14：上傳版 batchAdd 已移除。批次一律走 batchAddPath（本機路徑
+    // 直引，不複製、不上傳）；後端 /api/batch/add 亦已停用（410）。
     // Wave 11：貼上本機絕對路徑，後端直接引用，不產生任何副本。
     async batchAddPath(path, opts) {
       if (MODE !== "web") return { ok: true, item: null, mock: true };

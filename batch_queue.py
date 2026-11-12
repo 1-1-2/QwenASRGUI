@@ -111,7 +111,8 @@ class BatchQueue:
                 # transcribe() resumes from the last completed speech group.
                 if it.get("status") == "running":
                     it["status"] = "pending"
-                    it["progress"] = 0
+                    # Wave 14／需求 3：保留 progress，別讓「程序重啟後續跑」
+                    # 在界面上顯示 0%。
                 # Files deleted between runs cannot be retried.
                 p = it.get("path")
                 if it.get("status") == "pending" and p and not Path(p).exists():
@@ -128,6 +129,50 @@ class BatchQueue:
         外部路徑（add_path / 使用者本機檔案）永遠不能刪——那是使用者的財產。
         """
         return bool(item.get("ownedPath"))
+
+    # ── 時長探測（Wave 14／需求 8）─────────────────────────────────────
+    def _probe_duration_async(self, item_id: str):
+        """入隊後在背景探測音檔時長，寫回 item 並以 SSE 廣播。
+
+        佇列排隊時前端就能顯示「總音訊時長 / 總剩餘」，不必等第一個檔案
+        真的開始識別才知道有多長。探測本身只讀檔頭（ffprobe / wave），
+        不載入模型、不佔用 worker，所以即使佇列在跑也不影響識別。
+        任何失敗都靜默跳過：時長只是顯示用的估算，缺了不影響流程。
+        """
+        def _work():
+            with self._lock:
+                it = next((i for i in self.items if i["id"] == item_id), None)
+                path = it.get("path") if it else None
+                if not path or it.get("durationSec"):
+                    return
+            dur = None
+            try:
+                from longform_runner import probe_duration
+                import ffmpeg_utils
+                ff = None
+                try:
+                    ff = str(ffmpeg_utils.find_ffmpeg() or "") or None
+                except Exception:
+                    ff = None
+                dur = probe_duration(path, ff or "ffmpeg")
+            except Exception:
+                dur = None
+            if not dur or dur <= 0:
+                return
+            with self._lock:
+                cur = next((i for i in self.items if i["id"] == item_id), None)
+                if not cur:
+                    return
+                cur["durationSec"] = round(float(dur), 1)
+                cur["etaSec"] = round(float(dur), 1)   # 尚未開始：剩餘＝全長
+                self._save()
+                self._emit(cur, "duration")
+
+        try:
+            threading.Thread(target=_work, daemon=True,
+                             name=f"probe-{item_id}").start()
+        except Exception:
+            pass
 
     def _drop_owned(self, item: dict):
         """刪掉該 item 擁有的上傳副本（僅限 upload_dir 內，防路徑穿越）。"""
@@ -214,11 +259,16 @@ class BatchQueue:
                 "createdAt": _now(),
                 "ownedPath": False,   # 外部檔案：任何清理都不會動它
                 "localPath": True,    # UI 可標示「本機路徑」
+                "durationSec": None,  # Wave 14：入隊後背景探測並以 SSE 補上
+                "etaSec": None,
             }
             self.items.append(item)
             self._save()
             self._emit(item, "added")
-            return dict(item)
+            snapshot = dict(item)
+        # 出鎖後再起探測執行緒，避免 ffprobe 在持有佇列鎖時拖慢所有 SSE。
+        self._probe_duration_async(snapshot["id"])
+        return snapshot
 
     def _save(self):
         tmp = self.state_file.with_suffix(".json.tmp")
@@ -284,11 +334,15 @@ class BatchQueue:
                 "createdAt": _now(),
                 "ownedPath": True,    # 這是我們複製的副本，移除時要刪
                 "localPath": False,
+                "durationSec": None,  # Wave 14：入隊後背景探測並以 SSE 補上
+                "etaSec": None,
             }
             self.items.append(item)
             self._save()
             self._emit(item, "added")
-            return dict(item)
+            snapshot = dict(item)
+        self._probe_duration_async(snapshot["id"])
+        return snapshot
 
     def start(self) -> dict:
         with self._lock:
@@ -327,6 +381,16 @@ class BatchQueue:
             self.backend.cancel()
         except Exception:
             pass
+        # Wave 14／需求 17、18：取消後**立刻**安排釋放模型記憶體。
+        # 後端若 worker 還卡在 transcribe() 裡，release_model_if_enabled()
+        # 會把釋放登記成「待執行」，等那輪真正結束時再放 —— 不會出現
+        # 「先放再佔」的抖動，也不會讓模型一直掛著不放。
+        releaser = getattr(self.backend, "release_model_if_enabled", None)
+        if callable(releaser):
+            try:
+                releaser("batch-canceled")
+            except Exception:
+                pass
         self._broadcast()
         return self.summary()
 
@@ -411,8 +475,12 @@ class BatchQueue:
                     if nxt is None:
                         break
                     nxt["status"] = "running"
-                    nxt["progress"] = 0.0
+                    # Wave 14／需求 3：**不清零** progress —— 斷點續傳時
+                    # 這個值代表上一輪已處理的百分比，續跑會從它往上走；
+                    # 真的從頭開始的情況由 backend 回報 resumedFrom=1 後
+                    # 在下方 _progress 裏以新值覆蓋。
                     nxt["error"] = None
+                    nxt["resumedFrom"] = nxt.get("resumedFrom") or 1
                     self.active_id = nxt["id"]
                     self._save()
                     item_id = nxt["id"]
@@ -442,8 +510,10 @@ class BatchQueue:
                         if cur:
                             cur["status"] = _DONE
                             cur["progress"] = 1.0
-                            cur["srtPath"] = result.get("srtPath")
+                            cur["srtPath"] = result.get("srtPath") or result.get("srt")
                             cur["totalSegments"] = result.get("totalSegments")
+                            cur["resumedFrom"] = int(result.get("resumedFrom") or 1)
+                            cur["durationSec"] = result.get("durationSec") or cur.get("durationSec")
                             self._save()
                             self._emit(cur, "done")
                 except Exception as exc:

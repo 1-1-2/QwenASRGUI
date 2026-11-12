@@ -228,8 +228,10 @@ def main() -> int:
               "1:24:00" in t and "3:20:00" in t, t)
         check("ETA rendered", "剩餘" in page.locator("#prog-eta").inner_text(),
               page.locator("#prog-eta").inner_text())
-        check("group count rendered", "612" in page.locator("#prog-groups").inner_text(),
-              page.locator("#prog-groups").inner_text())
+        # Wave 11 起「段數」只畫一次（在 .meta 的 prog-status），#prog-groups 已移除。
+        check("group count rendered in the status line",
+              "612" in page.locator("#prog-status").inner_text(),
+              page.locator("#prog-status").inner_text())
         check("percentage bar retained at 42%", "42%" in page.locator("#prog-pct").inner_text(),
               page.locator("#prog-pct").inner_text())
         live_rows = page.locator("#live-list > div").count()
@@ -263,8 +265,18 @@ def main() -> int:
         page.evaluate("""() => window.QwenAPI._emit('capabilities',
           {streaming: true, alignAvailable: true, diarAvailable: true,
            effectiveChunkSecs: 10, modelCeilingSecs: 10, estimatedRamMB: 6144})""")
-        eff = page.locator("#seg-effective").inner_text()
-        ram = page.locator("#seg-ram").inner_text()
+        # Wave 11 把這兩個數值收進「切分參數」摺疊面板，未展開時為空字串。
+        # 先展開再讀，否則量到的是隱藏文字而不是渲染結果。
+        try:
+            page.evaluate("""() => {
+              const d = document.querySelector('#seg-note')?.closest('details');
+              if (d) d.open = true;
+            }""")
+            page.wait_for_timeout(150)
+        except Exception:
+            pass
+        eff = page.locator("#seg-effective").text_content() or ""
+        ram = page.locator("#seg-ram").text_content() or ""
         check("capabilities shows effective chunk / ceiling",
               "10s" in eff and "10s" in eff.split("（")[1], eff)
         check("capabilities shows finite RAM estimate",

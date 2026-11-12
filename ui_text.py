@@ -74,6 +74,8 @@ TEMPLATES: dict[str, str] = {
     "health.ov.diar": "說話者分離（外部 ONNX）",
     "health.crisp.core": "CrispASR {version} 核心（{variant}）",
     "health.crisp.coreMissing": "未下載或版本不符（約 {size}MB，啟用時下載）",
+    "health.crisp.coreNotNeeded": "目前使用 OpenVINO（CPU），此核心不需要；改用 GPU 核心時會自動下載",
+    "health.crisp.coreVariantMismatch": "版本相符但加速版本不同，啟用時會自動換成目前選擇的版本",
     "health.crisp.breeze": "Whisper/Breeze 模型（{quant}）",
     "health.crisp.qwen": "Qwen3-ASR-1.7B 模型（{quant}）",
     "health.crisp.qwenJa": "Qwen3-ASR-1.7B 日語動漫模型（{quant}）",

@@ -330,9 +330,11 @@ button { font-family: inherit; }
 .drop .big b { color: var(--accent-strong); }
 .drop .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .drop.has-file { border-style: solid; border-color: var(--line); padding: 20px; }
-/* Wave 12: batch page drop zone (same look as the recognition page). */
-.batch-drop { margin-top: 12px; }
+/* Wave 12: batch page drop zone (same look as the recognition page).
+   Wave 14: it now owns a full row by itself; the tool buttons sit below it. */
+.batch-drop { width: 100%; margin-top: 0; box-sizing: border-box; }
 .batch-drop.hot { border-color: var(--accent); background: var(--accent-soft); }
+.batch-drop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .file-chip {
   display: inline-flex; align-items: center; gap: 9px;
   background: var(--accent-soft); color: var(--accent-strong);
@@ -562,9 +564,16 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 /* ============================================================
    批次視圖
    ============================================================ */
-.batch-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
-.batch-head .sp { flex: 1; }
-.batch-head .summary { font-size: 12.5px; color: var(--muted); font-family: var(--font-mono); }
+/* Wave 14：拖放框獨占一列，工具列在其下。舊版是整排 flex，拖放框被擠在
+   按鈕中間；現在 .batch-head 不再自己排水平，改由 .batch-tools 負責。 */
+.batch-head { margin-bottom: 14px; }
+.batch-tools {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 12px; flex-wrap: wrap;
+}
+.batch-tools .sp { flex: 1; }
+.batch-tools .summary { font-size: 12.5px; color: var(--muted); font-family: var(--font-mono); }
+.batch-tools .batch-shared { font-size: 12px; color: var(--ink-2); }
 .batch-list { display: flex; flex-direction: column; gap: 8px; }
 
 /* Wave 13：批次頁三層版面（總進度 / 目前檔案 / 佇列）。
@@ -731,7 +740,13 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .ep-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 
 /* 系統自檢面板 */
-.health-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 6px; }
+/* Wave 14／需求 11：原本固定兩欄，只有 2 個核心時右側常留一大片空白。
+   改成自動填充：每個核心卡至少 320px，視窗越寬就排越多欄（2→3），
+   不足一欄時卡片自己撐滿整行，不再有半截空白。 */
+.health-panel {
+  display: grid; gap: 12px; margin-bottom: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
 .health-core {
   background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--r-card); padding: 12px 14px; box-shadow: var(--shadow-sm);
@@ -740,12 +755,31 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .hc-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; }
 .hc-item .hi-label { color: var(--ink-2); white-space: nowrap; }
 .hc-item .hi-detail { color: var(--faint); margin-left: auto; text-align: right;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 62%; }
+/* 最後一組（共用元件：ffmpeg / 說話者分離）：只有 2 列，撐滿整行以免右側留白。 */
+.health-panel > .health-core:last-child:nth-child(odd) { grid-column: 1 / -1; }
 .hdot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
 .hdot-green { background: #2BB673; box-shadow: 0 0 0 3px rgba(43,182,115,.15); }
 .hdot-yellow { background: #E0A53B; box-shadow: 0 0 0 3px rgba(224,165,59,.15); }
 .hdot-red { background: #D7574B; box-shadow: 0 0 0 3px rgba(215,87,75,.15); }
 @media (max-width: 760px) { .health-panel { grid-template-columns: 1fr; } }
+
+/* Wave 14／需求 15：自檢收合區塊（併入「診斷」段） */
+.diag-fold {
+  border: 1px solid var(--line); border-radius: var(--r-card);
+  background: var(--panel); padding: 10px 14px; margin-top: 12px;
+}
+.diag-fold > summary {
+  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink);
+  display: flex; align-items: center; gap: 10px; list-style: none;
+}
+.diag-fold > summary::-webkit-details-marker { display: none; }
+.diag-fold > summary::before {
+  content: "▸"; color: var(--muted); font-size: 11px; transition: transform .15s;
+}
+.diag-fold[open] > summary::before { transform: rotate(90deg); }
+.diag-fold > summary .chip { font-weight: 400; }
+.diag-fold > #health-panel { margin-top: 10px; }
 
 /* QR + 網址並排 */
 .qr-row { display: flex; gap: 14px; align-items: center; }
@@ -776,6 +810,10 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
    模型視圖
    ============================================================ */
 .radio-cards { display: flex; flex-direction: column; gap: 10px; }
+/* Wave 14／需求 14：兩個核心（千問 / Whisper）左右並排一行，不再上下堆疊。
+   auto-fit + minmax 讓窄視窗自動退回單欄，不會擠成兩半截。 */
+#core-cards { flex-direction: row; flex-wrap: wrap; }
+#core-cards .radio-card { flex: 1 1 240px; min-width: 0; }
 .radio-card {
   display: flex; align-items: flex-start; gap: 12px; cursor: pointer;
   padding: 14px 16px; border: 1.5px solid var(--line); border-radius: var(--r-card);

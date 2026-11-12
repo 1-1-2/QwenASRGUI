@@ -74,10 +74,22 @@
           `<option value="${esc(b.id)}">${esc(window.I18N ? I18N.L(b.label) : b.label)}</option>`).join("");
       }
       host.innerHTML = bundles.map(b => {
-        const badge = b.complete
+        // Wave 14／需求 11：後端若給了 runtimeReady（與「系統自檢」同一份判斷），
+        // 一律以它為準 —— 綠則綠。crispasr 核心只需一個加速版本、ffmpeg 只需
+        // ffmpeg.exe，都不該因為清單裡其他 zip 沒下載而顯示「缺 N/M」。
+        const rt = b.runtimeReady;
+        const badge = (rt === true)
           ? `<span class="chip" style="color:var(--ok,#1a7f45)">${T("dl.badgeComplete", "完整")}</span>`
-          : `<span class="chip chip-muted">${T("dl.badgeMissing", null,
-              { missing: b.total_count - b.present_count, total: b.total_count })}</span>`;
+          : (rt === false)
+            ? `<span class="chip chip-muted">${T("dl.badgeMissing", null,
+                { missing: b.total_count - b.present_count, total: b.total_count })}</span>`
+            : b.complete
+              ? `<span class="chip" style="color:var(--ok,#1a7f45)">${T("dl.badgeComplete", "完整")}</span>`
+              : `<span class="chip chip-muted">${T("dl.badgeMissing", null,
+                  { missing: b.total_count - b.present_count, total: b.total_count })}</span>`;
+        const rtNote = (rt != null && b.runtimeNote)
+          ? `<div class="hint" style="margin-top:4px;color:var(--ink-2)">${esc(I18N.L(b.runtimeNote))}</div>`
+          : "";
         // models.json already writes size_hint as "约 1.2 GB". Wrapping that
         // in another "約 …（估計）" produced "約 约 1.2 GB（估計）", so strip a
         // leading 约/約 before formatting.
@@ -103,13 +115,20 @@
             <span style="color:var(--ink-2);min-width:150px;text-align:right">${f.present ? "" : state}</span>
           </div>`;
         }).join("");
-        return `<details style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:6px">
+        // Wave 14／需求 13：明細收進可折疊區塊（summary 只留標題＋結論），
+        // 需要時可一鍵跳到「系統自檢」核對同一份結論。
+        return `<details style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:6px"${rt === false ? " open" : ""}>
           <summary style="cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center">
             <span style="flex:1">${esc(window.I18N ? I18N.L(b.label) : b.label)}</span>${approx}${badge}
           </summary>
+          ${rtNote}
           <div style="margin-top:6px;color:var(--ink-2);font-size:12px">${T("dl.target", null, {
             dir: esc(b.target_dir), provider: esc(b.provider || ""),
             optional: b.optional ? T("dl.optional", " · 選用") : "" })}</div>
+          <div style="margin-top:4px;display:flex;gap:8px;align-items:center">
+            <span class="chip chip-muted" style="font-size:10px">${T("dl.selfCheck")}</span>
+            <button class="btn btn-ghost btn-sm" data-goto-health="1">${T("dl.gotoSelfCheck")}</button>
+          </div>
           ${files}
         </details>`;
       }).join("") || `<div style="color:var(--ink-2)">${T("dl.empty", "無資料")}</div>`;
@@ -117,6 +136,14 @@
       host.innerHTML = `<div style="color:var(--warn,#b26a00)">${T("dl.readFailed", null, { err: esc(e.message || e) })}</div>`;
     }
   }
+  // 「查看系統自檢」：切到模型頁並捲到自檢面板（同頁內跳轉，不重載）。
+  document.addEventListener("click", e => {
+    const b = e.target && e.target.closest && e.target.closest("[data-goto-health]");
+    if (!b) return;
+    e.preventDefault();
+    const panel = $("#health-panel");
+    if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
   $("#btn-catalog-refresh") && $("#btn-catalog-refresh").addEventListener("click", renderDownloadCenter);
   $("#btn-catalog-manifest") && $("#btn-catalog-manifest").addEventListener("click", async () => {
     const msg = $("#catalog-msg");
@@ -199,7 +226,7 @@
   const UI_BUSY = new Set();       // "transcribe" | "model" | "preview" | "batch"
   let batchItems = [];             // declared here so syncActionButtons is safe
   let batchRunning = false, batchMockRunning = false, batchActiveIdx = -1;
-  let batchUploadErrors = [], logExpanded = false;
+  let logExpanded = false;   // Wave 14：上傳通道已移除，不再有 batchUploadErrors
   let lastBatchDetail = null;      // Wave 11：批次頁目前任務的進度明細
 
   function markBusy(scope, on) {
@@ -220,7 +247,7 @@
     const prev = $("#btn-vad-preview");
     if (prev && !UI_BUSY.has("preview")) prev.disabled = busy || !picked;
     const loadTxt = $("#btn-load-txt"); if (loadTxt) loadTxt.disabled = busy;
-    const add = $("#btn-batch-add"); if (add) add.disabled = busy || batchRunning;
+    // Wave 14：「加入檔案」按鈕已移除（點拖放框即選檔），此處不再需要 disable。
     const clear = $("#btn-batch-clear");
     if (clear) clear.disabled = busy || !batchItems.some(
       i => ["done", "failed", "canceled"].includes(i.status));
@@ -412,7 +439,11 @@
     // 這裡就地重繪，避免「自動偵測」在簡體／英文介面上留著繁體。
     ["#sel-lang", "#rec-lang"].forEach(id => {
       const sel = $(id); if (!sel) return;
-      [...sel.options].forEach(o => { if (o.dataset.src) o.textContent = I18N.L(o.dataset.src); });
+      [...sel.options].forEach(o => {
+        if (o._literal) { o.textContent = o._literal; return; }   // 語言專名不翻譯
+        if (o._src != null) o.textContent = I18N.L(o._src);
+        else if (o.dataset.src) o.textContent = I18N.L(o.dataset.src);
+      });
     });
     // 批量列表與狀態 chip 也是執行期產生的，切換語言後要整批重繪。
     if (typeof renderBatch === "function") renderBatch();
@@ -493,6 +524,12 @@
       const i = batchItems.findIndex(x => x.status === "running");
       if (i >= 0) batchItems[i].durationSec = Number(d.totalSec);
     }
+    // Wave 14／需求 3：續跑時把「本輪起點已完成的段數」記在 item 上，
+    // 換檔／取消後佇列列仍能顯示正確的累計段數，不會回退成 0。
+    if (d && Number(d.segments) > 0) {
+      const i = batchItems.findIndex(x => x.status === "running");
+      if (i >= 0) batchItems[i].segmentsDone = Number(d.segments);
+    }
     refreshBatchActiveText();
     renderCurrentFile();
     batchSummary();
@@ -522,7 +559,11 @@
     }
     if (detailEl) {
       const parts = [];
-      if (d && d.groups != null) parts.push(T("batch.groups", null, { n: d.groups }));
+      // Wave 14／需求 3：斷點續跑的第一個進度事件只帶「已完成的段數」，
+      // 若照舊拿 groups（本輪新增段數）會顯示成「已識別 0 段」。
+      const segDone = Number(d && d.segments);
+      if (segDone > 0) parts.push(T("batch.groups", null, { n: segDone }));
+      else if (d && d.groups != null) parts.push(T("batch.groups", null, { n: d.groups }));
       const el = batchElapsedSec(d);
       if (el > 0) parts.push(T("batch.fileElapsed", null, { t: fmtDur(el) }));
       if (d && Number(d.speedX) > 0)
@@ -1046,7 +1087,9 @@
   batchInput.multiple = true; batchInput.style.display = "none";
   document.body.appendChild(batchInput);
 
-  // 批次與單檔共用同一組參數（辨識頁），不再維護第二份開關。
+  // Wave 14／需求 4：批次只用「語言／分離／對齊／提示詞」，不繼承音檔頁的
+  // 「試跑前 5 分鐘」與切分參數。後端 add_path 的白名單本來就只收這幾個
+  // 欄位，這裡把多傳的 trial 拿掉，前後端口徑一致；不加任何額外提示。
   function currentBatchOpts() {
     return {
       language: $("#sel-lang") ? $("#sel-lang").value : null,
@@ -1054,30 +1097,21 @@
       nSpeakers: $("#sel-spk") ? $("#sel-spk").value : "auto",
       align: $("#sw-align") ? $("#sw-align").checked : false,
       hint: $("#hint-box") ? $("#hint-box").value.trim() : "",
-      trial: $("#sw-trial") ? $("#sw-trial").checked : false,
     };
   }
 
-  batchInput.addEventListener("change", async e => {
+  // Wave 14：上傳路由已徹底移除。這個隱藏 input 只在無後端的預覽模式
+  // （mock）裡用來把 File 物件放進前端假佇列；web 模式一律走本機絕對路徑，
+  // 絕不讀 content、絕不產生 batch_uploads 副本。
+  batchInput.addEventListener("change", e => {
     const files = Array.from(e.target.files || []);
     batchInput.value = "";
-    if (!files.length) return;
-    if (API.mode === "web") {
-      const opts = currentBatchOpts();
-      for (let i = 0; i < files.length; i++) {
-        const sum = $("#batch-summary");
-        if (sum) sum.textContent = T("batch.uploading", null, { i: i + 1, n: files.length });
-        try { await API.batchAdd(files[i], opts); }
-        catch (err) { batchUploadErrors.push(`${files[i].name}：${err.message || err}`); }
-      }
-      await refreshBatch();
-    } else {
-      for (const f of files) batchItems.push({
-        id: "m" + Math.random().toString(36).slice(2, 9), file: f,
-        name: f.name, status: "pending", progress: 0,
-      });
-      renderBatch();
-    }
+    if (!files.length || API.mode === "web") return;
+    for (const f of files) batchItems.push({
+      id: "m" + Math.random().toString(36).slice(2, 9), file: f,
+      name: f.name, status: "pending", progress: 0, localPath: true,
+    });
+    renderBatch();
   });
 
   /** 從服務端拉全量快照；服務端是唯一事實源。
@@ -1106,7 +1140,24 @@
         payload.type === "added" || payload.type === "retry")
       lastBatchDetail = null;
     if (payload.type === "state" && Array.isArray(payload.items)) {
-      batchItems = payload.items.map(it => Object.assign({}, it, { file: null }));
+      // Wave 14：`state` 是全量快照，前端的本地補充欄位（segmentsDone）
+      // 要一併保留，否則每次快照都會把續跑的段數抹掉。
+      const prev = new Map(batchItems.map(i => [i.id, i]));
+      batchItems = payload.items.map(it => Object.assign(
+        {}, prev.get(it.id) || {}, it, { file: null }));
+    } else if (payload.type === "duration" && payload.item) {
+      // Wave 14／需求 8：入隊後背景探測到的時長。只補欄位、不重繪整個列表，
+      // 避免 10 個檔案同時探測完成時把佇列刷 10 次。
+      const k = batchItems.findIndex(i => i.id === payload.item.id);
+      if (k >= 0) {
+        batchItems[k].durationSec = payload.item.durationSec;
+        batchItems[k].etaSec = payload.item.etaSec;
+        updateBatchRow(k);
+        batchSummary();
+      }
+      if (payload.summary) batchRunning = !!payload.summary.running;
+      syncActionButtons();
+      return;
     } else if (payload.item) {
       // Wave 11：單筆 item 事件（start/progress/done/error）只做「更新或新增」。
       // 若本地陣列是空的、但服務端 summary 說還有 N 筆，代表我們狀態落後，
@@ -1193,16 +1244,14 @@
     batchSummary();
     const host = $("#batch-list"); if (!host) return;
     host.innerHTML = "";
-    if (batchUploadErrors.length) {
+    if (!batchItems.length) {
+      // Wave 14／需求 5：舊版把整句繁中寫死在 innerHTML 裡，切到簡體／English
+      // 也不變。改走 T() 三語字典；語言切換時會重繪佇列（見 setLang 監聽）。
       const box = document.createElement("div");
       box.className = "card";
-      box.style.cssText = "color:var(--danger, #c0392b);padding:10px;margin-bottom:8px;font-size:12px";
-      box.textContent = T("batch.uploadFailed", null, { err: batchUploadErrors.join("；") });
+      box.style.cssText = "text-align:center;color:var(--muted);padding:28px";
+      box.textContent = T("batch.empty");
       host.appendChild(box);
-    }
-    if (!batchItems.length) {
-      host.innerHTML += `<div class="card" style="text-align:center;color:var(--muted);padding:28px">
-        尚未加入檔案 — 點「加入檔案」可一次選多個音訊，由服務端依序處理。</div>`;
       return;
     }
     batchItems.forEach((it, idx) => host.appendChild(batchRow(it, idx)));
@@ -1357,38 +1406,46 @@
     }, 0);
   }
 
-  // Wave 12 / issue 3: "Add files" now goes through the server-side native
-  // picker, which returns real absolute paths -> add_path (zero copy, no
-  // upload), exactly like the "paste local path" panel. A browser file input
-  // cannot expose an absolute path, so it is kept only as a fallback for
-  // non-Windows / picker-unavailable / preview-mode situations.
-  async function addBatchFilesViaPicker() {
-    if (API.mode !== "web") { batchInput.click(); return; }
-    let r;
-    try { r = await API.pickFiles(); }
-    catch (e) { batchInput.click(); return; }
-    if (!r || !r.supported) { batchInput.click(); return; }
-    const paths = Array.isArray(r.paths) ? r.paths : [];
-    if (!paths.length) return;                       // user cancelled
-    const opts = currentBatchOpts();
-    let ok = 0; const errs = [];
-    for (const p of paths) {
-      try { await API.batchAddPath(p, opts); ok++; }
-      catch (e) { errs.push(`${p}: ${e.message || e}`); }
-    }
-    if (errs.length) showPathMsg(T("batch.pathPartial", null,
-      { ok, fail: errs.length, err: errs.join("; ") }), true);
-    else showPathMsg(T("batch.dropAdded", null, { n: ok }), false);
-    if (pathPanel) pathPanel.hidden = false;
-    await refreshBatch();
+  // Wave 14／需求 2、6、7：批次頁只保留「本機路徑直引」這一條路 ——
+  // 拖放框、點擊拖放框、貼路徑三者最終都呼叫後端原生選檔 → add_path，
+  // 不複製、不上傳、不產生 batch_uploads 副本。/api/batch/add 上傳路由
+  // 已在後端刪除，因此這裡也不再有任何 File 物件回退分支。
+  function pickBatchFiles() {
+    // 兩種情況都用得到系統選檔：
+    //   · web：後端提供原生 GetOpenFileName，能拿到絕對路徑 → add_path
+    //   · 預覽（mock）：沒有後端，退化成瀏覽器 <input type=file>，只把 File
+    //     物件放進前端假佇列（記憶體），絕不上傳、不落地。
+    // 舊版在 mock 模式直接 return，導致「點拖放框沒反應」—— 看起來像壞掉。
+    if (API.mode !== "web") { batchInput.click(); return Promise.resolve(); }
+    return API.pickFiles().then(async r => {
+      const paths = (r && r.supported && Array.isArray(r.paths)) ? r.paths : null;
+      if (paths === null) {
+        // 原生選檔不可用（非 Windows / 精簡環境）：不要靜默失敗，
+        // 也不退化成上傳，直接引導使用者改用「貼上本機路徑」。
+        showPathMsg(T("batch.pickUnsupported"), true);
+        if (pathPanel) { pathPanel.hidden = false; pathInput && pathInput.focus(); }
+        return;
+      }
+      if (!paths.length) return;                     // 使用者取消
+      const opts = currentBatchOpts();
+      let ok = 0; const errs = [];
+      for (const p of paths) {
+        try { await API.batchAddPath(p, opts); ok++; }
+        catch (e) { errs.push(`${p}: ${e.message || e}`); }
+      }
+      if (errs.length) showPathMsg(T("batch.pathPartial", null,
+        { ok, fail: errs.length, err: errs.join("; ") }), true);
+      else if (ok) showPathMsg(T("batch.dropAdded", null, { n: ok }), false);
+      await refreshBatch();
+    }).catch(() => {
+      showPathMsg(T("batch.pickUnsupported"), true);
+      if (pathPanel) { pathPanel.hidden = false; pathInput && pathInput.focus(); }
+    });
   }
-  $("#btn-batch-add").addEventListener("click", addBatchFilesViaPicker);
 
-  // Wave 12 / issue 3: batch-page drag & drop, mirroring the recognition page.
-  // If the drop payload carries an absolute path (file:// URI or X:\...), use
-  // add_path for zero-copy reference. Otherwise fall back to the upload path;
-  // Wave 11's ownedPath cleanup removes those copies on remove/clear, so no
-  // orphan files are left behind.
+  // Wave 14／需求 7：拖放一律走 add_path。能拿到絕對路徑（file:// / X:\）
+  // 就直接引用；拿不到（瀏覽器只給 File 物件、無絕對路徑）就明白告訴使用者
+  // 改用點擊選檔，而不是偷偷上傳產生副本。
   function extractLocalPaths(dt) {
     if (!dt) return [];
     const out = [], blobs = [];
@@ -1410,7 +1467,11 @@
   }
   const batchDrop = $("#batch-drop");
   if (batchDrop) {
-    batchDrop.addEventListener("click", () => $("#btn-batch-add").click());
+    // 需求 6：點拖放框即叫出原生選檔（鍵盤 Enter/Space 同樣可用）。
+    batchDrop.addEventListener("click", () => pickBatchFiles());
+    batchDrop.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickBatchFiles(); }
+    });
     ["dragover", "dragenter"].forEach(ev => batchDrop.addEventListener(ev, e => {
       e.preventDefault(); batchDrop.classList.add("hot");
     }));
@@ -1428,22 +1489,24 @@
           try { await API.batchAddPath(p, opts); ok++; }
           catch (err) { errs.push(`${p}: ${err.message || err}`); }
         }
-      } else if (API.mode === "web") {
-        for (const f of files) {
-          try { await API.batchAdd(f, opts); ok++; }
-          catch (err) { errs.push(`${f.name}: ${err.message || err}`); }
+      } else if (files.length) {
+        // 有檔案但拿不到絕對路徑（瀏覽器只給 File 物件）：
+        // 正式模式絕不改走「上傳副本」→ 引導使用者改用點擊選檔／貼路徑；
+        // 預覽（mock）模式沒有後端，只在記憶體裡放 File 物件，不落地。
+        if (API.mode === "web") {
+          showPathMsg(T("batch.dropNoPath"), true);
+          if (pathPanel) pathPanel.hidden = false;
+        } else {
+          for (const f of files) batchItems.push({
+            id: "m" + Math.random().toString(36).slice(2, 9), file: f,
+            name: f.name, status: "pending", progress: 0,
+          });
+          ok = files.length;
         }
-      } else {
-        for (const f of files) batchItems.push({
-          id: "m" + Math.random().toString(36).slice(2, 9), file: f,
-          name: f.name, status: "pending", progress: 0,
-        });
-        ok = files.length;
       }
       if (errs.length) showPathMsg(T("batch.pathPartial", null,
         { ok, fail: errs.length, err: errs.join("; ") }), true);
       else if (ok) showPathMsg(T("batch.dropAdded", null, { n: ok }), false);
-      if (pathPanel) pathPanel.hidden = false;
       if (API.mode === "web") await refreshBatch(); else renderBatch();
     });
   }
@@ -1557,6 +1620,10 @@
       else { sum.className = "chip chip-ok"; sum.textContent = T("catalog.allReady", "全部就緒"); }
     }
     const host = $("#health-panel"); host.innerHTML = "";
+    // Wave 14／需求 15：自檢平時收合，只有出現紅燈（缺且不能自動補）才自動展開，
+    // 讓「診斷」段落預設保持精簡。
+    const fold = $("#health-fold");
+    if (fold && h.summary && h.summary.red > 0) fold.open = true;
     const dot = s => `<span class="hdot hdot-${s}"></span>`;
     const groups = [...(h.cores || [])];
     if (h.shared && h.shared.length) groups.push({ label: T("catalog.shared", "共用元件"), items: h.shared });
@@ -1856,10 +1923,25 @@
         languages.forEach(l => {
           const o = document.createElement("option");
           o.value = l.value;
-          // 后端已按 ui_text 契约返回本地化 label（空值项即 msg.lang.auto），
-          // 这里再走一次 T() 会用固定文案盖掉它 —— 简体/英文界面因此显示繁体。
-          o.dataset.src = l.label || "";
-          o.textContent = window.I18N ? I18N.L(o.dataset.src) : o.dataset.src;
+          // 后端按 ui_text 契约返回结构化 label：{k:"msg.lang.auto",v:{},t:"語言 自動"}。
+          // 早期实现把它塞进 dataset（字符串化后变成 "[object Object]"）再在切换语言时
+          // 走 I18N.L，默认项因此显示成 object object —— 这里保持原对象引用，
+          // 由 I18N.L 解析 k/v 或退到 t，语言切换时再重跑一次即可正确本地化。
+          if (l.label && typeof l.label === "object") {
+            o.dataset.src = JSON.stringify(l.label);
+          } else {
+            o.dataset.src = l.label || "";
+          }
+          // Wave 14：語言名（Chinese / Japanese …）與自動偵測不同 —— 前者是
+          // 專有名詞，走 I18N.L 會被漢字轉換成「汉语」，英文界面也仍是中文。
+          // 自動偵測（結構化 label）照舊本地化；具名語言固定顯示原文。
+          const auto = l.value === "" || (l.label && typeof l.label === "object");
+          o.dataset.auto = auto ? "1" : "";
+          o._src = auto ? l.label : null;
+          o._literal = auto ? "" : String(l.label || "");
+          o.textContent = auto
+            ? (window.I18N ? I18N.L(l.label) : (l.label && l.label.t) || "")
+            : (l.value || l.label);
           sel.appendChild(o);
         });
         if ([...sel.options].some(o => o.value === cur)) sel.value = cur;

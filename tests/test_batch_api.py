@@ -113,24 +113,40 @@ def main() -> int:
                     empty["summary"]["total"] == 0 and empty["items"] == [],
                     str(empty.get("summary")))
 
+            # Wave 14／需求 7：上傳路由已停用（410），改由本機路徑直引加入。
             body, boundary = multipart("lecture01.wav")
-            code, added = request(base, "/api/batch/add", "POST", body,
-                                  f"multipart/form-data; boundary={boundary}")
-            r.check("POST /api/batch/add accepts a multipart upload",
+            try:
+                code_up, _ = request(base, "/api/batch/add", "POST", body,
+                                     f"multipart/form-data; boundary={boundary}")
+            except Exception as e:      # urllib 對 4xx 會拋 HTTPError
+                code_up = getattr(e, "code", 0)
+            r.check("POST /api/batch/add 已停用（410 Gone）", code_up == 410,
+                    str(code_up))
+
+            src1 = scratch / "lecture01.wav"
+            src1.write_bytes(b"RIFF....WAVEfmt ")
+            code, added = request(base, "/api/batch/add-path", "POST",
+                                  json.dumps({"path": str(src1),
+                                              "opts": {}}).encode(),
+                                  "application/json")
+            r.check("POST /api/batch/add-path 加入本機檔案（不複製）",
                     code == 200 and added.get("ok") is True, str(added)[:120])
             r.check("item carries a server-side id", bool(added["item"]["id"]))
-            r.check("uploaded file is persisted under the queue dir",
-                    Path(added["item"]["path"]).is_file() and
-                    "batch_uploads" in added["item"]["path"])
+            r.check("本機路徑 item 標記為 localPath 且不複製",
+                    added["item"].get("localPath") is True and
+                    added["item"].get("ownedPath") is False and
+                    added["item"]["path"] == str(src1.resolve()))
 
             code, snap = request(base, "/api/batch")
             r.check("snapshot reflects the new item",
                     snap["summary"]["total"] == 1 and
                     snap["items"][0]["status"] == "pending", str(snap["summary"]))
 
-            body2, boundary2 = multipart("lecture02.mp3")
-            request(base, "/api/batch/add", "POST", body2,
-                    f"multipart/form-data; boundary={boundary2}")
+            src2 = scratch / "lecture02.mp3"
+            src2.write_bytes(b"ID3....")
+            request(base, "/api/batch/add-path", "POST",
+                    json.dumps({"path": str(src2), "opts": {}}).encode(),
+                    "application/json")
             code, started = request(base, "/api/batch/start", "POST", b"{}",
                                     "application/json")
             r.check("POST /api/batch/start starts the worker",
@@ -209,12 +225,16 @@ def main() -> int:
             # Static contract: the front end must no longer be the queue owner.
             appjs = (ROOT / "webview/js/app.js").read_text(encoding="utf-8")
             bridge = (ROOT / "webview/js/bridge.js").read_text(encoding="utf-8")
-            r.check("bridge exposes batchAdd/batchStart", "async batchAdd(" in bridge
-                    and "async batchStart(" in bridge)
+            # Wave 14：上傳版 batchAdd 已移除，改為本機路徑直引 batchAddPath。
+            r.check("bridge exposes batchAddPath/batchStart",
+                    "async batchAddPath(" in bridge
+                    and "async batchStart(" in bridge
+                    and "async batchAdd(" not in bridge)
             r.check("UI renders from batch SSE events", 'API.on("batch"' in appjs)
             r.check("UI refreshes from the server snapshot", "refreshBatch()" in appjs)
-            r.check("web mode does not re-upload per item in a for-loop",
-                    "await API.batchAdd(files[i], opts)" in appjs)
+            r.check("web mode 不再逐檔上傳（全部走 add-path）",
+                    "await API.batchAdd(" not in appjs
+                    and "await API.batchAddPath(" in appjs)
         finally:
             srv.stop()
 

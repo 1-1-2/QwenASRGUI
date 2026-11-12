@@ -718,6 +718,37 @@ def _app_mode_args(url: str, variant: int = 0) -> list[str]:
     ]
 
 
+def _focus_existing_window(url: str) -> bool:
+    """把第二實例的 URL 交棒給已存在的 Edge --app 視窗。
+
+    Wave 14／需求 16：第二次點 exe 會「用本機瀏覽器另開一個連結」，那是因為
+    webbrowser.open() 走的是使用者的預設瀏覽器。真正想要的行為是回到原本那個
+    視窗。做法不是去猜 HWND，而是用**同一組 --app + --user-data-dir** 再叫一次
+    Edge：Edge 的 ProcessSingleton 會把命令轉發給既有實例並聚焦它，自己立刻
+    結束（exit 0），因此不會多出視窗、也不影響 launcher 原本「視窗關閉→程式
+    退出」的判定（我們不 attach 這個轉發用行程）。
+
+    回傳 True 表示已交棒；False 代表環境不支援（非 Windows / 無 msedge），
+    呼叫端再退回 webbrowser.open()。
+    """
+    if sys.platform != "win32":
+        return False
+    edge = _find_edge()
+    if not edge:
+        return False
+    # 不清 ProcessSingleton、不換 variant：這次就是要命中那個既有視窗。
+    args = [edge, f"--app={url}",
+            f"--user-data-dir={_profile_dir(0)}",
+            "--no-first-run", "--no-default-browser-check"]
+    try:
+        subprocess.Popen(args, creationflags=0x08000000 | 0x01000000)
+        _log(f"[{APP_NAME}] 已把 URL 轉發給既有 Edge --app 視窗（不新增視窗）")
+        return True
+    except Exception as e:
+        _log(f"[{APP_NAME}] 轉發既有視窗失敗：{e}")
+        return False
+
+
 def open_edge_app(url: str, variant: int = 0) -> subprocess.Popen | None:
     edge = _find_edge()
     if edge:
@@ -976,8 +1007,17 @@ def main():
     clk.mark("取得單實例鎖")
     if not owned:
         if existing_url:
+            # Wave 14／需求 16：再次開 exe 的預期行為是「回到已開的視窗」，
+            # 而不是又開一個瀏覽器分頁。
+            #   · Edge --app 通道：用同一組 --app + --user-data-dir 再叫一次，
+            #     Edge 會把 URL **轉發給既有視窗**（Chrome/Edge 的 ProcessSingleton
+            #     行為），不會新增視窗，也不需要我們去殺舊程序 —— 因此不影響
+            #     原本「關窗即退出」的判斷。
+            #   · 只有無法走 Edge 時（找不到 msedge.exe / 原生視窗模式）才退回
+            #     預設瀏覽器，那時是「開一個分頁」，屬降級但不會破壞單實例語義。
             _log(f"[{APP_NAME}] 已有執行中的執行個體，導向現有視窗：{existing_url}")
-            webbrowser.open(existing_url)
+            if not _focus_existing_window(existing_url):
+                webbrowser.open(existing_url)
         else:
             _log(f"[{APP_NAME}] 已有執行中的執行個體（未取得視窗網址），本次啟動結束。")
         return 0

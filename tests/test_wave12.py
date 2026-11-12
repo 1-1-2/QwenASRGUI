@@ -59,6 +59,7 @@ def _make_backend():
     b._loading = False
     b._running = 0
     b._batch_running = False
+    b._release_pending = False      # Wave 14：取消後延遲釋放用的旗標
     b._progress_scope = None
     b._active_backend = "openvino"
     b._lock = threading.Lock()
@@ -248,17 +249,20 @@ def test_issue3(r: Result):
 
     r.check("批量頁有拖放區 #batch-drop", 'id="batch-drop"' in html and
             'class="drop batch-drop"' in html)
-    r.check("加入檔案改走 addBatchFilesViaPicker",
-            "addBatchFilesViaPicker" in app_js and
-            "#btn-batch-add\").addEventListener(\"click\", addBatchFilesViaPicker)" in app_js and
-            "batchInput.click(); return;" in app_js)
+    # Wave 14：加入檔案改由「拖放框點擊」直接叫出原生選檔，按鈕已移除。
+    r.check("點拖放框即叫出原生選檔（pickBatchFiles）",
+            "function pickBatchFiles(" in app_js and
+            'batchDrop.addEventListener("click", () => pickBatchFiles())' in app_js and
+            'id="btn-batch-add"' not in html)
     r.check("選到路徑後走 batchAddPath（零複製）",
             "await API.batchAddPath(p, opts)" in app_js)
     r.check("拖放會嘗試取出本機絕對路徑",
             "function extractLocalPaths(" in app_js and
             "text/uri-list" in app_js and "file://" in app_js)
-    r.check("拖放拿不到路徑時仍可上傳（Wave 11 ownedPath 清理）",
-            "await API.batchAdd(f, opts)" in app_js)
+    # Wave 14／需求 7：上傳路由已徹底移除，拿不到路徑時改為引導使用者選檔／貼路徑。
+    r.check("拖放拿不到路徑時不再上傳，改提示本機路徑",
+            "await API.batchAdd(" not in app_js and
+            "batch.dropNoPath" in app_js and "async batchAdd(" not in bridge)
     r.check("bridge 有 pickFiles() 打 /api/pick-files",
             "async pickFiles()" in bridge and '"/api/pick-files"' in bridge)
     r.check("後端有原生選檔與 /api/pick-files 路由",

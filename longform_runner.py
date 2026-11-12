@@ -870,14 +870,23 @@ class LongformRunner:
             self.ckpt.save(0, 1, "running", fingerprint=self.fingerprint,
                            vad_state="")
 
+        # Wave 14／需求 3：記住本次從第幾段起跑，回報給佇列以保留「已處理段數」。
+        resume_from = int(next_index) if resume else 1
         if status == "done" and not limit_sec:
             return {"status": "done", "srt": str(self.out_srt),
                     "segments": next_index - 1, "resumed": True,
+                    "resumeFrom": resume_from,
                     "peaks": [], "duration": 0.0, "truncated": False}
         self._init_outputs(next_index)
 
         start_sec = next_frame * VAD_CHUNK / SR
-        self._emit(0, f"从第 {start_sec / 60:.1f} 分钟续跑" if start_sec else "开始流式分段")
+        # Wave 14／需求 3：续跑时把「已完成的段数」一并送给前端，否则界面会
+        # 从 0 段开始显示、看起来像从头识别。
+        self._emit(0, f"从第 {start_sec / 60:.1f} 分钟续跑" if start_sec else "开始流式分段",
+                   {"doneSec": round(start_sec, 1),
+                    "totalSec": round(total_sec or 0, 1),
+                    "segments": max(0, next_index - 1),
+                    "phase": "resume" if start_sec else "start"})
         stream = (pcm_source if pcm_source is not None else
                   pcm_stream(Path(audio_path), self.ffmpeg, start_sec))
         if total_sec is None and audio_path is not None:
@@ -1085,7 +1094,8 @@ class LongformRunner:
                     "segments": seg_index - 1, "next_frame": resume_frame,
                     "groups": group_count, "frames": frame,
                     "peaks": peaks.to_bars(), "duration": peaks.duration,
-                    "truncated": truncated}
+                    "truncated": truncated,
+                    "resumeFrom": resume_from, "resumed": resume_from > 1}
 
         # C1: refine the finished SRT in place (single pass, done path only).
         self._finalize_punctuation()
@@ -1100,4 +1110,5 @@ class LongformRunner:
                 "segments": seg_index - 1, "next_frame": frame,
                 "groups": group_count, "frames": frame,
                 "peaks": peaks.to_bars(), "duration": peaks.duration,
-                "truncated": truncated}
+                "truncated": truncated,
+                "resumeFrom": resume_from, "resumed": resume_from > 1}

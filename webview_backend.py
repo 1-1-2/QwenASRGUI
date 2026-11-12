@@ -267,6 +267,9 @@ class WebBackend:
         #   _batch_running BatchQueue 整隊進行中（其間不在每個 item 後重載模型）
         self._running = 0
         self._batch_running = False
+        # Wave 14：任務結束（正常/取消/例外）後若要釋放，先登記在這裡，
+        # 等真正閒下來再放，避免取消時 worker 還在 transcribe() 裡就硬放。
+        self._release_pending = False
         self._released_once = False       # 曾載入過又被釋放 → 才允許懶載入
         # H1: structured runtime log shared by the WebView and LAN endpoint.
         self.run_log = RunLog(on_event=on_event)
@@ -330,7 +333,49 @@ class WebBackend:
         doc = mc.load_catalog()
         st = mc.catalog_status(app_root, doc, model_dir)
         st["mirror"] = self.get_settings().get("mirror", "")
+        self._decorate_catalog_runtime(st)
         return st
+
+    # ── 下載中心 × 系統自檢：同一份判斷（Wave 14／需求 11）──────────────
+    #   下載中心原本只看「models.json 列的每個檔案在不在」。但 crispasr_core
+    #   這個 bundle 列了 5 個加速版本 zip，使用者只會裝其中一個 → 永遠「缺 4 個」，
+    #   於是系統自檢顯示綠燈（crispasr.exe 在、版本吻合）、下載中心卻說沒裝好。
+    #   ffmpeg 同理：清單要求 ffmpeg.zip，實際只需要 ffmpeg.exe。
+    #   這裡把「執行期真正在乎的判斷」附在 bundle 上，前端一律優先採用它。
+    def _decorate_catalog_runtime(self, st: dict):
+        try:
+            from downloader import quick_check_crispasr, _CRISPASR_VERSION
+            crisp_ok = quick_check_crispasr(self._crispasr_dir(), self._crisp_variant())
+        except Exception:
+            crisp_ok = False
+            _CRISPASR_VERSION = ""
+        try:
+            _ff = self._resolve_ffmpeg()
+            ff_ok = bool(_ff)
+            ff_path = str(_ff) if _ff else ""
+        except Exception:
+            ff_ok, ff_path = False, ""
+        for b in st.get("bundles", []) or []:
+            bid = b.get("id")
+            if bid == "crispasr_core":
+                b["runtimeReady"] = bool(crisp_ok)
+                b["runtimeNote"] = _t.msg("dl.runtimeCrisp", version=_CRISPASR_VERSION)
+                # 只要「已安裝的那個加速版本」在，就算完整，別再數另外 4 個 zip。
+                if crisp_ok:
+                    b["complete"] = True
+                    b["present_count"] = b.get("total_count")
+            elif bid == "ffmpeg_windows":
+                b["runtimeReady"] = ff_ok
+                b["runtimePath"] = ff_path
+                b["runtimeNote"] = (_t.msg("dl.runtimeFfmpegOk", path=ff_path) if ff_ok
+                                    else _t.msg("dl.runtimeFfmpegMissing"))
+                if ff_ok:
+                    b["complete"] = True
+                    b["present_count"] = b.get("total_count")
+        # 重算彙總，讓「已就緒 N/M」跟自檢結論一致。
+        ids = [x.get("id") for x in st.get("bundles", []) or []]
+        st["complete"] = [x["id"] for x in st.get("bundles", []) or [] if x.get("complete")]
+        st["incomplete"] = [i for i in ids if i not in set(st["complete"])]
 
     def export_download_manifest(self, bundle_ids=None) -> dict:
         """Write a .txt download list with URLs, hashes and aria2c commands."""
@@ -431,6 +476,17 @@ class WebBackend:
                 continue
 
     # ── 事件推送 ────────────────────────────────────────────
+    def _emit(self, event, payload):
+        # Wave 14／需求 3：進度事件一律附帶本次任務的 taskId。前端據此判斷
+        # 「這是同一個檔案的續跑」，才不會在斷點續傳時把已完成的段數清零；
+        # 同時保留 pct/status，向後相容所有既有呼叫方與測試。
+        if event in ("progress", "progress-detail") and isinstance(payload, dict) \
+                and payload.get("taskId") is None:
+            _tid = getattr(self, "_current_task_id", None)
+            if _tid:
+                payload["taskId"] = _tid
+        return self._emit_inner(event, payload)
+
     def set_progress_scope(self, scope: str | None):
         """設定進度事件歸屬（BatchQueue 在跑某個 item 時設 "batch"）。
 
@@ -444,7 +500,7 @@ class WebBackend:
         if scope == "batch":
             self._batch_running = True
 
-    def _emit(self, event: str, payload: dict):
+    def _emit_inner(self, event: str, payload: dict):
         # Wave 11：只對進度類事件加 scope，其餘事件契約完全不變。
         # 單檔任務 scope=None → payload 一個字都不動，舊前端也相容。
         scope = getattr(self, "_progress_scope", None)
@@ -540,10 +596,22 @@ class WebBackend:
                 "reason": reason}
 
     def release_model_if_enabled(self, reason: str = "batch-finished") -> dict:
-        """BatchQueue 整隊結束時呼叫（FakeBackend 用 getattr 相容）。"""
+        """BatchQueue 整隊結束／取消時呼叫（FakeBackend 用 getattr 相容）。
+
+        Wave 14／需求 17、18：取消佇列時 worker 執行緒可能還卡在 transcribe()
+        裡（_running 仍是 1），舊版這裡直接 return skipped，於是「取消後記憶體
+        沒放、重新開始時才先放再佔」。現在改成：先登記「本輪結束後要釋放」，
+        等 _end_run() 真的把 _running 歸零時再釋放；若當下就已經閒置，立刻放。
+        """
         self._batch_running = False
-        if self._running > 0 or not self._auto_release_enabled():
+        self._release_pending = True
+        if not self._auto_release_enabled():
+            self._release_pending = False
             return {"ok": False, "released": False, "reason": "skipped"}
+        if self._running > 0:
+            # 還在跑：交給 _end_run() 收尾，這裡不阻塞呼叫端（cancel 是 UI 同步路徑）。
+            return {"ok": True, "released": False, "reason": "deferred"}
+        self._release_pending = False
         return self.release_model(reason=reason)
 
     def _ensure_engine(self):
@@ -575,23 +643,49 @@ class WebBackend:
     def _begin_run(self):
         self._ensure_engine()
         with self._lock:
+            # 新的任務開始 → 之前登記的「待釋放」作廢（本輪結束自然會再判斷）。
+            self._release_pending = False
             self._running += 1
 
     def _end_run(self):
         with self._lock:
             self._running = max(0, self._running - 1)
             busy = self._running > 0
+            pending = bool(getattr(self, "_release_pending", False))
         # 不論是否卸載模型，都要丟掉本次的字級結果／VAD 診斷快取。
         # 這份 rich 結果在數小時音檔上可達數十 MB，是「轉完記憶體沒回落」
         # 的另一個來源。
         self._drop_run_cache()
         gc.collect()
-        if busy or self._batch_running or not self._auto_release_enabled():
+        if busy or not self._auto_release_enabled():
             return
+        # Wave 14／需求 17、18：舊版額外要求 _batch_running 為 False 才釋放，
+        # 但取消佇列後這個旗標會殘留 True，導致取消後模型一直掛在記憶體裡，
+        # 直到下一次開始才被放掉（先放再佔）。
+        # 但也不能一併無視 _batch_running：那會讓「整隊進行中」每個 item 結束
+        # 就卸載一次模型，下一個檔案又要重新編譯數十秒。
+        # 折衷且精確：**只有登記了待釋放（取消／整隊結束）才無視 _batch_running**。
+        if self._batch_running and not pending:
+            return
+        self._batch_running = False
+        self._release_pending = False
         try:
-            self.release_model(reason="auto")
+            self.release_model(reason="auto" if not pending else "batch-canceled")
         except Exception:
             pass
+
+    def release_on_idle(self, reason: str = "idle") -> dict:
+        """沒有任何任務在跑時立刻釋放模型；有任務則登記待釋放。
+
+        由 UI 的「停止」與視窗關閉路徑呼叫，補上「取消後仍佔記憶體」的缺口。
+        """
+        if self._running > 0 or self._loading:
+            self._release_pending = True
+            return {"ok": True, "released": False, "reason": "deferred"}
+        if not self._auto_release_enabled():
+            return {"ok": False, "released": False, "reason": "disabled"}
+        self._release_pending = False
+        return self.release_model(reason=reason)
 
     def _drop_run_cache(self):
         for name in ("_last_segments_rich", "_last_vad_diag"):
@@ -1069,6 +1163,9 @@ class WebBackend:
                     # or overwrite its SRT.
                     task_id += "-trial"
                     out_srt = out_ref.with_name(out_ref.stem + ".trial.srt")
+                # Wave 14／需求 3：讓後續 progress / progress-detail 事件都帶上
+                # taskId，前端才能分辨「同一檔案的續跑」與「換了檔案」。
+                self._current_task_id = task_id
 
                 # Fingerprint everything that changes the transcript. A
                 # mismatch forces a clean restart instead of resuming into a
@@ -1203,6 +1300,10 @@ class WebBackend:
             "srtPath": saved,
             "trial": trial,
             "truncated": bool(result.get("truncated")),
+            # Wave 14／需求 3：告知呼叫方本次是從第幾段續跑（1 = 全新）。
+            # 目前已寫入的段數 = resumedFrom - 1，佇列據此保留「已處理段數」。
+            "resumedFrom": int(result.get("resumeFrom") or 1),
+            "resumed": bool(result.get("resumed")),
             "duration": result.get("duration") or (_duration or 0),
             "peaks": result.get("peaks") or [],
         }
@@ -1926,6 +2027,24 @@ class WebBackend:
         variants_meta = crispasr_variants()
         vmeta = variants_meta.get(variant, variants_meta["vulkan"])
         core_ok = quick_check_crispasr(crispasr_dir, variant)
+        # Wave 14／需求 15：修正「選 Qwen 1.7B + CPU，卻報核心未下載/版本不符」的誤報。
+        #   舊版把兩件事混成一句：(a) 整體核心就緒與否，(b) 目前**選中的加速版本**。
+        #   使用者選了 OpenVINO（CPU）這條路時，CRISPASR 核心本來就不需要；
+        #   即便需要，只要 crispasr.exe 在、只是 marker 版本/變體跟設定不同，
+        #   也該說「版本不符，啟用時會自動重下」，而不是「未下載」。
+        _core_ver = None
+        try:
+            from downloader import installed_crispasr_info
+            _core_ver = (installed_crispasr_info(crispasr_dir) or {}).get("version")
+        except Exception:
+            _core_ver = None
+        _backend_now = getattr(self, "_active_backend", "openvino")
+        if _backend_now == "openvino":
+            _core_detail = _t.msg("health.crisp.coreNotNeeded")
+        elif _core_ver == _CRISPASR_VERSION:
+            _core_detail = _t.msg("health.crisp.coreVariantMismatch")
+        else:
+            _core_detail = _t.msg("health.crisp.coreMissing", size=vmeta['size_mb'])
         crisp_quant = s.get("crisp_quant", "q5")
         qwen_quant = s.get("crisp_qwen_quant", _QWEN_QUANT_DEFAULT)
         fa_quant = s.get("crisp_fa_quant", "q5")
@@ -1936,8 +2055,7 @@ class WebBackend:
             "items": [
                 item("core", _t.msg("health.crisp.core", version=_CRISPASR_VERSION,
                                     variant=_variant_label),
-                     core_ok, _t.msg("state.downloaded"),
-                     _t.msg("health.crisp.coreMissing", size=vmeta['size_mb'])),
+                     core_ok, _t.msg("state.downloaded"), _core_detail),
                 item("breeze", _t.msg("health.crisp.breeze", quant=crisp_quant.upper()),
                      quick_check_breeze(crispasr_dir, crisp_quant),
                      _t.msg("state.downloaded"), _t.msg("state.notDownloaded")),

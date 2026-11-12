@@ -430,7 +430,10 @@ class WebViewServer:
                         return self._json(server.backend.import_local_model(
                             body.get("dir", ""), body.get("bundle", "")))
                     if path == "/api/batch/add":
-                        return self._batch_add()
+                        # Wave 14：上傳路由已移除。批次頁只走本機路徑直引
+                        # （/api/batch/add-path），不複製、不上傳、不產生副本。
+                        return self._err(410, "批次加入已改為本機路徑直引，"
+                                         "請改用點擊選檔或 /api/batch/add-path")
                     if path == "/api/batch/add-path":
                         # Wave 11：直接引用本機檔案，不複製、不上傳。
                         body = self._read_json_body()
@@ -678,26 +681,6 @@ class WebViewServer:
                     })
                 except Exception:
                     pass
-
-            def _batch_add(self):
-                """Upload one file into the persistent server-side queue.
-
-                Reuses _receive_upload() so the multipart body is released
-                immediately (Wave 1.5 memory fix); the file is then copied by
-                BatchQueue.add() into longform_state/batch_uploads/ and this
-                handler's temp dir is removed right away.
-                """
-                tmp_dir, opts, err = self._receive_upload()
-                if err is not None:
-                    return err
-                try:
-                    item = server.batch_queue.add(
-                        Path(opts["path"]), opts["name"], opts)
-                    return self._json({"ok": True, "item": item})
-                except Exception as exc:
-                    return self._err(500, str(exc))
-                finally:
-                    self._cleanup_upload(tmp_dir)
 
             def _transcribe(self):
                 tmp_dir, opts, err = self._receive_upload()
