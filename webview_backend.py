@@ -1194,6 +1194,41 @@ class WebBackend:
                     # Reuse the original line splitting / timestamp logic.
                     return core._assign_ts(core._split_to_lines(text), t0, t1)
 
+                # FA 驱动的行生成（可选）。只有「启用了对齐」且 FA 模型就绪时
+                # 才注册；失败自动回退 _splitter，见 fa_segmenter 的降级契约。
+                _fa_lines = None
+                if _align_active and getattr(self.engine, "_align_chunk", None):
+                    def _fa_lines(chunk, text, t0, t1, _lang=_lang):
+                        """chunk → 临时 wav → FA 字级时间戳 → 字幕行。"""
+                        import os as _os
+                        import tempfile
+                        import soundfile as _sf
+                        from fa_segmenter import align_to_lines
+
+                        path = None
+                        try:
+                            with tempfile.NamedTemporaryFile(
+                                    suffix=".wav", delete=False) as tf:
+                                path = tf.name
+                            _sf.write(path, chunk, 16000, subtype="PCM_16")
+                            lang = (_lang if _lang and _lang != "auto"
+                                    else "Chinese")
+                            items = self.engine._align_chunk(path, text, lang)
+                            if not items:
+                                return None
+                            # align_chunk 返回的是「相对这段 wav 起点」的时间
+                            # （0 起算），加上 t0 即转成整段音频的绝对时间。
+                            return align_to_lines(items, text, offset=float(t0),
+                                                  merge=True)
+                        except Exception:
+                            return None
+                        finally:
+                            if path:
+                                try:
+                                    _os.unlink(path)
+                                except OSError:
+                                    pass
+
                 task_id = hashlib.sha1(
                     str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
                 out_srt = out_ref.with_suffix(".srt")
@@ -1276,6 +1311,8 @@ class WebBackend:
                     # 算法伪造的，不是模型识别的。需要标点的讲义导出走
                     # 独立的 /api/export-handout，不依赖这一步。
                     refine_punct=False,
+                    # FA 行生成（None = 用旧的比例分配路径，行为逐字节不变）
+                    fa_lines=_fa_lines,
                 )
                 result = runner.run(
                     audio_path, total_sec=_duration,

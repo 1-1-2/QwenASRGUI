@@ -697,7 +697,13 @@ class LongformRunner:
                  gc_every: int = 0,
                  vad_threshold: float = 0.5,
                  detail_cb=None, segment_cb=None, enhancer=None,
-                 refine_punct: bool = False):
+                 refine_punct: bool = False,
+                 fa_lines=None):
+        """``fa_lines``：可选回调 ``(chunk_ndarray, text, t0, t1) -> lines | None``。
+
+        提供时优先用它生成字幕行（FA 字级时间戳驱动，见 fa_segmenter.py），
+        返回空/抛异常则回退 ``line_splitter``。默认 None = 行为与旧版完全一致。
+        """
         if vad_sess is None:
             raise ValueError("缺少 VAD session：请传入 engine.vad_sess")
         self.fingerprint = fingerprint or ""
@@ -737,6 +743,8 @@ class LongformRunner:
         # 层级：它是断句依据，不是字幕内容。需要时仍可显式传 True（讲义导出
         # 等场景），但默认不再改写 SRT。
         self.refine_punct = refine_punct
+        # FA 行生成回调（有则优先，失败回退 line_splitter）
+        self.fa_lines = fa_lines
         self._seg_batch: list[dict] = []
         self._last_seg_flush = 0.0
         self._start_wall = time.monotonic()
@@ -961,8 +969,23 @@ class LongformRunner:
                     chunk, language=self.language, context=self.context) or "").strip()
                 t0 = (base + a + cur) / SR
                 t1 = (base + a + nxt) / SR
-                lines = (self.line_splitter(text, t0, t1) if self.line_splitter
-                         else simple_lines(text, t0, t1))
+
+                # FA 字级对齐优先：有字级时间戳时，行边界与时间轴都由声学
+                # 决定（强标点/弱标点够长/字间静默 三条信号），比按字数比例
+                # 硬分配准确得多。拿不到就静默回退到旧路径，字幕永不丢失。
+                lines = None
+                if self.fa_lines is not None:
+                    try:
+                        fa_lines = self.fa_lines(chunk, text, t0, t1)
+                        if fa_lines:
+                            lines = fa_lines
+                    except Exception:
+                        lines = None      # 增强失败 → 回退，不影响出字幕
+
+                if not lines:
+                    lines = (self.line_splitter(text, t0, t1)
+                             if self.line_splitter
+                             else simple_lines(text, t0, t1))
                 # Enrich before the chunk leaves scope: aligner / embedding
                 # reuse this exact buffer, so there is no second decode pass.
                 if self.enhancer is not None:
