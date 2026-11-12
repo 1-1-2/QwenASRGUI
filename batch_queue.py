@@ -410,6 +410,64 @@ class BatchQueue:
                     return True
         return False
 
+    def move(self, item_id: str, to_index: int) -> bool:
+        """Move an item to ``to_index`` in the pending order.
+
+        Execution order is simply the list order (``_run`` picks the first
+        item whose status is ``pending``), so reordering the list is all it
+        takes — no separate priority field to keep in sync.
+
+        Only ``pending`` items may be moved. A running item must not jump
+        around (it is already being transcribed, and the UI shows it as the
+        active row), and finished/failed items would drift away from the
+        chronology the user just watched.
+        """
+        with self._lock:
+            src = next((i for i, it in enumerate(self.items)
+                        if it.get("id") == item_id), None)
+            if src is None:
+                return False
+            if self.items[src].get("status") != "pending":
+                return False
+            n = len(self.items)
+            # 允許 dst == n（拖到列表最末尾）。先做位置換算再判斷是否真的移動，
+            # 這樣「拖到自己上半部」(dst==src) 與「拖到自己下半部」(dst==src+1)
+            # 都歸一成同一個位置，不會白白觸發一次重排與廣播。
+            dst = max(0, min(n, int(to_index)))
+            if dst > src:
+                # ``dst`` 是「移除之前那一版列表」裡的位置，pop 之後 src 之後的
+                # 索引全部前移一格，所以要補回這個偏移。少了這步，往後拖會少走
+                # 一格（前後互換看起來正常，跨多格就會差一位）。
+                dst -= 1
+            if dst == src:
+                return False
+            it = self.items.pop(src)
+            self.items.insert(dst, it)
+            self._save()
+            self._broadcast()
+            return True
+
+    def promote(self, item_id: str) -> bool:
+        """Move a pending item to the front of the queue (置頂)."""
+        with self._lock:
+            src = next((i for i, it in enumerate(self.items)
+                        if it.get("id") == item_id), None)
+            if src is None:
+                return False
+            if self.items[src].get("status") != "pending":
+                return False
+            # 目標是「最前面那個 pending」而不是 index 0 —— 已經在跑的那列
+            # 必須留在最上面，否則執行中的檔案會突然跳到列表中間。
+            first_pending = next((i for i, it in enumerate(self.items)
+                                  if it.get("status") == "pending"), 0)
+            if src == first_pending:
+                return False
+            it = self.items.pop(src)
+            self.items.insert(first_pending, it)
+            self._save()
+            self._broadcast()
+            return True
+
     def clear_finished(self) -> int:
         with self._lock:
             keep, removed = [], 0

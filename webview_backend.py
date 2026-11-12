@@ -30,6 +30,31 @@ import ui_text as _t
 # bundled resource root (_internal/ in onedir), not beside the launcher.
 BASE_DIR = app_paths.app_dir()
 
+
+def _vad_present(model_dir: Path, vad_sess=None) -> bool:
+    """VAD 是否可用 —— 下載中心與系統自檢**唯一**的判斷來源。
+
+    歷史上這兩邊各寫一套：自檢會依序找 [使用者模型目錄, 安裝目錄 ov_models,
+    resource_path]，下載中心卻只認 models.json 的 target_dir（等於使用者模型
+    目錄）。於是使用者一旦把 model_dir 指到別處（例如 D:\\models），VAD 明明隨
+    套件附在安裝目錄裡、自檢顯示綠燈，下載中心卻說「未下載」—— 兩份 UI 互相
+    矛盾。現在兩邊都呼叫這裡，結論不可能再分岔。
+
+    查找順序刻意把「執行期實際會載入的那份」放前面：vad_sess 已經載入就直接算
+    就緒；否則使用者模型目錄優先（可自行替換），最後才是隨套件附的資源根
+    （onedir 是 _internal/，onefile 是解包臨時目錄，resource_path() 兩者都認）。
+    """
+    try:
+        if vad_sess is not None:
+            return True
+        cands = [Path(model_dir) / "silero_vad_v4.onnx",
+                 BASE_DIR / "ov_models" / "silero_vad_v4.onnx"]
+        if hasattr(core, "resource_path"):
+            cands.append(Path(core.resource_path("ov_models", "silero_vad_v4.onnx")))
+        return any(p.exists() for p in cands)
+    except Exception:
+        return False
+
 # ── 模型目錄：核心 → 模型 → (backend, settings patch)。──────────────────
 #   webview 自有目錄（不直接用 app._resolve_backend），因為它多了一個
 #   app.py 尚無的「Qwen on CRISPASR」項（同顆 crispasr.exe 跑 Qwen3-ASR GGUF，
@@ -355,6 +380,13 @@ class WebBackend:
             ff_path = str(_ff) if _ff else ""
         except Exception:
             ff_ok, ff_path = False, ""
+        # VAD 與自檢共用 _vad_present（見該函式註解：兩邊各寫一套曾導致
+        # 「自檢綠燈、下載中心說未下載」）。
+        try:
+            vad_ok = _vad_present(self._model_dir(),
+                                  getattr(self.engine, "vad_sess", None))
+        except Exception:
+            vad_ok = False
         for b in st.get("bundles", []) or []:
             bid = b.get("id")
             if bid == "crispasr_core":
@@ -362,6 +394,13 @@ class WebBackend:
                 b["runtimeNote"] = _t.msg("dl.runtimeCrisp", version=_CRISPASR_VERSION)
                 # 只要「已安裝的那個加速版本」在，就算完整，別再數另外 4 個 zip。
                 if crisp_ok:
+                    b["complete"] = True
+                    b["present_count"] = b.get("total_count")
+            elif bid == "silero_vad_v4":
+                b["runtimeReady"] = bool(vad_ok)
+                b["runtimeNote"] = (_t.msg("dl.runtimeVadOk") if vad_ok
+                                    else _t.msg("dl.runtimeVadMissing"))
+                if vad_ok:
                     b["complete"] = True
                     b["present_count"] = b.get("total_count")
             elif bid == "ffmpeg_windows":
@@ -1238,6 +1277,17 @@ class WebBackend:
                     resume=not trial and bool(opts.get("longform_resume", True)),
                     limit_sec=limit_sec)
                 if result["status"] == "paused":
+                    # 取消／中斷也要產出 rich.json。
+                    #   它是由 runner 的 JSONL **全量重建**的派生檔，不是增量資料源：
+                    #   中斷時 JSONL 已含所有完成段，所以這裡得到的是「目前為止」
+                    #   的完整結果；續跑結束後會再用全量 JSONL 重寫一次並覆蓋，
+                    #   因此不會出現「前半段沒有、後半段才有」的斷層。
+                    #   舊版在此直接 raise，等於中斷後使用者連字級時間軸／說話者
+                    #   都拿不到，只能等整份跑完。
+                    try:
+                        enhancer.finalize(jsonl_path=runner.jsonl)
+                    except Exception:
+                        pass
                     raise RuntimeError(
                         "已取消；已完成字幕已保存，再次启动同一文件可从断点续跑。")
                 srt = runner.out_srt
@@ -1982,22 +2032,7 @@ class WebBackend:
                     "detail": ok_d if ok else miss_d}
 
         def _vad_ok():
-            try:
-                if getattr(self.engine, "vad_sess", None) is not None:
-                    return True
-                # Search the user model dir and the shipped resource root. The
-                # resource root is _internal/ in a onedir build and a temp dir in
-                # onefile; resource_path() resolves both without guessing.
-                cands = [model_dir / "silero_vad_v4.onnx",
-                         BASE_DIR / "ov_models" / "silero_vad_v4.onnx"]
-                if hasattr(core, "resource_path"):
-                    cands.append(Path(core.resource_path("ov_models", "silero_vad_v4.onnx")))
-                for p in cands:
-                    if p.exists():
-                        return True
-            except Exception:
-                pass
-            return False
+            return _vad_present(model_dir, getattr(self.engine, "vad_sess", None))
 
         # 共用：說話者分離（外部 ONNX，所有核心共用）＋ ffmpeg
         diar_ok = quick_check_diarization(model_dir)

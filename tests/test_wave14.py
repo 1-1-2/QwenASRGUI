@@ -71,7 +71,10 @@ def test_batch_page_layout(r: Result):
     r.check("前端不再调用 API.batchAdd(",
             not re.search(r"API\.batchAdd\(", APP))
     r.check("拿不到绝对路径时给出明确引导",
-            'T("batch.dropNoPath")' in APP and 'T("batch.pickUnsupported")' in APP)
+            'T("batch.dropNoPath"' in APP and 'T("batch.pickUnsupported")' in APP)
+    # Wave 15：提示要带上「收到几个文件」，否则用户无法判断拖放有没有生效。
+    r.check("拖放提示带上文件数",
+            re.search(r'T\("batch\.dropNoPath",\s*null,\s*\{\s*n:', APP) is not None)
     r.check("引导文案三语齐备",
             all(k in I18N for k in ("batch.dropNoPath", "batch.pickUnsupported")))
 
@@ -221,7 +224,11 @@ def test_model_page(r: Result):
     r.check("顺序正确", 0 < i_dev < i_pick < i_accel < i_diag < i_health,
             f"{i_dev},{i_pick},{i_accel},{i_diag},{i_health}")
     r.check("自检并入诊断段落（可折叠）", 'class="diag-fold" id="health-fold"' in HTML)
-    r.check("红点亮起时自动展开", 'if (fold && h.summary && h.summary.red > 0) fold.open = true;' in APP)
+    # Wave 15 需求变更：自检改为**默认展开**（信息应直接可见），并且不再依红/黄灯
+    # 数量强制 open —— 否则用户刚手动收起来，点「重新检查」又会被弹开。
+    r.check("自检默认展开", re.search(r'id="health-fold"\s+open', HTML) is not None)
+    r.check("不再按红绿灯强制展开",
+            "h.summary.red > 0) fold.open = true" not in APP)
 
     print("\n[15] 修正「Qwen 1.7B + CPU 却报核心未下载/版本不符」")
     r.check("OpenVINO 路径下核心标为「不需要」", "health.crisp.coreNotNeeded" in BACKEND)

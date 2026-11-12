@@ -652,6 +652,12 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
   border-radius: 10px; background: var(--panel);
 }
 .b-row.is-active { border-color: var(--accent); background: var(--accent-soft); }
+/* 佇列排序：只有 pending 的列可拖（draggable 由 JS 設），其餘列仍接受
+   dragover 以顯示放置位置，但拖不動。 */
+.b-row[draggable="true"] { cursor: grab; }
+.b-row.dragging { opacity: .45; cursor: grabbing; }
+.b-row.drop-before { box-shadow: 0 -2px 0 0 var(--accent) inset; }
+.b-row.drop-after { box-shadow: 0 2px 0 0 var(--accent) inset; }
 .b-row .ic {
   grid-area: ic; color: var(--accent-strong); font-size: 11px; text-align: center;
 }

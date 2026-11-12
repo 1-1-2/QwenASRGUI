@@ -277,6 +277,15 @@
       if (MODE !== "web") return { ok: true, mock: true };
       return apiPost("/api/batch/retry", { id });
     },
+    // Queue ordering: only pending items can be moved (see batch_queue.move).
+    async batchMove(id, index) {
+      if (MODE !== "web") return { ok: true, mock: true };
+      return apiPost("/api/batch/move", { id, index });
+    },
+    async batchPromote(id) {
+      if (MODE !== "web") return { ok: true, mock: true };
+      return apiPost("/api/batch/move", { id, promote: true });
+    },
     async batchClear() {
       if (MODE !== "web") return { ok: true, removed: 0, mock: true };
       return apiPost("/api/batch/clear", {});

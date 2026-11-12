@@ -168,6 +168,15 @@ TEMPLATES: dict[str, str] = {
     "accel.opt.cpu.desc": "完全不碰顯卡。速度最慢，但在顯卡驅動有問題時最不會出事。",
     "accel.opt.cpu-legacy.label": "CPU 相容版（無 AVX2 的老 CPU）",
     "accel.opt.cpu-legacy.desc": "給 2013 年前、不支援 AVX2 的老處理器；一般 CPU 版開不起來（閃退／非法指令）時才選這個。",
+
+    # 下載中心：「執行期就緒」註記。這些字串原本只存在於前端 i18n.js，
+    # 後端 render() 找不到模板就退化成 key 原文（t 欄位會顯示 "dl.runtimeCrisp"），
+    # 只有在 I18N 不可用時才會露出來，所以一直沒被發現。此處補齊，兩邊一致。
+    "dl.runtimeCrisp": "核心 v{version} 已安裝（只需其中一個加速版本）",
+    "dl.runtimeFfmpegOk": "ffmpeg 就緒：{path}",
+    "dl.runtimeFfmpegMissing": "找不到 ffmpeg，需要時會自動下載",
+    "dl.runtimeVadOk": "VAD 已就緒（隨套件附帶，或已在模型目錄）",
+    "dl.runtimeVadMissing": "找不到 silero VAD 模型，需重新安裝或手動放入 ov_models",
 }
 
 

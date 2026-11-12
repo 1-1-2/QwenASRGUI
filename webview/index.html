@@ -395,7 +395,6 @@
       <section class="view" data-view="model">
         <div class="sec-title" style="display:flex;align-items:center;gap:10px">
           <span data-i18n="model.devices">偵測到的裝置</span>
-          <span class="chip chip-muted" id="health-sum" style="font-weight:400">檢查中…</span>
         </div>
         <div class="dev-list" id="dev-list">
           <div class="dev"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg></span><span class="nm">CPU · AMD Ryzen 5 9600X 6-Core</span><span class="vram">使用中</span></div>
@@ -461,10 +460,10 @@
 
         <!-- Wave 14／需求 15：自檢併入「診斷」段落，預設收合；
              有紅燈時自動展開（見 renderHealth），平時不佔版面。 -->
-        <details class="diag-fold" id="health-fold">
+        <details class="diag-fold" id="health-fold" open>
           <summary>
             <span data-i18n="model.health">系統自檢</span>
-            <span class="chip chip-muted" id="health-sum" style="font-weight:400">檢查中…</span>
+            <span class="chip chip-muted" id="health-sum" style="font-weight:400" data-i18n="catalog.checking">檢查中…</span>
             <button class="btn btn-ghost btn-sm" id="btn-health-recheck" style="margin-left:auto" data-i18n="model.recheck">重新檢查</button>
           </summary>
           <div id="health-panel" class="health-panel"></div>

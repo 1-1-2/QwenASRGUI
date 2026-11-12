@@ -141,9 +141,9 @@
       "此环境无法叫出系统选档窗口，请改用“粘贴本机路径”",
       "The native file picker is unavailable here — paste a local path instead"],
     "batch.dropNoPath": [
-      "拖放的檔案沒有提供本機路徑（瀏覽器限制），請點擊此框選檔或貼上本機路徑",
-      "拖放的文件没有提供本机路径（浏览器限制），请点击此框选档或粘贴本机路径",
-      "The dropped files expose no local path (browser limit) — click this box to pick files or paste a path"],
+      "已收到 {n} 個檔案，但瀏覽器不會把拖入檔案的真實路徑交給網頁（Chromium 的安全設計，無法繞過）。請改為「點擊此框」用系統選檔，可一次選多個——同樣只引用路徑、不複製；或把路徑貼到下方。",
+      "已收到 {n} 个文件，但浏览器不会把拖入文件的真实路径交给网页（Chromium 的安全设计，无法绕过）。请改为「点击此框」用系统选档，可一次选多个——同样只引用路径、不复制；或把路径粘贴到下方。",
+      "Received {n} file(s), but the browser never exposes the real path of a dropped file (a Chromium security rule with no workaround). Click this box to pick several files at once via the system dialog — still referenced by path, never copied — or paste a path below."],
     "batch.fileElapsed": ["本檔已耗時 {t}", "本档已耗时 {t}", "File elapsed {t}"],
     "batch.speed": ["速度 {x}×", "速度 {x}×", "Speed {x}×"],
     "batch.fileRemaining": ["預計本檔剩餘 {t}", "预计本档剩余 {t}", "File ETA {t}"],
@@ -157,6 +157,9 @@
     "batch.menuSkip": ["略過此檔（繼續下一個）", "跳过此文件（继续下一个）", "Skip this file (continue queue)"],
     "batch.menuStop": ["停止佇列", "停止队列", "Stop queue"],
     "batch.menuRemove": ["移除", "移除", "Remove"],
+    "batch.menuPromote": ["置頂（下一個處理）", "置顶（下一个处理）", "Move to next"],
+    "batch.moveHint": ["可拖曳列調整處理順序", "可拖拽行调整处理顺序", "Drag a row to reorder"],
+    "batch.moveOnlyPending": ["只有「等待中」的項目能調整順序", "只有「等待中」的项目能调整顺序", "Only pending items can be reordered"],
     "batch.removeBusy": ["此項目正在執行，已先停止佇列；若仍在，請再點一次移除。", "此项目正在执行，已先停止队列；若仍在，请再点一次移除。", "Item is running; queue was stopped. Click remove again if it remains."],
 
     "record.mic": ["麥克風", "麦克风", "Microphone"],
@@ -303,9 +306,6 @@
     "dl.importFailed": ["匯入失敗：{err}", "导入失败：{err}", "Import failed: {err}"],
     "set.outputDir": ["輸出資料夾", "输出文件夹", "Output folder"],
     "set.outputDirDesc": ["字幕存到這裡；同名的 .rich.json 是「詞級時間軸＋說話者」明細（卡拉OK 同步與說話者標籤用），不是第二份字幕，刪掉不影響 .srt", "字幕存到这里；同名的 .rich.json 是“词级时间轴＋说话人”明细（卡拉OK 同步与说话人标签用），不是第二份字幕，删掉不影响 .srt", "Subtitles land here. The same-named .rich.json holds word timings and speaker labels (for karaoke sync and speaker tags) — it is not a second subtitle file and can be deleted without harming the .srt."],
-    "dl.runtimeCrisp": ["核心 v{version} 已安裝（只需其中一個加速版本）", "核心 v{version} 已安装（只需其中一个加速版本）", "Core v{version} installed (one accelerator build is enough)"],
-    "dl.runtimeFfmpegOk": ["ffmpeg 就緒：{path}", "ffmpeg 就绪：{path}", "ffmpeg ready: {path}"],
-    "dl.runtimeFfmpegMissing": ["找不到 ffmpeg，需要時會自動下載", "找不到 ffmpeg，需要时会自动下载", "ffmpeg not found; it will be downloaded on demand"],
     "dl.selfCheck": ["同「系統自檢」判斷", "同“系统自检”判断", "Same verdict as System check"],
     "dl.gotoSelfCheck": ["查看系統自檢", "查看系统自检", "Open system check"],
     "dl.importDirHint": ["用途：從別台電腦／瀏覽器手動下載好模型檔後，把「裝著這些檔案的資料夾」貼進來，按「匯入並驗證」即會核對大小與 SHA256 並複製到正確位置；不會重新下載。", "用途：从别的电脑／浏览器手动下载好模型文件后，把“装着这些文件的文件夹”贴进来，按“导入并校验”会核对大小与 SHA256 并复制到正确位置；不会重新下载。", "Purpose: after downloading model files manually (another machine or a browser), paste the folder that contains them and click Import & verify — sizes and SHA256 are checked, files are copied into place, nothing is re-downloaded."],
@@ -370,6 +370,7 @@
     "catalog.needsDownload": ["需下載", "需下载", "Needs download"],
     "catalog.suggested": ["建議模型：{model}", "建议模型：{model}", "Suggested model: {model}"],
     "catalog.prepareLoad": ["準備載入…", "准备加载…", "Preparing to load…"],
+    "catalog.checking": ["檢查中…", "检查中…", "Checking…"],
 
     "ep.notRunning": ["（服務未啟動）", "（服务未启动）", "Service not running"],
     "ep.qrHint": ["同網段裝置可掃此 QR 直接開啟上傳頁", "同网段设备可扫此 QR 直接打开上传页",
@@ -560,6 +561,13 @@
     "accel.opt.cpu.desc": ["完全不碰顯卡。速度最慢，但在顯卡驅動有問題時最不會出事。", "完全不碰显卡。速度最慢，但在显卡驱动有问题时最不容易出事。", "Never touches the GPU. Slowest, but the most reliable option when GPU drivers are broken."],
     "accel.opt.cpu-legacy.label": ["CPU 相容版（無 AVX2 的老 CPU）", "CPU 兼容版（无 AVX2 的老 CPU）", "CPU compatibility build (older CPUs without AVX2)"],
     "accel.opt.cpu-legacy.desc": ["給 2013 年前、不支援 AVX2 的老處理器；一般 CPU 版開不起來（閃退／非法指令）時才選這個。", "给 2013 年前、不支持 AVX2 的老处理器；一般 CPU 版起不来（闪退／非法指令）时才选这个。", "For pre-2013 processors without AVX2. Choose this only if the standard CPU build crashes or reports an illegal instruction."],
+    // 下載中心「執行期就緒」註記 —— 由後端 _t.msg() 發出，所以屬於 M 而非 D。
+    // 放在 D 裡時 t 欄位會退化成 key 原文，且 test_i18n_contract 會判 key 不存在。
+    "dl.runtimeCrisp": ["核心 v{version} 已安裝（只需其中一個加速版本）", "核心 v{version} 已安装（只需其中一个加速版本）", "Core v{version} installed (one accelerator build is enough)"],
+    "dl.runtimeFfmpegOk": ["ffmpeg 就緒：{path}", "ffmpeg 就绪：{path}", "ffmpeg ready: {path}"],
+    "dl.runtimeFfmpegMissing": ["找不到 ffmpeg，需要時會自動下載", "找不到 ffmpeg，需要时会自动下载", "ffmpeg not found; it will be downloaded on demand"],
+    "dl.runtimeVadOk": ["VAD 已就緒（隨套件附帶，或已在模型目錄）", "VAD 已就绪（随套件附带，或已在模型目录）", "VAD ready (bundled, or present in the model directory)"],
+    "dl.runtimeVadMissing": ["找不到 silero VAD 模型，需重新安裝或手動放入 ov_models", "找不到 silero VAD 模型，需重新安装或手动放入 ov_models", "silero VAD model not found; reinstall or place it in ov_models"],
   };
 
   function renderMsg(key, vars, fallbackText) {

@@ -458,6 +458,18 @@ class WebViewServer:
                         body = self._read_json_body()
                         return self._json({"ok": server.batch_queue.retry(
                             str(body.get("id", "")))})
+                    if path == "/api/batch/move":
+                        # 佇列排序：index 為目標位置；promote=true 時移到最前面
+                        # 的 pending 之前（已執行中的那列不動）。
+                        body = self._read_json_body()
+                        _id = str(body.get("id", ""))
+                        if body.get("promote"):
+                            ok = server.batch_queue.promote(_id)
+                        else:
+                            ok = server.batch_queue.move(
+                                _id, int(body.get("index", 0) or 0))
+                        return self._json({"ok": ok,
+                                           "summary": server.batch_queue.snapshot()})
                     if path == "/api/logs/clear":
                         return self._json(server.backend.clear_logs())
                     if path == "/api/release-model":

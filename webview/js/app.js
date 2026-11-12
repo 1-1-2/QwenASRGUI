@@ -226,6 +226,7 @@
   const UI_BUSY = new Set();       // "transcribe" | "model" | "preview" | "batch"
   let batchItems = [];             // declared here so syncActionButtons is safe
   let batchRunning = false, batchMockRunning = false, batchActiveIdx = -1;
+  let batchDragId = null;          // 正在被拖動的項目 id（null = 沒在拖）
   let logExpanded = false;   // Wave 14：上傳通道已移除，不再有 batchUploadErrors
   let lastBatchDetail = null;      // Wave 11：批次頁目前任務的進度明細
 
@@ -1256,6 +1257,100 @@
     }
     batchItems.forEach((it, idx) => host.appendChild(batchRow(it, idx)));
   }
+
+  /* ── 佇列排序 ──────────────────────────────────────────────────────────
+     執行順序 = items 的列表順序（後端 _run() 取第一個 pending），所以「重排」
+     就是改列表順序，不需要額外的優先級欄位。
+     只有 pending 的列可以拖：正在跑的那列位置代表「進度」，拖走會讓人以為
+     它被取消了；已完成／失敗的列是時間序，拖動會破壞「剛才是這樣跑的」印象。
+     置頂同理，目標是「第一個 pending 之前」，不會蓋過執行中的那一列。 */
+  function batchCanMove(it) { return it && it.status === "pending"; }
+
+  async function moveBatchItem(id, toIndex) {
+    const from = batchItems.findIndex(x => x.id === id);
+    if (from < 0) return;
+    if (!batchCanMove(batchItems[from])) {
+      logLine("x " + T("batch.moveOnlyPending"));
+      return;
+    }
+    if (API.mode !== "web") {
+      // mock：本地 splice，讓離屏驗收也能驗到重排
+      const [it] = batchItems.splice(from, 1);
+      const dst = toIndex > from ? Math.max(0, toIndex - 1) : toIndex;
+      batchItems.splice(Math.min(dst, batchItems.length), 0, it);
+      renderBatch();
+      return;
+    }
+    const r = await API.batchMove(id, toIndex);
+    if (r && r.ok === false) logLine("x " + T("batch.moveOnlyPending"));
+    // 後端已透過 _broadcast() 推 snapshot；這裡不樂觀更新，避免與 SSE 打架。
+  }
+
+  async function promoteBatchItem(id) {
+    const it = batchItems.find(x => x.id === id);
+    if (!batchCanMove(it)) {
+      logLine("x " + T("batch.moveOnlyPending"));
+      return;
+    }
+    if (API.mode !== "web") {
+      const i = batchItems.findIndex(x => x.id === id);
+      const [x] = batchItems.splice(i, 1);
+      const first = batchItems.findIndex(y => y.status === "pending");
+      batchItems.splice(first < 0 ? 0 : first, 0, x);
+      renderBatch();
+      return;
+    }
+    const r = await API.batchPromote(id);
+    if (r && r.ok === false) logLine("x " + T("batch.moveOnlyPending"));
+  }
+
+  function bindBatchRowDrag(row, it, idx) {
+    // 非 pending 也接 dragover：否則拖到已完成那列上方時不會有放置指示，
+    // 使用者會以為整份列表都不能放。真正的擋下在 move() 裡。
+    row.addEventListener("dragover", e => {
+      if (!batchDragId || batchDragId === it.id) return;
+      e.preventDefault(); e.stopPropagation();
+      try { e.dataTransfer.dropEffect = "move"; } catch (err) {}
+      const r = row.getBoundingClientRect();
+      const after = (e.clientY - r.top) > r.height / 2;
+      row.classList.toggle("drop-after", after);
+      row.classList.toggle("drop-before", !after);
+    });
+    row.addEventListener("dragleave", () => {
+      row.classList.remove("drop-before", "drop-after");
+    });
+    row.addEventListener("drop", async e => {
+      if (!batchDragId) return;
+      e.preventDefault(); e.stopPropagation();
+      const r = row.getBoundingClientRect();
+      const after = (e.clientY - r.top) > r.height / 2;
+      const id = batchDragId;
+      clearBatchDropMarks();
+      batchDragId = null;
+      if (id === it.id) return;         // 放回自己身上 = 什麼都不做
+      await moveBatchItem(id, idx + (after ? 1 : 0));
+    });
+    if (it.status !== "pending") return;
+    row.draggable = true;
+    row.addEventListener("dragstart", e => {
+      batchDragId = it.id;
+      row.classList.add("dragging");
+      try {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", it.id);   // Firefox 需要
+      } catch (err) {}
+      e.stopPropagation();              // 不要讓拖放區塊的 dragenter 亮起來
+    });
+    row.addEventListener("dragend", () => {
+      row.classList.remove("dragging");
+      clearBatchDropMarks();
+      batchDragId = null;
+    });
+  }
+  function clearBatchDropMarks() {
+    document.querySelectorAll("#batch-list .b-row").forEach(r =>
+      r.classList.remove("drop-before", "drop-after", "dragging"));
+  }
   /** Wave 11：每一列自己的進度文字 —— 本機路徑標記 + 後端 statusText。 */
   function batchRowSub(it) {
     const bits = [];
@@ -1302,6 +1397,7 @@
       e.stopPropagation();
       openBatchMenu(row.querySelector(".more"), it);
     });
+    bindBatchRowDrag(row, it, idx);
     return row;
   }
   function updateBatchRow(idx) {
@@ -1355,6 +1451,11 @@
     const terminal = ["failed", "canceled"].includes(it.status);
     const running = it.status === "running";
     const acts = [["menuOpenOut", T("batch.menuOpenOut"), () => API.openOutputDir()]];
+    // 置頂：只有「等待中」且不是隊首 pending 的項目才有意義
+    //（執行中的那一列已經在下一個處理，不需要也不能被它蓋過）。
+    const _firstPending = batchItems.findIndex(x => x.status === "pending");
+    if (it.status === "pending" && batchItems.indexOf(it) > _firstPending)
+      acts.push(["menuPromote", T("batch.menuPromote"), () => promoteBatchItem(it.id)]);
     if (terminal && API.mode === "web")
       acts.push(["menuRetry", T("batch.menuRetry"), () => API.batchRetry(it.id)]);
     if (running && batchRunning && API.mode === "web") {
@@ -1493,8 +1594,14 @@
         // 有檔案但拿不到絕對路徑（瀏覽器只給 File 物件）：
         // 正式模式絕不改走「上傳副本」→ 引導使用者改用點擊選檔／貼路徑；
         // 預覽（mock）模式沒有後端，只在記憶體裡放 File 物件，不落地。
+        //
+        // 這不是本程式能修的問題：Chromium 對拖入檔案只暴露 File 物件
+        // （name/size/內容），真實路徑 file.path 僅 Electron 這類桌面殼有。
+        // 識別頁之所以「拖了就有反應」，是因為它只消費檔案內容、不需要路徑；
+        // 批次頁刻意「不複製檔案」，所以非有真路徑不可 → 只能改用系統選檔，
+        // 那條路是後端原生對話框，回傳的是絕對路徑。
         if (API.mode === "web") {
-          showPathMsg(T("batch.dropNoPath"), true);
+          showPathMsg(T("batch.dropNoPath", null, { n: files.length }), true);
           if (pathPanel) pathPanel.hidden = false;
         } else {
           for (const f of files) batchItems.push({
@@ -1620,10 +1727,8 @@
       else { sum.className = "chip chip-ok"; sum.textContent = T("catalog.allReady", "全部就緒"); }
     }
     const host = $("#health-panel"); host.innerHTML = "";
-    // Wave 14／需求 15：自檢平時收合，只有出現紅燈（缺且不能自動補）才自動展開，
-    // 讓「診斷」段落預設保持精簡。
-    const fold = $("#health-fold");
-    if (fold && h.summary && h.summary.red > 0) fold.open = true;
+    // 自檢預設展開（<details open> 寫在 HTML 裡）。這裡**不再**依紅燈數量
+    // 強制 open：使用者手動收起來之後，重新檢查不該又把面板彈開。
     const dot = s => `<span class="hdot hdot-${s}"></span>`;
     const groups = [...(h.cores || [])];
     if (h.shared && h.shared.length) groups.push({ label: T("catalog.shared", "共用元件"), items: h.shared });
