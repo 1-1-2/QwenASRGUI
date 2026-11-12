@@ -10,10 +10,10 @@ on:
         description: 'Build run id to pull the noffmpeg artifact from'
         required: false
         default: '43072973113'
-      debug_minutes:
-        description: 'Minutes to wait for a debugger to join'
+      hold_minutes:
+        description: 'Minutes to keep the runner alive for debugging'
         required: false
-        default: '20'
+        default: '25'
 
 permissions:
   contents: read
@@ -22,7 +22,7 @@ permissions:
 jobs:
   debug:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
     steps:
       - name: Show environment
         shell: pwsh
@@ -59,11 +59,48 @@ jobs:
           Write-Host "APP_DIR=$app"
           Get-ChildItem $app | Select-Object -First 12 Name, Length | Format-Table
 
-      - name: Open Upterm WSS session
+      - name: Open Upterm WSS session (detached)
+        id: upterm
         uses: owenthereal/action-upterm@v2
         with:
           limit-access-to-actor: 'false'
           allow-exec: 'true'
-          wait-timeout-minutes: ${{ inputs.debug_minutes }}
+          detached: 'true'
+          wait-timeout-minutes: '30'
           upterm-server: wss://uptermd.upterm.dev
           known-hosts: '@cert-authority [uptermd.upterm.dev]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICiecex8Dq718eSe1CCLgLvDmI7AagvCtax7brPFWkh4'
+
+      - name: Publish connection info
+        shell: pwsh
+        env:
+          SSH_CMD: ${{ steps.upterm.outputs.ssh-command }}
+          SSH_CFG: ${{ steps.upterm.outputs.ssh-config }}
+          JOIN_CMD: ${{ steps.upterm.outputs.join-command }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dst = Join-Path $env:RUNNER_TEMP 'conn'
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          $f = Join-Path $dst 'connection.txt'
+          $lines = @('SSH_CMD=' + $env:SSH_CMD,
+                     'JOIN_CMD=' + $env:JOIN_CMD,
+                     '--- SSH_CONFIG ---',
+                     $env:SSH_CFG)
+          [System.IO.File]::WriteAllText($f, ($lines -join "`n"), [System.Text.UTF8Encoding]::new($false))
+          Get-Content $f
+          Write-Host "CONNECTION_FILE=$f"
+
+      - name: Upload connection info
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-debug-connection
+          path: ${{ runner.temp }}/conn/connection.txt
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Hold runner for debugging
+        shell: pwsh
+        run: |
+          $mins = [int]'${{ inputs.hold_minutes }}'
+          Write-Host "Debug session active; holding runner for $mins minutes."
+          Start-Sleep -Seconds ($mins * 60)
+          Write-Host "Hold finished."
