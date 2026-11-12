@@ -72,8 +72,8 @@
     "common.spkAuto": ["人數 自動", "人数 自动", "Count Auto"],
 
     "batch.add": ["加入檔案", "添加文件", "Add files"],
-    "batch.dropBig": ["拖曳多個音訊到此，或<b>點擊加入檔案</b>", "拖曳多个音频到此，或<b>点击添加文件</b>", "Drop audio files here, or <b>click to add files</b>"],
-    "batch.dropSub": ["加入檔案直接引用本機路徑：不複製、不上傳、不產生暫存副本", "添加文件直接引用本机路径：不复制、不上传、不产生暂存副本", "Files are referenced by local path: no copy, no upload, no temp files"],
+    "batch.dropBig": ["拖曳多個音訊到此，或<b>點擊選取檔案</b>", "拖拽多个音频到此，或<b>点击选取文件</b>", "Drop audio files here, or <b>click to choose files</b>"],
+    "batch.dropSub": ["選取的檔案直接引用本機路徑：不複製、不上傳、不產生暫存副本", "选取的文件直接引用本机路径：不复制、不上传、不产生暂存副本", "Files are referenced by local path: no copy, no upload, no temp files"],
     "batch.dropAdded": ["已加入 {n} 個檔案", "已添加 {n} 个文件", "Added {n} files"],
     "batch.run": ["全部開始", "全部开始", "Start all"],
     "welcome.text": ["初次使用：請先在「模型與裝置」頁選擇並下載辨識模型，完成後即可開始轉寫。",
