@@ -265,11 +265,13 @@
           <div class="hint" id="batch-path-msg" hidden></div>
         </div>
 
-        <!-- Wave 11／問題 8：批次頁自己的總進度條 + 目前處理中的檔案。
-             以前進度只畫在「音檔轉字幕」頁，切到批次頁看不到任何進度。 -->
+        <!-- Wave 13：批次頁改成「總進度 → 目前檔案 → 佇列」三層。
+             保留 batch-progress / batch-prog-bar / batch-prog-status 等既有 id，
+             讓既有靜態回歸不需改動。後端拿不到的數值一律顯示 —，不編造。 -->
         <div class="progress card batch-progress" id="batch-progress">
           <div class="meta">
             <span class="s" id="batch-prog-status" data-i18n="batch.idle">待處理</span>
+            <span class="m" id="batch-prog-meta"></span>
             <span class="p" id="batch-prog-pct">0%</span>
           </div>
           <div class="bar"><i id="batch-prog-bar" style="width:0%"></i></div>
@@ -277,6 +279,19 @@
             <span id="batch-prog-count">0 / 0 完成</span>
             <span id="batch-prog-active">—</span>
           </div>
+          <div class="cur" id="batch-cur" hidden>
+            <div class="cur-bar-row">
+              <div class="bar"><i id="batch-cur-bar" style="width:0%"></i></div>
+              <span class="pct" id="batch-cur-pct">0%</span>
+              <span class="time" id="batch-cur-time">—</span>
+            </div>
+            <div class="cur-detail" id="batch-cur-detail"></div>
+          </div>
+        </div>
+
+        <div class="batch-queue-head">
+          <span class="t" data-i18n="batch.queue">佇列</span>
+          <span class="m" id="batch-queue-meta"></span>
         </div>
         <div class="batch-list" id="batch-list"></div>
       </section>

@@ -746,6 +746,14 @@ class LongformRunner:
             payload = {"pct": pct, "status": status, "taskId": self.task_id}
             if detail:
                 payload.update(detail)
+                # Wave 13: expose measured wall-clock elapsed and realtime
+                # factor so the batch page can show "本檔已耗時 / 速度 N×"
+                # from real data instead of a client-side estimate.
+                done = float(payload.get("doneSec") or 0)
+                elapsed = max(0.0, time.monotonic() - self._start_wall)
+                payload["elapsedSec"] = round(elapsed, 1)
+                if elapsed > 0 and done > 0:
+                    payload["speedX"] = round(done / elapsed, 2)
             try:
                 self.detail_cb(payload)
             except Exception:

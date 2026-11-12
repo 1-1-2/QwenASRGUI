@@ -174,8 +174,9 @@ def main() -> int:
     r.check("JS 會畫總進度與當前任務",
             "function batchSummary(" in app and "$(\"#batch-prog-bar\")" in app and
             "function refreshBatchActiveText(" in app)
-    r.check("每一列有狀態文字與百分比",
-            "function batchRowSub(" in app and 'class="pct"' in app)
+    r.check("每一列有狀態文字與百分比（Wave 13 網格行）",
+            "function batchRowSub(" in app and "function batchRowStats(" in app
+            and 'class="st chip' in app and 'id="batch-cur-pct"' in html)
     r.check("後端標記 scope=batch",
             "def set_progress_scope(" in backend and 'payload["scope"] = scope' in backend
             and '_set_scope("batch")' in queue and "self._set_scope(None)" in queue)

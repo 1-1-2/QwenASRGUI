@@ -463,11 +463,75 @@
       ? T("run.remainingUnknown", "剩餘 —")
       : T("run.remaining", null, { eta: fmtDur(d.etaSec) });
   }
-  // 批次頁專用：把同一份 progress-detail 畫在批次頁自己的進度區，
-  // 而不是借「音檔轉字幕」頁的進度條（Wave 11／問題 8）。
+  // Wave 13：批次頁「目前檔案」區塊的資料來源。
+  // longform_runner._emit() 現在附 elapsedSec / speedX，這裡直接用實測值，
+  // 不再靠前端用 Date.now() 猜耗時與倍速。
+  let batchRunStartAt = 0;      // 本機觀察到的佇列起始（後端明細缺席時才用）
+  let batchActiveId = null;
+  function trackBatchTiming() {
+    const a = batchItems.find(i => i.status === "running");
+    if (a) {
+      if (batchActiveId !== a.id) {
+        batchActiveId = a.id;
+        if (!batchRunStartAt) batchRunStartAt = Date.now();
+      }
+    } else {
+      batchActiveId = null;
+      if (!batchRunning) batchRunStartAt = 0;
+    }
+  }
+  function batchElapsedSec(d) {
+    if (d && Number(d.elapsedSec) > 0) return Number(d.elapsedSec);
+    return batchRunStartAt ? (Date.now() - batchRunStartAt) / 1000 : 0;
+  }
+  /** 把同一份 progress-detail 畫在批次頁自己的進度區（Wave 11／問題 8）。 */
   function renderBatchDetail(d) {
     lastBatchDetail = d || null;
+    // 後端 streaming 事先不知道「待處理檔」的時長；目前檔的總音訊秒數
+    // 記回本地 item，讓佇列列與「總音訊」統計至少累積已跑過的檔案。
+    if (d && Number(d.totalSec) > 0) {
+      const i = batchItems.findIndex(x => x.status === "running");
+      if (i >= 0) batchItems[i].durationSec = Number(d.totalSec);
+    }
     refreshBatchActiveText();
+    renderCurrentFile();
+    batchSummary();
+    // Wave 13：state 事件會先清空 lastBatchDetail 並重繪佇列，明細是之後
+    // 才到的；若不在這裡補刷「處理中」那一列，它的已用／剩餘會一直停在 —。
+    const i = batchItems.findIndex(x => x.status === "running");
+    if (i >= 0) updateBatchRow(i);
+  }
+  function renderCurrentFile() {
+    const box = $("#batch-cur"); if (!box) return;
+    const active = batchItems.find(i => i.status === "running");
+    const d = lastBatchDetail;
+    if (!active && !d) { box.hidden = true; return; }
+    box.hidden = false;
+    const pct = active
+      ? Math.round((active.progress || 0) * 100)
+      : (d && Number(d.totalSec) > 0
+         ? Math.round((Number(d.doneSec) || 0) / Number(d.totalSec) * 100) : 0);
+    const bar = $("#batch-cur-bar"), pctEl = $("#batch-cur-pct"),
+          timeEl = $("#batch-cur-time"), detailEl = $("#batch-cur-detail");
+    if (bar) bar.style.width = Math.max(0, Math.min(100, pct)) + "%";
+    if (pctEl) pctEl.textContent = pct + "%";
+    if (timeEl) {
+      const total = d ? Number(d.totalSec) || 0 : 0;
+      timeEl.textContent = total
+        ? fmtDur(Number(d.doneSec) || 0) + " / " + fmtDur(total) : "—";
+    }
+    if (detailEl) {
+      const parts = [];
+      if (d && d.groups != null) parts.push(T("batch.groups", null, { n: d.groups }));
+      const el = batchElapsedSec(d);
+      if (el > 0) parts.push(T("batch.fileElapsed", null, { t: fmtDur(el) }));
+      if (d && Number(d.speedX) > 0)
+        parts.push(T("batch.speed", null, { x: Number(d.speedX).toFixed(1) }));
+      if (d && d.etaSec != null)
+        parts.push(T("batch.fileRemaining", null, { t: fmtDur(d.etaSec) }));
+      detailEl.textContent = parts.length ? parts.join(" · ")
+        : T("batch.noDetail", "—");
+    }
   }
   API.on("progress-detail", (d) => {
     if (!d) return;
@@ -1062,23 +1126,13 @@
     syncActionButtons();
   });
 
-  /** 批次頁「目前：」那一行：檔名 + 狀態 +（有明細時）已處理／段數／剩餘。 */
+  /** 「目前第 i/n 個 · 正在識別：name」；明細移到下面的第二層進度條。 */
   function refreshBatchActiveText() {
     const el = $("#batch-prog-active"); if (!el) return;
-    const active = batchItems.find(i => i.status === "running");
-    if (!active) { el.textContent = "—"; return; }
-    const st = active.statusText
-      ? (window.I18N ? I18N.L(active.statusText) : active.statusText)
-      : stLabel(active.status)[0];
-    const parts = [T("batch.progActive", null, { name: active.name, status: st })];
-    const d = lastBatchDetail;
-    if (d) {
-      const total = Number(d.totalSec) || 0;
-      if (total) parts.push(fmtDur(Number(d.doneSec) || 0) + " / " + fmtDur(total));
-      if (d.groups != null) parts.push(T("run.groups", null, { n: d.groups }));
-      if (d.etaSec != null) parts.push(T("run.remaining", null, { eta: fmtDur(d.etaSec) }));
-    }
-    el.textContent = parts.join(" · ");
+    const idx = batchItems.findIndex(i => i.status === "running");
+    if (idx < 0) { el.textContent = T("batch.noActive", "—"); return; }
+    el.textContent = T("batch.currentFile", null,
+      { i: idx + 1, n: batchItems.length, name: batchItems[idx].name });
   }
 
   function batchSummary() {
@@ -1112,9 +1166,30 @@
       if (failed) c += " · " + T("batch.progFailed", null, { n: failed });
       countEl.textContent = c;
     }
+    // Wave 13：總進度卡片的「已耗時 / 已完成」與佇列標題統計。
+    const metaEl = $("#batch-prog-meta");
+    if (metaEl) {
+      const el = batchElapsedSec(lastBatchDetail);
+      const bits = [];
+      if (el > 0) bits.push(T("batch.elapsed", null, { t: fmtDur(el) }));
+      bits.push(T("batch.doneRatio", null, { done: done + failed, total }));
+      metaEl.textContent = bits.join(" · ");
+    }
+    const qEl = $("#batch-queue-meta");
+    if (qEl) {
+      const sumSec = batchItems.reduce(
+        (a, b) => a + (Number(b.durationSec) || 0), 0);
+      const eta = lastBatchDetail && lastBatchDetail.etaSec != null
+        ? fmtDur(lastBatchDetail.etaSec) : "—";
+      qEl.textContent = T("batch.queueMeta", null,
+        { n: total, audio: sumSec ? fmtDur(sumSec) : "—", left: eta });
+    }
     refreshBatchActiveText();
+    renderCurrentFile();
   }
   function renderBatch() {
+    trackBatchTiming();
+    closeBatchMenu();          // 佇列重繪會移除舊按鈕，選單跟著關掉
     batchSummary();
     const host = $("#batch-list"); if (!host) return;
     host.innerHTML = "";
@@ -1139,44 +1214,68 @@
     if (it.statusText) bits.push(window.I18N ? I18N.L(it.statusText) : String(it.statusText));
     return bits.join(" · ");
   }
+  /** Wave 13：每一列的時長／已用／剩餘，只填後端真的給過的數值。 */
+  function batchRowStats(it) {
+    const isActive = it.status === "running";
+    const d = isActive ? lastBatchDetail : null;
+    return {
+      isActive,
+      dur: Number(it.durationSec) || (d && Number(d.totalSec)) || 0,
+      used: d ? batchElapsedSec(d) : 0,
+      left: d && d.etaSec != null ? Number(d.etaSec) : null,
+      pct: Math.round((it.progress || 0) * 100),
+    };
+  }
   function batchRow(it, idx) {
     const [label, cls] = stLabel(it.status);
+    const s = batchRowStats(it);
     const row = document.createElement("div");
-    row.className = "b-row"; row.dataset.idx = idx;
-    const terminal = ["failed", "canceled"].includes(it.status);
-    const actTitle = it.status === "done" ? T("batch.openOut", "開啟輸出資料夾")
-      : (terminal && API.mode === "web") ? T("batch.retry", "重試")
-      : T("batch.remove", "移除");
-    const pct = Math.round((it.progress || 0) * 100);
+    row.className = "b-row" + (s.isActive ? " is-active" : "");
+    row.dataset.idx = idx;
+    row.dataset.id = it.id || "";
     const sub = batchRowSub(it);
+    const moreTitle = T("batch.menuTitle", "More actions");
     row.innerHTML = `
+      <span class="ic">${s.isActive ? "▶" : ""}</span>
       <div class="nm"><div class="f">${escapeHtml(it.name)}</div>
         ${sub ? `<div class="s ${it.localPath ? "local" : ""}">${escapeHtml(sub)}</div>` : ""}
         ${it.error ? `<div class="e">${escapeHtml(it.error)}</div>` : ""}</div>
-      <div class="pbar"><div class="bar"><i style="width:${pct}%"></i></div></div>
-      <span class="pct">${pct}%</span>
-      <span class="chip ${cls}">${label}</span>
-      <button class="more" title="${actTitle}">⋯</button>`;
-    row.querySelector(".more").addEventListener("click", async () => {
-      if (it.status === "done") { API.openOutputDir(); return; }
-      if (API.mode === "web") {
-        if (terminal) { await API.batchRetry(it.id); }
-        else if (!batchRunning) { await API.batchRemove(it.id); }
-        await refreshBatch();
-      } else if (!batchMockRunning) {
-        batchItems.splice(idx, 1); renderBatch();
-      }
+      <span class="dur">${s.dur ? fmtDur(s.dur) : "—"}</span>
+      <span class="st chip ${cls}">${label}${s.isActive ? " " + s.pct + "%" : ""}</span>
+      <span class="used">${s.isActive && s.used > 0
+        ? T("batch.used", null, { t: fmtDur(s.used) }) : "—"}</span>
+      <span class="left">${s.isActive && s.left != null
+        ? T("batch.left", null, { t: fmtDur(s.left) })
+        : (it.status === "pending" ? T("batch.etaPending", "ETA —") : "—")}</span>
+      <div class="pbar"><div class="bar"><i style="width:${s.pct}%"></i></div></div>
+      <button class="more" title="${moreTitle}" aria-label="${moreTitle}">⋯</button>`;
+    row.querySelector(".more").addEventListener("click", e => {
+      e.stopPropagation();
+      openBatchMenu(row.querySelector(".more"), it);
     });
     return row;
   }
   function updateBatchRow(idx) {
     const it = batchItems[idx];
-    const row = $(`.b-row[data-idx="${idx}"]`); if (!row) return;
+    const row = $(`.b-row[data-idx="${idx}"]`); if (!row || !it) return;
     const [label, cls] = stLabel(it.status);
-    const pct = Math.round((it.progress || 0) * 100);
-    row.querySelector(".pbar i").style.width = pct + "%";
-    const pctEl = row.querySelector(".pct"); if (pctEl) pctEl.textContent = pct + "%";
-    const chip = row.querySelector(".chip"); chip.className = "chip " + cls; chip.textContent = label;
+    const s = batchRowStats(it);
+    const bi = row.querySelector(".pbar i");
+    if (bi) bi.style.width = s.pct + "%";
+    const chip = row.querySelector(".chip");
+    if (chip) {
+      // Wave 13：保留 .st（grid-area: st），否則局部更新會把狀態欄擠出網格。
+      chip.className = "st chip " + cls;
+      chip.textContent = label + (s.isActive ? " " + s.pct + "%" : "");
+    }
+    const dur = row.querySelector(".dur");
+    if (dur) dur.textContent = s.dur ? fmtDur(s.dur) : "—";
+    const used = row.querySelector(".used");
+    if (used) used.textContent = s.isActive && s.used > 0
+      ? T("batch.used", null, { t: fmtDur(s.used) }) : "—";
+    const left = row.querySelector(".left");
+    if (left) left.textContent = s.isActive && s.left != null
+      ? T("batch.left", null, { t: fmtDur(s.left) }) : "—";
     let sub = row.querySelector(".nm .s");
     const text = batchRowSub(it);
     if (text) {
@@ -1189,6 +1288,73 @@
       sub.textContent = text;
     } else if (sub) sub.remove();
     batchSummary();
+  }
+
+  // Wave 13／三點選單：舊版在 batchRunning 時對 running/pending 列兩個分支
+  // 都不執行，點了完全沒反應；後端 remove() 也拒絕 running 項。現在任何
+  // 狀態都會彈出可執行動作，running 項的移除先自動停止佇列。
+  let batchMenuCleanup = null;
+  function closeBatchMenu() {
+    $$(".b-menu").forEach(m => m.remove());
+    if (batchMenuCleanup) {
+      document.removeEventListener("click", batchMenuCleanup, true);
+      batchMenuCleanup = null;
+    }
+  }
+  function openBatchMenu(btn, it) {
+    closeBatchMenu();
+    const terminal = ["failed", "canceled"].includes(it.status);
+    const running = it.status === "running";
+    const acts = [["menuOpenOut", T("batch.menuOpenOut"), () => API.openOutputDir()]];
+    if (terminal && API.mode === "web")
+      acts.push(["menuRetry", T("batch.menuRetry"), () => API.batchRetry(it.id)]);
+    if (running && batchRunning && API.mode === "web") {
+      acts.push(["menuSkip", T("batch.menuSkip"), async () => {
+        await API.batchCancel();
+        await API.batchRemove(it.id);
+        await API.batchStart();
+      }]);
+      acts.push(["menuStop", T("batch.menuStop"), () => API.batchCancel()]);
+    }
+    acts.push(["menuRemove", T("batch.menuRemove"), async () => {
+      if (API.mode !== "web") {
+        if (!batchMockRunning) {
+          const i = batchItems.findIndex(x => x.id === it.id);
+          if (i >= 0) batchItems.splice(i, 1);
+          renderBatch();
+        }
+        return;
+      }
+      if (running) await API.batchCancel();
+      const r = await API.batchRemove(it.id);
+      if (r && r.ok === false)
+        logLine("x " + T("batch.removeBusy", "Item is running; queue was stopped."));
+    }]);
+    const menu = document.createElement("div");
+    menu.className = "b-menu";
+    menu.innerHTML = acts.map(([k, label]) =>
+      `<button type="button" data-k="${k}">${escapeHtml(label)}</button>`).join("");
+    document.body.appendChild(menu);
+    const r = btn.getBoundingClientRect();
+    const w = menu.offsetWidth || 200, h = menu.offsetHeight || 140;
+    menu.style.left = Math.max(8, Math.min(window.innerWidth - w - 8,
+                                           r.right - w)) + "px";
+    menu.style.top = (r.bottom + 6 + h > window.innerHeight
+                      ? Math.max(8, r.top - h - 6) : r.bottom + 6) + "px";
+    menu.addEventListener("click", async e => {
+      const b = e.target.closest("button[data-k]"); if (!b) return;
+      const found = acts.find(a => a[0] === b.dataset.k); if (!found) return;
+      closeBatchMenu();
+      try { await found[2](); }
+      catch (err) { logLine("x " + (err.message || err)); }
+      if (API.mode === "web") await refreshBatch();
+    });
+    batchMenuCleanup = e => {
+      if (!menu.contains(e.target) && e.target !== btn) closeBatchMenu();
+    };
+    setTimeout(() => {
+      if (batchMenuCleanup) document.addEventListener("click", batchMenuCleanup, true);
+    }, 0);
   }
 
   // Wave 12 / issue 3: "Add files" now goes through the server-side native

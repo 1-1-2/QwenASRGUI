@@ -567,25 +567,60 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .batch-head .summary { font-size: 12.5px; color: var(--muted); font-family: var(--font-mono); }
 .batch-list { display: flex; flex-direction: column; gap: 8px; }
 
-/* Wave 11／問題 8：批次頁自己的進度條 + 當前任務。
-   以前批次進度只借「音檔轉字幕」頁的進度條顯示，批次頁本身只有一行
-   純文字 summary；現在這一頁自帶總進度條、目前處理中的檔名與狀態。 */
-.batch-progress { margin-top: 0; margin-bottom: 12px; padding: 12px 16px; }
+/* Wave 13：批次頁三層版面（總進度 / 目前檔案 / 佇列）。
+   保留 Wave 11 的 batch-progress 容器，向外擴充區塊。 */
+.batch-progress { margin-top: 0; margin-bottom: 14px; padding: 14px 16px; }
 .batch-progress .meta {
-  display: flex; justify-content: space-between; gap: 12px;
-  font-size: 12.5px; margin-bottom: 7px;
+  display: flex; align-items: baseline; gap: 12px;
+  font-size: 12.5px; margin-bottom: 8px;
 }
 .batch-progress .meta .s {
-  color: var(--ink-2); font-weight: 500; min-width: 0;
+  color: var(--ink-2); font-weight: 600; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.batch-progress .meta .m {
+  flex: 1; min-width: 0; color: var(--muted);
+  font-family: var(--font-mono); font-size: 11.5px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .batch-progress .meta .p {
   color: var(--accent-strong); font-family: var(--font-mono);
-  font-weight: 700; flex: 0 0 auto;
+  font-weight: 700; font-size: 15px; flex: 0 0 auto;
 }
+.batch-progress > .bar { height: 8px; }
 .batch-progress .detail {
-  display: flex; gap: 16px; flex-wrap: wrap; margin-top: 7px;
+  display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px;
   font-size: 11.5px; color: var(--muted); font-family: var(--font-mono);
+}
+.batch-progress .detail #batch-prog-active { color: var(--ink-2); }
+
+/* 目前檔案：第二層進度條 + 明細 */
+.batch-progress .cur {
+  margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line);
+}
+.cur-bar-row { display: flex; align-items: center; gap: 10px; }
+.cur-bar-row .bar { flex: 1; height: 6px; }
+.cur-bar-row .pct {
+  font-family: var(--font-mono); font-size: 12px; font-weight: 700;
+  color: var(--accent-strong); width: 40px; text-align: right; flex: 0 0 40px;
+}
+.cur-bar-row .time {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--muted);
+  flex: 0 0 auto;
+}
+.cur-detail {
+  display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+}
+
+/* 佇列標題 */
+.batch-queue-head {
+  display: flex; align-items: baseline; gap: 12px;
+  margin: 4px 2px 10px; flex-wrap: wrap;
+}
+.batch-queue-head .t { font-size: 13px; font-weight: 600; color: var(--ink); }
+.batch-queue-head .m {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--muted);
 }
 
 /* Wave 11／問題 3：貼上本機路徑直接引用，不複製不上傳。 */
@@ -597,33 +632,69 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 }
 .batch-paths .hint { font-size: 11.5px; color: var(--muted); margin-top: 7px; line-height: 1.55; }
 
+/* 佇列列：固定欄位對齊，第二列是一條細進度條 */
 .b-row {
-  display: flex; align-items: center; gap: 14px;
-  padding: 12px 16px; border: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 76px 100px 88px 88px 28px;
+  grid-template-areas: "ic nm dur st used left more"
+                       "tr tr tr tr tr tr tr";
+  align-items: center; gap: 8px 12px;
+  padding: 10px 14px; border: 1px solid var(--line);
   border-radius: 10px; background: var(--panel);
 }
-.b-row .nm { flex: 1; min-width: 0; }
+.b-row.is-active { border-color: var(--accent); background: var(--accent-soft); }
+.b-row .ic {
+  grid-area: ic; color: var(--accent-strong); font-size: 11px; text-align: center;
+}
+.b-row .nm { grid-area: nm; min-width: 0; }
 .b-row .nm .f { font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .b-row .nm .e { font-size: 11.5px; color: var(--live); margin-top: 2px; line-height: 1.45; }
-/* 每一列自己的進度文字（後端 statusText / 本機路徑標記）*/
 .b-row .nm .s {
   font-size: 11px; color: var(--muted); margin-top: 2px;
   font-family: var(--font-mono);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .b-row .nm .s.local { color: var(--accent-strong); }
-.b-row .pbar { display: flex; align-items: center; gap: 8px; width: 158px; flex: 0 0 158px; }
-.b-row .pbar .bar { flex: 1; }
-.b-row .pct {
+.b-row .dur, .b-row .used, .b-row .left {
   font-family: var(--font-mono); font-size: 11px; color: var(--muted);
-  width: 38px; flex: 0 0 38px; text-align: right;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.b-row .dur { grid-area: dur; text-align: right; }
+.b-row .used { grid-area: used; text-align: right; }
+.b-row .left { grid-area: left; text-align: right; }
+.b-row .st { grid-area: st; justify-self: end; }
+.b-row .pbar { grid-area: tr; display: flex; align-items: center; width: 100%; }
+.b-row .pbar .bar { flex: 1; height: 3px; }
+.b-row:not(.is-active) .pbar { opacity: .55; }
 .b-row .more {
-  width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--line);
-  background: var(--panel); cursor: pointer; color: var(--muted);
-  display: grid; place-items: center;
+  grid-area: more; width: 28px; height: 28px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--panel);
+  cursor: pointer; color: var(--muted); display: grid; place-items: center;
 }
 .b-row .more:hover { background: var(--panel-2); color: var(--ink); }
+
+/* Wave 13：三點下拉選單（任何狀態都可點開，不再靜默無效）*/
+.b-menu {
+  position: fixed; z-index: 90; min-width: 200px; padding: 5px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel); box-shadow: 0 12px 32px rgba(0, 0, 0, .18);
+}
+.b-menu button {
+  display: block; width: 100%; text-align: left; padding: 8px 10px;
+  border: 0; border-radius: 6px; background: transparent;
+  color: var(--ink); font-size: 12.5px; cursor: pointer;
+  font-family: inherit;
+}
+.b-menu button:hover { background: var(--panel-2); }
+.b-menu button[data-k="menuRemove"] { color: var(--danger, #c0392b); }
+
+@media (max-width: 760px) {
+  .b-row {
+    grid-template-columns: 16px minmax(0, 1fr) 76px 28px;
+    grid-template-areas: "ic nm dur more" "tr tr tr tr" "st used left left";
+  }
+  .b-row .st { justify-self: start; }
+}
 
 /* ============================================================
    錄製視圖
