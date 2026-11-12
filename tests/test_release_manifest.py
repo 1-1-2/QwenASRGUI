@@ -190,6 +190,14 @@ def main() -> int:
                 "from release_manifest import verify_manifest" in vp)
         r.check("manifest.json ships in the package", '"manifest.json"' in br)
 
+        # 变体字段必须与「随附 ffmpeg」自洽。CI 用 bundle_ffmpeg=false 触发时，
+        # 主包走的是 variant="" 这条路，早期回落成 "full" 会写出
+        # {"随附 ffmpeg": false, "变体": "full"}，下游无法判断包为何没有 ffmpeg。
+        r.check("变体字段没带 ffmpeg 时记 noffmpeg（不回落 full）",
+                '"full" if has_ffmpeg else "noffmpeg"' in br)
+        r.check("变体字段仍按显式 variant 优先",
+                'variant or ("full" if has_ffmpeg else "noffmpeg")' in br)
+
     print(f"\nResult: {sum(r.items)}/{len(r.items)} passed")
     return 0 if r.ok else 1
 

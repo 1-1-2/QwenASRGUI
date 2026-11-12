@@ -493,7 +493,13 @@ def make_package(version: str, sha: str, ffmpeg_exe: Path | None,
         # 必须统计已精简的发行目录；stat(dist) 会把删掉的 176 MB 又算回来
         "_internal 体积": dir_size(stage_internal),
         "随附 ffmpeg": has_ffmpeg,
-        "变体": variant or "full",
+        # 变体名必须能与「随附 ffmpeg」自洽：full 意味着「带了 ffmpeg」。
+        # CI 用 bundle_ffmpeg=false 触发时，主包本身就是 noffmpeg 内容，却仍走
+        # variant="" 这条路径；若直接回落成 "full"，manifest 会出现
+        # {"随附 ffmpeg": false, "变体": "full"} 这种自相矛盾的记录，
+        # 下游（下载中心、故障排查、用户比对大小）就无法从 manifest 判断
+        # 「这个包为什么没有 ffmpeg」。所以没带 ffmpeg 一律记 noffmpeg。
+        "变体": variant or ("full" if has_ffmpeg else "noffmpeg"),
         "OpenVINO 精简": {
             "启用": slim_report["启用"],
             "节省 MB": round(slim_report["节省字节"] / 1024 / 1024, 1),
