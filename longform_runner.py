@@ -697,7 +697,7 @@ class LongformRunner:
                  gc_every: int = 0,
                  vad_threshold: float = 0.5,
                  detail_cb=None, segment_cb=None, enhancer=None,
-                 refine_punct: bool = True):
+                 refine_punct: bool = False):
         if vad_sess is None:
             raise ValueError("缺少 VAD session：请传入 engine.vad_sess")
         self.fingerprint = fingerprint or ""
@@ -729,6 +729,13 @@ class LongformRunner:
         self.enhancer = enhancer
         # C1: refine cross-segment punctuation in place once, on `done` only.
         # Never on `paused` - see _finalize_punctuation() for the A2 rationale.
+        #
+        # 默认 False（2026-11 改）：字幕本来就不该带标点，用户明确要求关掉。
+        # 旧默认 True 时，Qwen3-ASR 原生输出的标点被 _split_to_lines() 当切
+        # 行信号吃掉，再由 subtitle_extras 规则 3「非末行无标点则补 ，」伪造
+        # 一遍 —— 实测 77715 行样本 99.9% 行尾带「，」。标点被放在了错误的
+        # 层级：它是断句依据，不是字幕内容。需要时仍可显式传 True（讲义导出
+        # 等场景），但默认不再改写 SRT。
         self.refine_punct = refine_punct
         self._seg_batch: list[dict] = []
         self._last_seg_flush = 0.0

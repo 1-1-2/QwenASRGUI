@@ -17,6 +17,110 @@ MAX_CHARS      = 20
 _ZH_CLAUSE_END = frozenset('，。？！；：…—、·')
 _EN_SENT_END   = frozenset('.,!?;')
 
+# 強標點：句末，必定切行。其餘（逗號、頓號、冒號、破折號、省略號）為弱標點，
+# 只在累積夠長時切。分級的依據是「這裡是不是一句話的終點」，不是標點種類多少。
+_STRONG_PUNCT  = frozenset('。？！；!?;')
+
+# ── 時間軸分配常數（原 app.py / app-gpu.py / chatllm_engine.py 三份副本共用）──
+MIN_SUB_SEC    = 0.6     # 單行最短顯示時間；不足者向後借時間
+GAP_SEC        = 0.08    # 相鄰兩行之間的固定留白
+
+
+def _assign_ts(lines: list[str], g0: float, g1: float,
+               min_sub: float = MIN_SUB_SEC,
+               gap: float = GAP_SEC) -> list[tuple[float, float, str]]:
+    """把「一堆文字行」鋪進 [g0, g1] 這段時間，回傳 [(start, end, line), ...]。
+
+    為什麼不能按「字數比例 + 每行至少 min_sub + 憑空插入 gap」直接累加
+    （舊實作的做法，見 git 歷史）：
+
+      1. 每行 `max(min_sub, 比例)` 的下限會讓總時長超過 `g1 - g0`；
+      2. 每行結束後再 `cur = end + gap` 又把 gap 算了一次；
+      3. 末行再被 `max(end, g1)` 拉長。
+    三者疊加的結果是行與行互相重疊，實測 77715 行樣本裡有 8.5% 負間隔
+    （最深 2.11s），而且行間間隔恆等於 `gap`，完全不含聲學資訊。
+
+    這裡改成「先預算、後分配、再強制單調」：
+
+      • 預算 `budget = dur - gap * (n - 1)`，gap 只花一次，且從總時長裡扣；
+      • 按字數比例分配預算，比例分配天然保證 sum == budget（無累積誤差）；
+      • 逐行取 `max(min_sub, 比例額)`；若該行被擡高到 min_sub，多出來的時間
+        從後續「仍有富餘」的行裡等比扣回，仍然保證總長不超預算；
+      • 最後一趟強制 `start[i] = end[i-1] + gap`，並把末行釘在 `g1`。
+
+    保證：0 <= start[i] < end[i] <= g1、`start[i] >= end[i-1] + gap`，
+    即不重疊、不倒退、不超界。音頻太短以致塞不下 n 行時，改為均分
+    （此時 min_sub 讓位——寧可短也不能重疊）。
+    """
+    n = len(lines)
+    if n == 0:
+        return []
+    total_chars = sum(len(l) for l in lines)
+    if total_chars == 0:
+        total_chars = n                  # 全空行時退化為等長分配
+    dur = max(0.0, g1 - g0)
+
+    # gap 只在「行與行之間」出現，共 n-1 個
+    gap_total = gap * (n - 1)
+    if dur <= gap_total:
+        # 連 gap 都塞不下：放棄留白與最短時長，硬均分，優先保證不重疊
+        gap = dur / n if n > 1 else 0.0
+        min_sub = max(0.0, dur / n - gap)
+        budget = max(0.0, dur - gap * (n - 1))
+    else:
+        budget = dur - gap_total
+
+    # ── 第一趟：按字數比例 ────────────────────────────────────────────
+    raw = [budget * len(l) / total_chars for l in lines]
+
+    # ── 第二趟：擡高短行到 min_sub，超支部分從「有富餘」的行等比扣回 ──
+    #
+    # 注意：若 n * min_sub > budget，min_sub 本身就不成立（時間不夠），
+    # 此時必須放棄 min_sub 而不是讓總長超支——否則末行會被 g1 截斷，
+    # 中間行溢出到 g1 之後。所以先做一次可行性判斷。
+    if min_sub * n > budget:
+        # 時間塞不下最短時長：均分，min_sub 讓位
+        raw = [budget / n] * n
+    else:
+        for _ in range(6):                  # 迭代收斂，正常 1~2 輪即穩定
+            deficit = sum(max(0.0, min_sub - v) for v in raw)
+            if deficit <= 1e-9:
+                break
+            spare = sum(max(0.0, v - min_sub) for v in raw)
+            if spare <= 1e-9:
+                break                       # 已無可扣，交給下方守恆修正
+            take = min(deficit, spare)
+            factor = 1.0 - take / spare
+            new = []
+            for v in raw:
+                if v <= min_sub:
+                    new.append(min_sub)
+                else:
+                    new.append(min_sub + (v - min_sub) * factor)
+            raw = new
+
+    # 守恆收尾：無論上面怎麼調整，都強制總和 == budget
+    cur_sum = sum(raw)
+    if cur_sum > 1e-12:
+        scale = budget / cur_sum
+        raw = [v * scale for v in raw]      # 最後一次整體歸一，確保不超支
+    else:
+        raw = [budget / n] * n
+
+    # ── 第三趟：累加並強制單調 ────────────────────────────────────────
+    res: list[tuple[float, float, str]] = []
+    cur = g0
+    for i, (line, span) in enumerate(zip(lines, raw)):
+        start = cur
+        end = start + span
+        if i == n - 1:
+            end = g1                        # 末行精確收在 g1
+        if end <= start:                    # 保底：絕不產生零長度
+            end = start + 1e-3
+        res.append((start, end, line))
+        cur = end + gap
+    return res
+
 
 def _strip_pua(s: str) -> str:
     """濾除 Unicode 私用區字元（BMP U+E000–U+F8FF 與兩個補充平面）。
@@ -225,6 +329,10 @@ def _ts_chatllm_to_subtitle_lines(
     _all_punct = _ZH_CLAUSE_END | _EN_SENT_END
     MAX_WORDS    = 8
     MAX_ZH_CHARS = MAX_CHARS
+    # 弱標點門檻：緩衝不足此字數時，句內停頓（，、：…—）不切行。
+    # 依據：真實 85680 字樣本，門檻 12 時行數 8827→4677（-47%），
+    # ≤3 字碎片 17.6%→0%，且無超長行。見 docs/验证边界.md。
+    WEAK_MIN_CHARS = 12
     # 內部一律以 5-tuple (start, end, text, spk, words) 累積，回傳前依 with_words 決定保留與否
     result: list[tuple] = []
 
@@ -285,16 +393,32 @@ def _ts_chatllm_to_subtitle_lines(
         word = word_list[wi]
 
         # 在 raw_text 中前進到 word 位置；遇到標點（或 whisper 空白）→ 先切行
+        #
+        # 強/弱標點分級（2026-11 改）：句末標點（。？！；）是真正的斷句信號，
+        # 立即切；句內停頓（，、：…—）只在當前累積夠長時才切，否則視為連接
+        # 符丟棄並繼續累積。舊版「遇任何標點即切」是平均 8.7 字/行、17.6%
+        # 碎片行的直接成因。
         hit_punct = False
+        weak_seen = False
         while ri < len(raw_text):
             c = raw_text[ri]
             if c in _all_punct:
-                hit_punct = True; ri += 1; continue
+                if c in _STRONG_PUNCT:
+                    hit_punct = True
+                else:
+                    weak_seen = True
+                ri += 1; continue
             if c == " ":
                 if break_on_space:
                     hit_punct = True   # whisper：空白＝語句邊界，視同切點
                 ri += 1; continue
             break
+
+        # 弱標點是否夠長到值得切（用「當前緩衝 + 即將加入的詞」估長度）
+        if weak_seen and not hit_punct:
+            pending = sum(len(w) for w in seg_words) + len(word)
+            if pending >= WEAK_MIN_CHARS:
+                hit_punct = True
 
         if hit_punct:
             _emit()

@@ -67,7 +67,9 @@ except Exception:
 # ── 字幕分行（全引擎共用，與 CrispASR/Whisper 統一）────────────────────
 from subtitle_lines import (
     MAX_CHARS, _ZH_CLAUSE_END, _EN_SENT_END,
+    _STRONG_PUNCT,
     _srt_ts, _merge_orphan_lines, _ts_chatllm_to_subtitle_lines,
+    _assign_ts,
     write_transcript,
 )
 import subtitle_lines as _subs
@@ -228,9 +230,14 @@ def _split_to_lines(text: str) -> list[str]:
     """以標點符號切分短句，移除標點，每句獨立成行。
 
     斷句規則（英文/中文統一）：
-    1. 所有標點（,.!?;: 及中文，。？！；：…—）→ 立即切行，標點不輸出
-    2. 英文整字為最小單位，詞前補空格（詞界）
-    3. MAX_CHARS 保護：超限才強制換行
+    1. 強標點（。？！；及英文 .!?;）→ 立即切行，標點不輸出
+    2. 弱標點（，，、：…—）→ 僅當當前緩衝 >= WEAK_MIN_CHARS 才切，
+       否則丟棄標點繼續累積（避免「呃，」「对吧，」這類碎片行）
+    3. 英文整字為最小單位，詞前補空格（詞界）
+    4. MAX_CHARS 保護：超限才強制換行，且優先回退到最近弱標點處切
+
+    2026-11 改：舊版「遇任何標點即切」是平均 8.7 字/行、17.6% 碎片行的
+    直接成因（真实 85680 字語料）。門檻 12 時行數 8827→4677、碎片→0。
     """
     if "<asr_text>" in text:
         text = text.split("<asr_text>", 1)[1]
@@ -238,8 +245,8 @@ def _split_to_lines(text: str) -> list[str]:
     if not text:
         return []
 
-    # 中文、英文標點統一觸發切行（含英文逗號）
     PUNCT = frozenset('，。？！；：…—、.,!?;:')
+    WEAK_MIN_CHARS = 12
     lines: list[str] = []
     buf   = ""
 
@@ -247,11 +254,16 @@ def _split_to_lines(text: str) -> list[str]:
     while i < len(text):
         ch = text[i]
 
-        # ── 標點符號：切行，標點不加入輸出（隱藏）────────────────────
+        # ── 標點符號：強標點立即切，弱標點夠長才切 ───────────────────
         if ch in PUNCT:
-            if buf.strip():
+            if ch in _STRONG_PUNCT:
+                if buf.strip():
+                    lines.append(buf.strip())
+                buf = ""
+            elif len(buf.strip()) >= WEAK_MIN_CHARS:
                 lines.append(buf.strip())
-            buf = ""
+                buf = ""
+            # 弱標點但緩衝不足 → 丟棄標點，繼續累積
             i += 1
             continue
 
@@ -284,8 +296,19 @@ def _split_to_lines(text: str) -> list[str]:
         buf += ch
         i += 1
         if len(buf) >= MAX_CHARS:
-            lines.append(buf.strip())
-            buf = ""
+            # 超限時優先回退到最近的弱標點處切，避免把詞硬切兩半
+            # （舊版直接切，是「基础的同」+「学」這類切斷的直接成因）
+            cut = -1
+            for k in range(len(buf) - 1, max(0, len(buf) - 8), -1):
+                if buf[k] in PUNCT:
+                    cut = k
+                    break
+            if cut > 0:
+                lines.append(buf[:cut].strip())
+                buf = buf[cut + 1:]
+            else:
+                lines.append(buf.strip())
+                buf = ""
 
     if buf.strip():
         lines.append(buf.strip())
@@ -293,23 +316,12 @@ def _split_to_lines(text: str) -> list[str]:
 
 
 
-# _srt_ts 已移至 subtitle_lines（共用）
-
-
-def _assign_ts(lines: list[str], g0: float, g1: float) -> list[tuple[float, float, str]]:
-    if not lines:
-        return []
-    total = sum(len(l) for l in lines)
-    if total == 0:
-        return []
-    dur = g1 - g0; res = []; cur = g0
-    for i, line in enumerate(lines):
-        end = cur + max(MIN_SUB_SEC, dur * len(line) / total)
-        if i == len(lines) - 1:
-            end = max(end, g1)
-        res.append((cur, end, line))
-        cur = end + GAP_SEC
-    return res
+# _srt_ts / _assign_ts 已移至 subtitle_lines（共用，三引擎統一）。
+#
+# 舊版 _assign_ts 在本檔、app-gpu.py、chatllm_engine.py 各有一份完全相同的
+# 副本，算法是「字數比例 + min_sub 下限 + 每行額外 GAP_SEC 累加」，三者疊加
+# 導致行間重疊（實測 77715 行樣本 8.5% 負間隔，最深 2.11s）。新實作先算
+# 預算再分配並強制單調，見 subtitle_lines._assign_ts。
 
 
 def _find_vad_model(model_dir: Path | None = None) -> Path | None:

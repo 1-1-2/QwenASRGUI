@@ -1271,6 +1271,11 @@ class WebBackend:
                     max_chunk_secs=int(getattr(self.engine, "max_chunk_secs", 30)),
                     vad_threshold=float(_st.get("vad_threshold", 0.5) or 0.5),
                     enhancer=enhancer,
+                    # 字幕不补标点。旧默认 True 会在 done 时重写整个 SRT，
+                    # 给每行末尾补「，」——实测 99.9% 的行都带逗号，而那是
+                    # 算法伪造的，不是模型识别的。需要标点的讲义导出走
+                    # 独立的 /api/export-handout，不依赖这一步。
+                    refine_punct=False,
                 )
                 result = runner.run(
                     audio_path, total_sec=_duration,

@@ -666,19 +666,13 @@ def _srt_ts(s: float) -> str:
 
 
 def _assign_ts(lines: list[str], g0: float, g1: float) -> list[tuple[float, float, str]]:
-    if not lines:
-        return []
-    total = sum(len(l) for l in lines)
-    if total == 0:
-        return []
-    dur = g1 - g0; res = []; cur = g0
-    for i, line in enumerate(lines):
-        end = cur + max(MIN_SUB_SEC, dur * len(line) / total)
-        if i == len(lines) - 1:
-            end = max(end, g1)
-        res.append((cur, end, line))
-        cur = end + GAP_SEC
-    return res
+    """委派 subtitle_lines._assign_ts（三引擎共用，修掉行間重疊）。
+
+    舊實作（字數比例 + min_sub 下限 + 每行額外 GAP_SEC）會讓總長超支並互相
+    覆蓋；新實作先算預算再分配並強制單調。詳見 subtitle_lines 內的說明。
+    """
+    from subtitle_lines import _assign_ts as _impl
+    return _impl(lines, g0, g1, min_sub=MIN_SUB_SEC, gap=GAP_SEC)
 
 
 # ══════════════════════════════════════════════════════
