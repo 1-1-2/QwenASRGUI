@@ -330,6 +330,9 @@ button { font-family: inherit; }
 .drop .big b { color: var(--accent-strong); }
 .drop .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .drop.has-file { border-style: solid; border-color: var(--line); padding: 20px; }
+/* Wave 12: batch page drop zone (same look as the recognition page). */
+.batch-drop { margin-top: 12px; }
+.batch-drop.hot { border-color: var(--accent); background: var(--accent-soft); }
 .file-chip {
   display: inline-flex; align-items: center; gap: 9px;
   background: var(--accent-soft); color: var(--accent-strong);

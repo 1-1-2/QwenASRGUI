@@ -1191,7 +1191,96 @@
     batchSummary();
   }
 
-  $("#btn-batch-add").addEventListener("click", () => batchInput.click());
+  // Wave 12 / issue 3: "Add files" now goes through the server-side native
+  // picker, which returns real absolute paths -> add_path (zero copy, no
+  // upload), exactly like the "paste local path" panel. A browser file input
+  // cannot expose an absolute path, so it is kept only as a fallback for
+  // non-Windows / picker-unavailable / preview-mode situations.
+  async function addBatchFilesViaPicker() {
+    if (API.mode !== "web") { batchInput.click(); return; }
+    let r;
+    try { r = await API.pickFiles(); }
+    catch (e) { batchInput.click(); return; }
+    if (!r || !r.supported) { batchInput.click(); return; }
+    const paths = Array.isArray(r.paths) ? r.paths : [];
+    if (!paths.length) return;                       // user cancelled
+    const opts = currentBatchOpts();
+    let ok = 0; const errs = [];
+    for (const p of paths) {
+      try { await API.batchAddPath(p, opts); ok++; }
+      catch (e) { errs.push(`${p}: ${e.message || e}`); }
+    }
+    if (errs.length) showPathMsg(T("batch.pathPartial", null,
+      { ok, fail: errs.length, err: errs.join("; ") }), true);
+    else showPathMsg(T("batch.dropAdded", null, { n: ok }), false);
+    if (pathPanel) pathPanel.hidden = false;
+    await refreshBatch();
+  }
+  $("#btn-batch-add").addEventListener("click", addBatchFilesViaPicker);
+
+  // Wave 12 / issue 3: batch-page drag & drop, mirroring the recognition page.
+  // If the drop payload carries an absolute path (file:// URI or X:\...), use
+  // add_path for zero-copy reference. Otherwise fall back to the upload path;
+  // Wave 11's ownedPath cleanup removes those copies on remove/clear, so no
+  // orphan files are left behind.
+  function extractLocalPaths(dt) {
+    if (!dt) return [];
+    const out = [], blobs = [];
+    for (const type of ["text/uri-list", "text/plain"]) {
+      try { const v = dt.getData(type); if (v) blobs.push(v); } catch {}
+    }
+    for (const blob of blobs) {
+      for (const line of String(blob).split(/\r?\n/)) {
+        let p = line.trim();
+        if (!p || p.startsWith("#")) continue;
+        if (p.startsWith("file://")) {
+          try { p = decodeURIComponent(new URL(p).pathname); } catch {}
+          if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);
+        }
+        if (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\")) out.push(p);
+      }
+    }
+    return [...new Set(out)];
+  }
+  const batchDrop = $("#batch-drop");
+  if (batchDrop) {
+    batchDrop.addEventListener("click", () => $("#btn-batch-add").click());
+    ["dragover", "dragenter"].forEach(ev => batchDrop.addEventListener(ev, e => {
+      e.preventDefault(); batchDrop.classList.add("hot");
+    }));
+    ["dragleave", "drop"].forEach(ev => batchDrop.addEventListener(ev, e => {
+      e.preventDefault(); batchDrop.classList.remove("hot");
+    }));
+    batchDrop.addEventListener("drop", async e => {
+      const dt = e.dataTransfer;
+      const paths = extractLocalPaths(dt);
+      const files = Array.from((dt && dt.files) || []);
+      const opts = currentBatchOpts();
+      let ok = 0; const errs = [];
+      if (paths.length) {
+        for (const p of paths) {
+          try { await API.batchAddPath(p, opts); ok++; }
+          catch (err) { errs.push(`${p}: ${err.message || err}`); }
+        }
+      } else if (API.mode === "web") {
+        for (const f of files) {
+          try { await API.batchAdd(f, opts); ok++; }
+          catch (err) { errs.push(`${f.name}: ${err.message || err}`); }
+        }
+      } else {
+        for (const f of files) batchItems.push({
+          id: "m" + Math.random().toString(36).slice(2, 9), file: f,
+          name: f.name, status: "pending", progress: 0,
+        });
+        ok = files.length;
+      }
+      if (errs.length) showPathMsg(T("batch.pathPartial", null,
+        { ok, fail: errs.length, err: errs.join("; ") }), true);
+      else if (ok) showPathMsg(T("batch.dropAdded", null, { n: ok }), false);
+      if (pathPanel) pathPanel.hidden = false;
+      if (API.mode === "web") await refreshBatch(); else renderBatch();
+    });
+  }
   // Wave 11／問題 3：本機路徑直引。<input type=file> 出於瀏覽器沙箱拿不到
   // 絕對路徑，所以補一條「貼路徑」通道：後端 add_path() 直接引用、不複製、
   // 不上傳；item 標 ownedPath=false，任何清理都不會動到使用者的原檔。
@@ -1742,6 +1831,7 @@
     if ($("#sw-align")) $("#sw-align").checked = !!s.align;
     if ($("#hint-box") && s.hint != null) $("#hint-box").value = s.hint;
     if ($("#sw-trial")) $("#sw-trial").checked = !!s.trial;
+    if ($("#sw-auto-release")) $("#sw-auto-release").checked = s.autoRelease !== false;
     // Wave 11：設定回填後同步試跑徽章與摺疊摘要 —— 否則重啟後明明勾著
     // 試跑，徽章卻是隱藏的，又回到「以為會完整轉檔」的老問題。
     syncTrialBadge();
@@ -1760,6 +1850,23 @@
   bindPersisted("#sel-spk", "nSpeakers", el => el.value);
   bindPersisted("#sw-align", "align", el => !!el.checked);
   bindPersisted("#sw-trial", "trial", el => !!el.checked);
+  bindPersisted("#sw-auto-release", "autoRelease", el => !!el.checked);
+
+  // Wave 12 / issue 1: explicit "release model memory" action. The backend
+  // also auto-releases after a single-file run; this button is for users who
+  // want to free the weights immediately (e.g. before launching another app).
+  const releaseBtn = $("#btn-model-release");
+  if (releaseBtn) releaseBtn.addEventListener("click", async () => {
+    releaseBtn.disabled = true;
+    try {
+      const r = await API.releaseModel();
+      modelMsg(I18N.t(r && r.ok ? "model.releaseDone" : "model.releaseBusy"),
+               r && r.ok ? "info" : "warn");
+      await refreshStatus();
+    } catch (e) {
+      modelMsg(I18N.t("model.releaseBusy"), "warn");
+    } finally { releaseBtn.disabled = false; }
+  });
 
   // ── Wave 11／問題 5 + 6 ─────────────────────────────────────────────
   // 切分參數改成 <details> 後，收起時只剩一列標題；摘要顯示目前生效的
@@ -2179,6 +2286,9 @@
   // 載入完成 → 更新就緒燈 + 語言清單（依引擎）；若為「就地下載並載入」流程 → 收尾
   API.on("status", async (s) => {
     refreshStatus(); loadLanguages();
+    // Wave 12: an auto-release also emits status. Tell the user why the
+    // readiness light went dark instead of leaving them guessing.
+    if (s && s.released) modelMsg(I18N.t("model.releaseDone"), "info");
     let ready = s && s.modelReady;
     if (ready == null) { try { ready = (await API.getStatus()).modelReady; } catch (e) {} }
     if (_modelLoading && ready) {

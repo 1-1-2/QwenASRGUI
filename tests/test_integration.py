@@ -130,7 +130,11 @@ def make_backend(tmp: Path):
         be = wb.WebBackend(on_event=None)
     be._settings_raw = lambda: {"output_format": "srt",
                                 "longform_minutes": 20,
-                                "vad_threshold": 0.5}
+                                "vad_threshold": 0.5,
+                                # Wave 12：本測試要觀察 FakeEngine 的呼叫
+                                # 次數；轉檔後自動釋放會把 engine 換成空殼，
+                                # 故這裡明確關掉（生命週期由 test_wave12 覆蓋）。
+                                "auto_release_model": False}
     be._emit = lambda e, p: None
     be._apply_chunk_secs = lambda: None
     be._resolve_ffmpeg = lambda: "ffmpeg"

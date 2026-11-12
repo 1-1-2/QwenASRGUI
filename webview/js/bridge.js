@@ -278,6 +278,11 @@
       if (MODE !== "web") return { ok: true, item: null, mock: true };
       return apiPost("/api/batch/add-path", { path, opts: opts || {} });
     },
+    // Wave 12: native OS multi-select picker -> absolute paths (no copy).
+    async pickFiles() {
+      if (MODE !== "web") return { ok: true, paths: [], supported: false, mock: true };
+      return apiPost("/api/pick-files", {});
+    },
     async batchStart() {
       if (MODE !== "web") return { ok: true, mock: true };
       return apiPost("/api/batch/start", {});
@@ -309,6 +314,11 @@
     async clearLogs() {
       if (MODE !== "web") return { ok: true, mock: true };
       return apiPost("/api/logs/clear", {});
+    },
+    // Wave 12: manual model unload (free the compiled weights between runs).
+    async releaseModel() {
+      if (MODE !== "web") return { ok: true, released: true, mock: true };
+      return apiPost("/api/release-model", {});
     },
     // C1 / C2: optional exports from a finished SRT.
     async refinePunctuation(path) {

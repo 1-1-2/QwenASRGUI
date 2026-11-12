@@ -68,6 +68,97 @@ _CONTENT_TYPES = {
 }
 
 
+def pick_local_files() -> list[str]:
+    """Open a native Windows multi-select dialog and return absolute paths.
+
+    A browser ``<input type=file>`` can never expose a Windows absolute path,
+    so the batch page uses this server-side picker to hand real paths to
+    ``BatchQueue.add_path()`` — zero copy, no upload, nothing to clean up.
+
+    Pure stdlib ctypes on purpose: the classic common dialog needs no
+    pywin32 / tkinter / COM typelibs, all of which are easy to miss in a
+    PyInstaller ``--windowed`` build. Returns ``[]`` on cancel or on any
+    non-Windows platform (the front end then falls back to the file input).
+    """
+    import sys
+    if sys.platform != "win32":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    class _OFN(ctypes.Structure):
+        _fields_ = [
+            ("lStructSize", wintypes.DWORD),
+            ("hwndOwner", wintypes.HWND),
+            ("hInstance", wintypes.HINSTANCE),
+            ("lpstrFilter", wintypes.LPCWSTR),
+            ("lpstrCustomFilter", wintypes.LPWSTR),
+            ("nMaxCustFilter", wintypes.DWORD),
+            ("nFilterIndex", wintypes.DWORD),
+            ("lpstrFile", wintypes.LPWSTR),
+            ("nMaxFile", wintypes.DWORD),
+            ("lpstrFileTitle", wintypes.LPWSTR),
+            ("nMaxFileTitle", wintypes.DWORD),
+            ("lpstrInitialDir", wintypes.LPCWSTR),
+            ("lpstrTitle", wintypes.LPCWSTR),
+            ("Flags", wintypes.DWORD),
+            ("nFileOffset", wintypes.WORD),
+            ("nFileExtension", wintypes.WORD),
+            ("lpstrDefExt", wintypes.LPCWSTR),
+            ("lCustData", ctypes.c_ssize_t),
+            ("lpfnHook", ctypes.c_void_p),
+            ("lpTemplateName", wintypes.LPCWSTR),
+            ("pvReserved", ctypes.c_void_p),
+            ("dwReserved", wintypes.DWORD),
+            ("FlagsEx", wintypes.DWORD),
+        ]
+
+    buf = ctypes.create_unicode_buffer(32768)
+    filt = ctypes.create_unicode_buffer(
+        "Audio / Video\0*.mp3;*.wav;*.m4a;*.flac;*.aac;*.ogg;*.wma;"
+        "*.mp4;*.mkv;*.mov;*.avi;*.webm\0All files\0*.*\0")
+    ofn = _OFN()
+    ofn.lStructSize = ctypes.sizeof(_OFN)
+    ofn.lpstrFile = ctypes.cast(buf, wintypes.LPWSTR)
+    ofn.nMaxFile = len(buf)
+    ofn.lpstrFilter = ctypes.cast(filt, wintypes.LPCWSTR)
+    ofn.lpstrTitle = "選擇要加入批次的音訊／影片檔案"
+    ofn.nFilterIndex = 1
+    # OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST |
+    # OFN_HIDEREADONLY | OFN_NOCHANGEDIR
+    ofn.Flags = 0x00000200 | 0x00080000 | 0x00001000 | 0x00000004 | 0x00000008
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        ofn.hwndOwner = user32.GetForegroundWindow()
+    except Exception:
+        pass
+    try:
+        ctypes.windll.ole32.OleInitialize(None)
+        ok = ctypes.windll.comdlg32.GetOpenFileNameW(ctypes.byref(ofn))
+    except Exception:
+        return []
+    finally:
+        try:
+            ctypes.windll.ole32.OleUninitialize()
+        except Exception:
+            pass
+    if not ok:
+        return []
+    try:
+        raw = ctypes.string_at(ctypes.addressof(buf),
+                               len(buf) * ctypes.sizeof(ctypes.c_wchar))
+        parts = [p for p in raw.decode("utf-16-le").split("\x00") if p]
+    except Exception:
+        return []
+    if not parts:
+        return []
+    if len(parts) == 1:                 # single selection: full path
+        return [parts[0]]
+    base = parts[0]                      # multi selection: dir + names
+    return [str(Path(base) / name) for name in parts[1:]]
+
+
 class _EventHub:
     """SSE 廣播：每個連線一個 Queue，publish() 推給全部訂閱者。
 
@@ -130,6 +221,37 @@ class WebViewServer:
         self._thread: threading.Thread | None = None
         self._want_port = port
         self.port = port
+        # Wave 12／問題 4：開窗成功的可觀測訊號。Edge --app 的啟動行程常把
+        # URL 交給瀏覽器主行程後就以 exit 0 秒退，單看 proc.wait() 會誤判
+        # 「視窗沒開」而重複開窗。真正能證明視窗開了的是「前端來連本機
+        # server」：靜態頁請求或 /api/events 的 SSE 長連線。
+        self.frontend_seen = threading.Event()
+        self.sse_clients = 0
+        self._client_lock = threading.Lock()
+        # Wave 12／問題 3：原生檔案選擇器做成可注入，測試可換成假實作，
+        # 不需真的在 Linux 沙箱裡彈 Windows 對話框。
+        self.pick_files = pick_local_files
+
+    def mark_frontend(self):
+        """前端送來任一非健康檢查請求 → 視窗／頁面確實開了。"""
+        self.frontend_seen.set()
+
+    def sse_enter(self):
+        with self._client_lock:
+            self.sse_clients += 1
+        self.frontend_seen.set()
+
+    def sse_leave(self):
+        with self._client_lock:
+            self.sse_clients = max(0, self.sse_clients - 1)
+
+    def window_signal(self) -> bool:
+        """這次啟動的頁面是否曾連上本機服務（粘滯訊號）。"""
+        return self.frontend_seen.is_set() or self.sse_clients > 0
+
+    def window_alive(self) -> bool:
+        """視窗是否還在：SSE 長連線仍掛著。"""
+        return self.sse_clients > 0
 
     def start(self):
         if self._httpd:
@@ -189,6 +311,10 @@ class WebViewServer:
             # ── GET ───────────────────────────────────────────
             def do_GET(self):
                 path = urlparse(self.path).path
+                # Wave 12：前端真的載進來才會打這些請求。/health 排除，
+                # 那是 CI／外部監控用的，不能拿來證明視窗開了。
+                if path != "/health":
+                    server.mark_frontend()
                 if (path.startswith("/api/") or path == "/health") and not self._check_host():
                     return
                 if path == "/health":
@@ -331,6 +457,19 @@ class WebViewServer:
                             str(body.get("id", "")))})
                     if path == "/api/logs/clear":
                         return self._json(server.backend.clear_logs())
+                    if path == "/api/release-model":
+                        # Wave 12／問題 1：手動釋放模型記憶體。
+                        return self._json(server.backend.release_model())
+                    if path == "/api/pick-files":
+                        # Wave 12／問題 3：本機原生選檔 → 絕對路徑 → add_path。
+                        import sys as _sys
+                        try:
+                            paths = server.pick_files() or []
+                        except Exception as exc:
+                            return self._err(500, str(exc))
+                        return self._json({"ok": True, "paths": paths,
+                                           "supported": _sys.platform == "win32",
+                                           "count": len(paths)})
                     if path == "/api/refine-punct":
                         return self._json(server.backend.refine_punctuation(
                             self._read_json_body().get("path", "")))
@@ -399,6 +538,7 @@ class WebViewServer:
                 self.send_header("Connection", "keep-alive")
                 self.end_headers()
                 q = server.hub.subscribe()
+                server.sse_enter()      # Wave 12：SSE 連上 = 視窗開著
                 # 連上時先補一次目前狀態，避免錯過載入完成事件
                 try:
                     self.wfile.write(b": connected\n\n")
@@ -419,6 +559,7 @@ class WebViewServer:
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass
                 finally:
+                    server.sse_leave()
                     server.hub.unsubscribe(q)
 
             # ── multipart 上傳（轉錄與切分預檢共用）────────────

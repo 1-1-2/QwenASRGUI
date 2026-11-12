@@ -626,6 +626,39 @@ def _profile_dir(variant: int = 0) -> str:
     return str(d)
 
 
+def _lock_owner_alive(p: Path) -> bool:
+    """SingletonLock 內容是 ``hostname-pid``；該 pid 還活著就不能刪。
+
+    Wave 12／問題 4：先前無條件 unlink，若另一個 Edge 執行個體正在使用
+    同一個 profile，刪掉它的 ProcessSingleton 鎖會造成共享衝突，使用者
+    看到的就是其中一個視窗「拒絕訪問」。寧可留著鎖、交給備用 profile
+    隔離，也不要動活執行個體的鎖。
+    """
+    import re
+    try:
+        txt = p.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return False
+    m = re.search(r"-(\d+)\s*$", txt)
+    if not m:
+        return False
+    pid = int(m.group(1))
+    try:
+        if sys.platform == "win32":
+            k = ctypes.windll.kernel32
+            k.OpenProcess.restype = wintypes.HANDLE
+            k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            h = k.OpenProcess(0x1000, False, pid)   # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return False
+            k.CloseHandle(wintypes.HANDLE(h))
+            return True
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def _clear_stale_singleton(profile_dir: str):
     """清除上次 Edge 沒乾淨退出留下的 ProcessSingleton 鎖（Wave 11／問題 2）。
 
@@ -649,6 +682,9 @@ def _clear_stale_singleton(profile_dir: str):
         p = root / name
         try:
             if p.is_symlink() or p.exists():
+                if name == "SingletonLock" and p.is_file() and _lock_owner_alive(p):
+                    _log(f"[{APP_NAME}] {name} 屬於仍在執行的 Edge，跳過不刪（避免拒絕訪問）")
+                    continue
                 p.unlink()
                 _log(f"[{APP_NAME}] 已清除殘留的 {name}（{root.name}）")
         except OSError as e:
@@ -709,20 +745,63 @@ def open_edge_app(url: str, variant: int = 0) -> subprocess.Popen | None:
     return None
 
 
-# Edge 在 2 秒內以 code 0 退出 = 典型的「轉發給殘留實例後自己結束」，
-# 而不是使用者主動關窗（人不可能在 2 秒內關掉一個剛開的視窗）。
-_EDGE_EARLY_EXIT_SEC = 2.0
+# Wave 12／問題 4：判斷開窗成功不能只看「啟動行程是否還活著」。
+# Edge --app 的啟動行程把 URL 交棒給瀏覽器主行程後，以 exit 0 在 0.0~0.3s
+# 結束是**正常**的；舊邏輯把它當成「被轉發給殘留實例」而連開 3 次。
 _EDGE_MAX_ATTEMPTS = 3
+_EDGE_STARTUP_GRACE_SEC = 10.0    # 最長等前端連線
+_EDGE_MIN_GRACE_SEC = 4.0         # 行程已結束時，至少再給頁面這麼久
+_EDGE_PROBE_INTERVAL_SEC = 0.1
+_EDGE_CLOSE_POLL_SEC = 0.3
+_EDGE_CLOSE_IDLE_SEC = 6.0        # SSE 斷線後的寬限（EventSource 會自動重連）
 
 
-def _run_edge_session(url: str) -> tuple[int | None, float, int]:
-    """啟動 Edge 並等到視窗關閉；若判定為「轉發後秒退」就換 profile 重試。
+def _wait_for_window_close(srv, idle_grace: float | None = None) -> None:
+    """等到前端視窗真的關掉，才讓 main() 收網停 server。
 
-    回傳 (最後一次退出碼, 最後一次存活秒數, 總嘗試次數)。
-    這個函式是 Wave 11 閃退修復的核心：不猜是哪個防毒軟體或哪個鎖，
-    直接用可觀測訊號（存活 < 2s 且 exit 0）觸發隔離重試，並把每次
-    嘗試寫進 launcher.log，讓下一次反饋能一眼看出是否還在發生。
+    視窗開著時 /api/events 的 SSE 長連線一定還在；關掉後連線斷開，
+    _Handler 的 finally 會 sse_leave()。另以 HWND 作快速輔助判定。
+    兩者都消失且持續 idle_grace 秒才返回，避免 EventSource 重連的
+    短暫空窗被誤判成關窗（那會提前關掉 server，視窗還在卻白屏）。
     """
+    grace = _EDGE_CLOSE_IDLE_SEC if idle_grace is None else idle_grace
+    idle = 0.0
+    while True:
+        alive = False
+        try:
+            alive = srv.window_alive()
+        except Exception:
+            pass
+        if not alive:
+            alive = bool(_find_app_hwnd())
+        if alive:
+            idle = 0.0
+        else:
+            idle += _EDGE_CLOSE_POLL_SEC
+            if idle >= grace:
+                return
+        time.sleep(_EDGE_CLOSE_POLL_SEC)
+
+
+def _run_edge_session(url: str, seen=None, wait_close=None,
+                      grace: float | None = None) -> tuple[int | None, float, int]:
+    """啟動 Edge 並等到視窗關閉；只有「完全沒開出頁面」才換 profile 重試。
+
+    回傳 (最後一次退出碼, 觀察秒數, 總嘗試次數)。
+
+    Wave 12／問題 4 的根因：舊程式用 ``proc.wait()`` 的 ``exit 0`` 加上
+    「存活 < 2s」判定「秒退」，但 Edge --app 交棒後啟動行程本來就會秒退。
+    結果一次啟動連開 3 個視窗、其中一個還因 profile 鎖競爭顯示「拒絕
+    訪問」，launcher.log 卻記「連續 3 次秒退」——與使用者看到的完全相反。
+
+    現在以「本機 server 收到前端請求 / 找到視窗 HWND」為成功訊號：
+      • 看到訊號 → 開窗成功，不重試，改等視窗關閉；
+      • 完全沒訊號且啟動行程已結束 → 才是真秒退，換備用 profile 重試。
+
+    seen() / wait_close() 可注入，讓 Linux 沙箱測試不必真的開 Edge。
+    """
+    probe = seen or (lambda: bool(_find_app_hwnd()))
+    max_wait = _EDGE_STARTUP_GRACE_SEC if grace is None else grace
     for attempt in range(_EDGE_MAX_ATTEMPTS):
         t_edge = time.perf_counter()
         proc = open_edge_app(url, variant=attempt)
@@ -733,20 +812,36 @@ def _run_edge_session(url: str) -> tuple[int | None, float, int]:
                  f"HTTP server 持續服務。")
             threading.Event().wait()
             return None, 0.0, 0
-        proc.wait()
+        ok = False
+        while True:
+            if probe():                      # 至少探測一次（grace=0 也要量）
+                ok = True
+                break
+            elapsed = time.perf_counter() - t_edge
+            if elapsed >= max_wait:
+                break
+            # 啟動行程已結束，且已給頁面足夠時間連上 → 不必耗滿 max_wait。
+            if proc.poll() is not None and elapsed >= _EDGE_MIN_GRACE_SEC:
+                break
+            time.sleep(_EDGE_PROBE_INTERVAL_SEC)
         rc = proc.poll()
         alive = time.perf_counter() - t_edge
-        _log(f"[{APP_NAME}] Edge 已結束：退出碼 {rc}，存活 {alive:.1f}s"
-             f"（第 {attempt + 1}/{_EDGE_MAX_ATTEMPTS} 次）")
-        early = (rc in (0, None)) and alive < _EDGE_EARLY_EXIT_SEC
-        if early and attempt + 1 < _EDGE_MAX_ATTEMPTS:
-            _log(f"[{APP_NAME}] ⚠ Edge 疑似被轉發給殘留實例（{alive:.1f}s 內 "
-                 f"以 code {rc} 結束），換用備用 profile 自動重試…")
-            time.sleep(0.35)   # 給殘留 Edge 一點時間釋放 SingletonLock
+        if ok:
+            _log(f"[{APP_NAME}] 頁面已連上本機服務（啟動行程 rc={rc}、"
+                 f"{alive:.1f}s；交棒後結束屬正常）→ 開窗成功，不重試。")
+            closer = wait_close or (lambda p=proc: p.wait())
+            closer()
+            _log(f"[{APP_NAME}] 視窗已關閉，準備結束 HTTP 服務。")
+            return rc, alive, attempt + 1
+        _log(f"[{APP_NAME}] 第 {attempt + 1}/{_EDGE_MAX_ATTEMPTS} 次："
+             f"{alive:.1f}s 內未偵測到任何頁面連線（rc={rc}）")
+        if attempt + 1 < _EDGE_MAX_ATTEMPTS:
+            _log(f"[{APP_NAME}] ⚠ 判定為轉發給殘留實例／開窗失敗，"
+                 f"換用備用 profile 自動重試…")
+            time.sleep(0.35)
             continue
-        if early:
-            _log(f"[{APP_NAME}] ⚠ Edge 連續 {_EDGE_MAX_ATTEMPTS} 次秒退；"
-                 f"請把本份 launcher-*.log 回報給開發者。")
+        _log(f"[{APP_NAME}] ⚠ Edge 連續 {_EDGE_MAX_ATTEMPTS} 次都沒開出頁面；"
+             f"請把本份 launcher-*.log 回報給開發者。")
         return rc, alive, attempt + 1
     return None, 0.0, _EDGE_MAX_ATTEMPTS
 
@@ -935,11 +1030,16 @@ def main():
             _log(f"[{APP_NAME}] Native window unavailable, using Edge --app.")
     try:
         if not native_ok:
-            # Wave 11：交給 _run_edge_session 處理「轉發後秒退」的自動重試。
-            # 以前這裡直接 proc.wait()，Edge 0.0s 退出就一路走到 finally、
-            # Python 跟著 os._exit，使用者只看到「閃一下就沒了」。
-            _run_edge_session(url)
-            clk.mark("Edge 行程已結束")
+            # Wave 12：以「前端是否連上本機 server」判定開窗成功，
+            # 不再拿啟動行程的 exit 0 / 存活秒數當成秒退證據。
+            # 成功後還要等視窗真的關掉才收網，否則 server 會在視窗
+            # 還開著時被 os._exit 關掉，頁面直接白屏。
+            _run_edge_session(
+                url,
+                seen=lambda: srv.window_signal() or bool(_find_app_hwnd()),
+                wait_close=lambda: _wait_for_window_close(srv),
+            )
+            clk.mark("Edge 視窗已關閉")
     except KeyboardInterrupt:
         pass
     finally:

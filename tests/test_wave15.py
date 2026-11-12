@@ -133,7 +133,10 @@ def make_backend(tmp: Path, events: list, settings: dict | None = None):
     with mock.patch.object(wb.WebBackend, "_seed_defaults", lambda self: None), \
          mock.patch.object(wb.WebBackend, "_apply_runtime_prefs", lambda self: None):
         be = wb.WebBackend(on_event=None)
-    st = {"output_format": "srt", "vad_threshold": 0.5, "chunk_secs": 30}
+    # Wave 12：本測試要觀察 FakeEngine 的呼叫次數；轉檔後自動釋放會把
+    # engine 換成空殼，故明確關掉（生命週期由 test_wave12 覆蓋）。
+    st = {"output_format": "srt", "vad_threshold": 0.5, "chunk_secs": 30,
+          "auto_release_model": False}
     if settings:
         st.update(settings)
     be._settings_raw = lambda: st

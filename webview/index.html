@@ -236,7 +236,14 @@
       <section class="view" data-view="batch">
         <div class="batch-head">
           <button class="btn btn-ghost" id="btn-batch-add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span data-i18n="batch.add">加入檔案</span></button>
-          <!-- Wave 11／問題 3：本機檔案不必先複製進 batch_uploads。 -->
+          <!-- Wave 12／問題 3：與辨識頁相同的拖放識別；「加入檔案」改走本機原生選檔。 -->
+        <div class="drop batch-drop" id="batch-drop">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></div>
+          <div class="big" data-i18n-html="batch.dropBig">拖曳多個音訊到此，或<b>點擊加入檔案</b></div>
+          <div class="sub" data-i18n="batch.dropSub">加入檔案直接引用本機路徑：不複製、不上傳、不產生暫存副本</div>
+        </div>
+
+        <!-- Wave 11／問題 3：本機檔案不必先複製進 batch_uploads。 -->
           <button class="btn btn-ghost" id="btn-batch-path"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg><span data-i18n="batch.addPath">貼上本機路徑</span></button>
           <button class="btn btn-primary" id="btn-batch-run"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span data-i18n="batch.run">全部開始</span></button>
           <button class="btn btn-ghost" id="btn-batch-clear"><span data-i18n="batch.clear">清除已完成</span></button>
@@ -401,8 +408,10 @@
 
         <div id="model-msg"></div>
 
-        <div class="model-load-row" style="display:flex;align-items:center;gap:12px;margin-top:12px">
+        <div class="model-load-row" style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
           <button class="btn btn-primary" id="btn-model-load" data-i18n="model.load">下載並載入模型</button>
+          <button class="btn btn-ghost" id="btn-model-release" data-i18n="model.releaseBtn">釋放模型記憶體</button>
+          <label class="switch"><input type="checkbox" id="sw-auto-release" checked><span class="track"></span><span data-i18n="model.autoRelease">轉檔後自動釋放</span></label>
           <div class="progress" id="model-progress" hidden style="flex:1;margin:0">
             <div class="meta"><span class="s" id="model-prog-status">準備中…</span><span class="p" id="model-prog-pct">0%</span></div>
             <div class="bar"><i id="model-prog-bar" style="width:0%"></i></div>

@@ -281,13 +281,37 @@ def classify_error(exc: BaseException) -> dict:
 # Status / verification
 # ---------------------------------------------------------------------------
 
-def bundle_dir(model_root: Path, bundle: dict) -> Path:
-    return Path(model_root) / bundle["target_dir"]
+def bundle_dir(model_root: Path, bundle: dict,
+               model_dir: Path | None = None) -> Path:
+    """Resolve a bundle's ``target_dir`` to an absolute directory.
+
+    ``target_dir`` in models.json is written **relative to the application
+    root**, not relative to ``ov_models``: e.g. ``ov_models/qwen3_asr_int8``,
+    ``ov_models/diarization``, ``ffmpeg``, ``crispasr``.
+
+    Wave 12: the WebView backend used to pass ``model_dir`` (which already
+    *is* ``<app>/ov_models``) as ``model_root``. That produced
+    ``<app>/ov_models/ov_models/qwen3_asr_int8`` — one extra ``ov_models``
+    layer — so the download centre always reported every bundle as missing.
+
+    ``model_dir`` is an optional override for users who pointed
+    ``settings.model_dir`` somewhere else. When given, the leading
+    ``ov_models`` segment of ``target_dir`` is **replaced** by it (keeping the
+    downloader's "model_dir is the ov_models folder" convention), while
+    non-model bundles such as ``ffmpeg`` / ``crispasr`` stay relative to
+    ``model_root``. Omitting it keeps the historical behaviour intact.
+    """
+    rel = Path(bundle["target_dir"])
+    parts = rel.parts
+    if model_dir is not None and parts and parts[0] == "ov_models":
+        return Path(model_dir).joinpath(*parts[1:])
+    return Path(model_root) / rel
 
 
-def bundle_status(model_root: Path, bundle: dict, doc: dict | None = None) -> dict:
+def bundle_status(model_root: Path, bundle: dict, doc: dict | None = None,
+                  model_dir: Path | None = None) -> dict:
     """Inspect local files. `size_bytes` comes from disk, not from guesses."""
-    root = bundle_dir(model_root, bundle)
+    root = bundle_dir(model_root, bundle, model_dir)
     files = []
     for f in bundle["files"]:
         p = root / f["name"]
@@ -327,12 +351,15 @@ def bundle_status(model_root: Path, bundle: dict, doc: dict | None = None) -> di
     }
 
 
-def catalog_status(model_root: Path, doc: dict | None = None) -> dict:
+def catalog_status(model_root: Path, doc: dict | None = None,
+                   model_dir: Path | None = None) -> dict:
     doc = doc or load_catalog()
-    items = [bundle_status(model_root, b, doc) for b in doc["bundles"]]
+    items = [bundle_status(model_root, b, doc, model_dir)
+             for b in doc["bundles"]]
     return {
         "schema": doc["schema"],
         "model_root": str(model_root),
+        "model_dir": str(model_dir) if model_dir is not None else "",
         "mirrors": doc["mirrors"],
         "bundles": items,
         "complete": [x["id"] for x in items if x["complete"]],
@@ -342,8 +369,9 @@ def catalog_status(model_root: Path, doc: dict | None = None) -> dict:
     }
 
 
-def verify_bundle(model_root: Path, bundle: dict) -> tuple[bool, str]:
-    st = bundle_status(model_root, bundle)
+def verify_bundle(model_root: Path, bundle: dict,
+                  model_dir: Path | None = None) -> tuple[bool, str]:
+    st = bundle_status(model_root, bundle, None, model_dir)
     for x in st["files"]:
         if x["problem"]:
             return False, f"{x['name']}: {x['problem']}"
@@ -352,7 +380,8 @@ def verify_bundle(model_root: Path, bundle: dict) -> tuple[bool, str]:
     return True, "OK"
 
 
-def import_local_bundle(src_dir: Path, model_root: Path, bundle: dict) -> dict:
+def import_local_bundle(src_dir: Path, model_root: Path, bundle: dict,
+                        model_dir: Path | None = None) -> dict:
     """Copy (or verify in place) files from a manually downloaded directory.
 
     Only files listed in the catalog are touched; unknown files are ignored.
@@ -360,7 +389,7 @@ def import_local_bundle(src_dir: Path, model_root: Path, bundle: dict) -> dict:
     src = Path(src_dir)
     if not src.is_dir():
         raise CatalogError(f"not a directory: {src}")
-    dst = bundle_dir(model_root, bundle)
+    dst = bundle_dir(model_root, bundle, model_dir)
     if src.resolve() == dst.resolve():
         copied = 0
     else:
@@ -375,9 +404,9 @@ def import_local_bundle(src_dir: Path, model_root: Path, bundle: dict) -> dict:
                 continue
             shutil.copy2(s, d)
             copied += 1
-    ok, msg = verify_bundle(model_root, bundle)
+    ok, msg = verify_bundle(model_root, bundle, model_dir)
     return {"ok": ok, "message": msg, "copied": copied,
-            "status": bundle_status(model_root, bundle)}
+            "status": bundle_status(model_root, bundle, None, model_dir)}
 
 
 # ---------------------------------------------------------------------------
@@ -398,8 +427,16 @@ def _manifest_path(path: Path) -> str:
 
 
 def build_manifest_text(model_root: Path, bundle_ids: list[str],
-                        mirror_base: str = "", doc: dict | None = None) -> str:
-    """Produce a .txt list with URLs, target paths, hashes and aria2c commands."""
+                        mirror_base: str = "", doc: dict | None = None,
+                        model_dir: Path | None = None) -> str:
+    """Produce a .txt list with URLs, target paths, hashes and aria2c commands.
+
+    ``model_root`` is the application root (``ffmpeg`` / ``crispasr`` bundles
+    live there); ``model_dir`` optionally overrides the ``ov_models`` folder
+    for ``ov_models/*`` bundles. Both must agree with :func:`catalog_status`
+    or the manifest would tell users to download into a different place than
+    the download centre checks.
+    """
     doc = doc or load_catalog()
     chosen = [get_bundle(b, doc) for b in bundle_ids] if bundle_ids else doc["bundles"]
     lines: list[str] = []
@@ -414,7 +451,7 @@ def build_manifest_text(model_root: Path, bundle_ids: list[str],
     all_cmds: list[str] = []
     for b in chosen:
         lines.append(f"[{b['id']}] {b['label']}")
-        lines.append(f"  target : {_manifest_path(bundle_dir(model_root, b))}")
+        lines.append(f"  target : {_manifest_path(bundle_dir(model_root, b, model_dir))}")
         if b.get("size_hint"):
             lines.append(f"  approx : {b['size_hint']} (from {b.get('size_hint_source', 'source')}; estimate only)")
         lines.append("")
@@ -429,7 +466,7 @@ def build_manifest_text(model_root: Path, bundle_ids: list[str],
             lines.append(f"      sha256  : {sha}")
             if hint:
                 lines.append(f"      approx  : {hint} (estimate, not for progress)")
-            dest = bundle_dir(model_root, b) / f["name"]
+            dest = bundle_dir(model_root, b, model_dir) / f["name"]
             all_cmds.append(f'aria2c -x 8 -s 8 -k 1M -c -d "{_manifest_path(dest.parent)}" -o "{f["name"]}" "{urls[0]}"')
         lines.append("")
     lines.append("=" * 60)
@@ -443,6 +480,6 @@ def build_manifest_text(model_root: Path, bundle_ids: list[str],
     lines.append("Hugging Face CLI alternative (optional external tool, not bundled):")
     for b in chosen:
         if b.get("target_dir"):
-            lines.append(f'# hf download <repo> --local-dir "{_manifest_path(bundle_dir(model_root, b))}"')
+            lines.append(f'# hf download <repo> --local-dir "{_manifest_path(bundle_dir(model_root, b, model_dir))}"')
     lines.append("")
     return "\n".join(lines)

@@ -79,10 +79,24 @@ def main() -> int:
     r.check("三個鎖檔名都列在清理清單",
             all(n in launcher for n in ("SingletonLock", "SingletonSocket",
                                         "SingletonCookie")))
+    r.check("清鎖前先檢查擁有者 PID 是否還活著",
+            "def _lock_owner_alive(" in launcher and
+            "_lock_owner_alive(p)" in launcher)
     r.check("有 _run_edge_session 與備用 profile variant",
             "def _run_edge_session(" in launcher and "_EDGE_MAX_ATTEMPTS = 3" in launcher
             and 'f"edge-profile-r{variant}"' in launcher)
-    r.check("主流程改走 _run_edge_session", "_run_edge_session(url)" in launcher)
+    r.check("主流程把 server 前端連線訊號注入 _run_edge_session",
+            "_run_edge_session(" in launcher and
+            "seen=lambda: srv.window_signal()" in launcher and
+            "wait_close=lambda: _wait_for_window_close(srv)" in launcher)
+    r.check("server 端有 frontend_seen / SSE 計數 / window_signal",
+            all(k in server for k in ("self.frontend_seen = threading.Event()",
+                                      "def sse_enter(", "def sse_leave(",
+                                      "def window_signal(", "def window_alive(")))
+    r.check("不再以 exit 0 + 存活秒數判定秒退",
+            "_EDGE_EARLY_EXIT_SEC" not in launcher and
+            "early = (rc in (0, None))" not in launcher and
+            "存活 < 2s 且 exit 0" not in launcher)
 
     print("\n[3] 本機路徑直引 + 清理機制")
     r.check("後端有 add_path / ownedPath / 孤兒清掃",
@@ -199,12 +213,27 @@ def main() -> int:
     aw.time.sleep = lambda _s: None
     aw.open_edge_app = lambda url, variant=0: (variants.append(variant), FakeProc(0))[1]
     try:
-        rc, alive, attempts = aw._run_edge_session("http://127.0.0.1:1/")
+        rc, alive, attempts = aw._run_edge_session(
+            "http://127.0.0.1:1/", seen=lambda: False,
+            wait_close=lambda: None, grace=0.0)
     finally:
         aw.open_edge_app, aw.time.sleep = orig_open, orig_sleep
-    r.check("秒退連試 3 次並逐次換備用 profile",
+    r.check("完全沒有頁面連線 → 重試 3 次並逐次換備用 profile",
             attempts == 3 and variants == [0, 1, 2],
             f"attempts={attempts} variants={variants}")
+
+    # Wave 12／問題 4：exit 0 / 0.0s 但頁面連上了 → 只開一次，不重複開窗。
+    variants2 = []
+    aw.open_edge_app = lambda url, variant=0: (variants2.append(variant), FakeProc(0))[1]
+    try:
+        rc2, alive2, attempts2 = aw._run_edge_session(
+            "http://127.0.0.1:1/", seen=lambda: True,
+            wait_close=lambda: None, grace=0.0)
+    finally:
+        aw.open_edge_app, aw.time.sleep = orig_open, orig_sleep
+    r.check("頁面已連上 → 只啟動 1 次（不再連開 3 個視窗）",
+            attempts2 == 1 and variants2 == [0],
+            f"attempts={attempts2} variants={variants2}")
 
     print(f"\nResult: {sum(r.items)}/{len(r.items)} passed")
     return 0 if r.ok else 1

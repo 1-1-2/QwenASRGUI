@@ -476,3 +476,13 @@ class BatchQueue:
                     self.running = False
                     self._save()
             traceback.print_exc()
+        finally:
+            # Wave 12／問題 1：整隊（或取消）結束才釋放模型，不在每個 item
+            # 之間釋放 —— 否則 8 個檔會各付一次數十秒的模型編譯時間。
+            # 用 getattr 相容 FakeBackend / 只實作 transcribe 的測試替身。
+            releaser = getattr(self.backend, "release_model_if_enabled", None)
+            if callable(releaser):
+                try:
+                    releaser("batch-finished")
+                except Exception:
+                    pass

@@ -12,9 +12,11 @@ ASREngine。不依賴 pywebview，也不依賴 HTTP —— 可被 webview_server
 """
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -260,6 +262,12 @@ class WebBackend:
         # progress / progress-detail 帶 scope，前端才知道要畫在「批次」頁，
         # 而不是把批次進度誤顯示在「音檔轉字幕」頁。
         self._progress_scope = None
+        # Wave 12／問題 1：模型記憶體生命週期。
+        #   _running       正在執行中的 transcribe() 數（釋放必須等它歸零）
+        #   _batch_running BatchQueue 整隊進行中（其間不在每個 item 後重載模型）
+        self._running = 0
+        self._batch_running = False
+        self._released_once = False       # 曾載入過又被釋放 → 才允許懶載入
         # H1: structured runtime log shared by the WebView and LAN endpoint.
         self.run_log = RunLog(on_event=on_event)
         self._theme_cb = None            # 主題變更回呼（app_webview 用來同步視窗標題列深淺）
@@ -296,31 +304,45 @@ class WebBackend:
         except Exception:
             pass
 
-    def _catalog_root(self) -> Path:
+    def _catalog_paths(self) -> tuple[Path, Path]:
+        """下載中心需要的**兩個**根目錄：(應用根, 模型目錄)。
+
+        models.json 的 ``target_dir`` 一律寫成「相對應用根」：
+          * ``ov_models/qwen3_asr_int8``、``ov_models``、``ov_models/diarization``
+          * ``ffmpeg``、``crispasr``
+
+        而 ``settings.model_dir``（預設 ``<app>/ov_models``）本身就是那個
+        ``ov_models`` 資料夾。Wave 12 之前把後者直接當成 ``model_root`` 傳給
+        model_catalog，於是拼出 ``<app>/ov_models/ov_models/qwen3_asr_int8``
+        —— 多一層 ``ov_models``，下載中心永遠判定「檔案缺失」。
+
+        現在兩者分開傳：model_catalog 會把 ``ov_models/...`` 的開頭那段
+        換成 ``model_dir``，其餘 bundle 仍相對 ``app_root``。
+        """
         s = self._settings_raw()
         default = getattr(core, "_DEFAULT_MODEL_DIR", BASE_DIR / "ov_models")
-        return Path(s.get("model_dir", str(default)))
+        return BASE_DIR, Path(s.get("model_dir", str(default)))
 
     def get_model_catalog(self) -> dict:
         """Return bundle/file status from models.json (never from guesses)."""
         import model_catalog as mc
-        root = self._catalog_root()
+        app_root, model_dir = self._catalog_paths()
         doc = mc.load_catalog()
-        st = mc.catalog_status(root, doc)
+        st = mc.catalog_status(app_root, doc, model_dir)
         st["mirror"] = self.get_settings().get("mirror", "")
         return st
 
     def export_download_manifest(self, bundle_ids=None) -> dict:
         """Write a .txt download list with URLs, hashes and aria2c commands."""
         import model_catalog as mc
-        root = self._catalog_root()
+        app_root, model_dir = self._catalog_paths()
         ids = list(bundle_ids or [])
         doc = mc.load_catalog()
         if ids:
             for bid in ids:
                 mc.get_bundle(bid, doc)      # validates ids early
         mirror = self.get_settings().get("mirror", "")
-        text = mc.build_manifest_text(root, ids, mirror, doc)
+        text = mc.build_manifest_text(app_root, ids, mirror, doc, model_dir)
         out_dir = Path(getattr(core, "OUTPUT_DIR", BASE_DIR / "subtitles"))
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -335,10 +357,10 @@ class WebBackend:
     def import_local_model(self, src_dir: str, bundle_id: str) -> dict:
         """Validate manually downloaded files and copy them into place."""
         import model_catalog as mc
-        root = self._catalog_root()
+        app_root, model_dir = self._catalog_paths()
         doc = mc.load_catalog()
         bundle = mc.get_bundle(bundle_id, doc)
-        result = mc.import_local_bundle(Path(src_dir), root, bundle)
+        result = mc.import_local_bundle(Path(src_dir), app_root, bundle, model_dir)
         self._st(_t.msg("progress.importLocal", bundle=bundle_id,
                                 message=result['message']))
         return result
@@ -410,8 +432,17 @@ class WebBackend:
 
     # ── 事件推送 ────────────────────────────────────────────
     def set_progress_scope(self, scope: str | None):
-        """設定進度事件歸屬（BatchQueue 在跑某個 item 時設 "batch"）。"""
+        """設定進度事件歸屬（BatchQueue 在跑某個 item 時設 "batch"）。
+
+        Wave 12：同時記住「批次進行中」，讓 _end_run() 不在每個 item 之後
+        就把模型卸掉又重載（那會讓 8 個檔案各付一次數十秒的編譯時間）。
+        整隊結束由 BatchQueue 呼叫 release_model_if_enabled() 統一釋放。
+        注意 BatchQueue 每個 item 的 finally 都會設回 None，所以這裡**不**
+        在 scope=None 時清旗標。
+        """
         self._progress_scope = scope
+        if scope == "batch":
+            self._batch_running = True
 
     def _emit(self, event: str, payload: dict):
         # Wave 11：只對進度類事件加 scope，其餘事件契約完全不變。
@@ -441,6 +472,133 @@ class WebBackend:
         """Empty the runtime log buffer without touching disk."""
         self.run_log.clear()
         return {"ok": True}
+
+    # ── 模型記憶體釋放（Wave 12／問題 1）────────────────────────────
+    #   轉寫完成後，OpenVINO 編譯模型、ONNX VAD/diar session、ForcedAligner
+    #   與本次的字級結果都還掛在 self.engine 上；longform 跑完幾 GB 會一直
+    #   佔著，直到關掉程式才還給 OS。這裡提供「斷開引用 + GC + 換空殼」的
+    #   卸載路徑，並在下次轉寫前自動重新載入（_ensure_engine）。
+    _ENGINE_HEAVY_ATTRS = (
+        "vad_sess", "audio_enc", "embedder", "dec_req", "processor",
+        "cc", "diar_engine", "aligner", "use_aligner", "_fa", "_fa_bin",
+        "_runner", "_model_dir", "_last_segments_rich", "_last_vad_diag",
+        "kv_cache", "past_key_values",
+    )
+
+    def _auto_release_enabled(self) -> bool:
+        """自動釋放開關；GPU 後端不自動釋放（Vulkan context 刻意常駐）。
+
+        chatllm / crispasr 的執行期核心讓 Vulkan context 常駐（見
+        vulkan-dual-context-crash），在每次轉寫後主動 GC 掉 DLL runner 有
+        風險，因此只提供手動釋放，不做自動卸載。
+        """
+        try:
+            if self._settings_raw().get("auto_release_model", True) is False:
+                return False
+        except Exception:
+            pass
+        return getattr(self, "_active_backend", "openvino") not in ("chatllm", "crispasr")
+
+    @staticmethod
+    def _drop_engine_refs(eng) -> int:
+        """切斷引擎對重量級物件的引用；回傳實際清掉的屬性數。"""
+        n = 0
+        for name in WebBackend._ENGINE_HEAVY_ATTRS:
+            try:
+                if getattr(eng, name, None) is not None:
+                    setattr(eng, name, None)
+                    n += 1
+            except Exception:
+                pass
+        try:
+            eng.ready = False
+        except Exception:
+            pass
+        return n
+
+    def release_model(self, reason: str = "manual") -> dict:
+        """釋放模型記憶體 → 回到「尚未載入」；下次轉寫會自動重新載入。
+
+        不把 self.engine 設成 None：get_status / get_languages / health_check /
+        toggle_endpoint 一律用 getattr(self.engine, ...) 讀，留一個同介面的
+        空殼才不會在釋放後炸 AttributeError。
+        """
+        with self._lock:
+            if self._running > 0 or self._loading:
+                return {"ok": False, "released": False, "reason": "busy"}
+            dropped = self._drop_engine_refs(self.engine)
+            self.engine = core.ASREngine()
+            self._loaded = False
+            self._load_err = None
+            self._released_once = True
+        gc.collect()
+        self._emit("status", {
+            "modelReady": False, "released": True,
+            "message": "模型記憶體已釋放；下次轉檔會自動重新載入。",
+        })
+        return {"ok": True, "released": True, "dropped": dropped,
+                "reason": reason}
+
+    def release_model_if_enabled(self, reason: str = "batch-finished") -> dict:
+        """BatchQueue 整隊結束時呼叫（FakeBackend 用 getattr 相容）。"""
+        self._batch_running = False
+        if self._running > 0 or not self._auto_release_enabled():
+            return {"ok": False, "released": False, "reason": "skipped"}
+        return self.release_model(reason=reason)
+
+    def _ensure_engine(self):
+        """模型「曾載入過又被釋放」時同步重新載入。
+
+        刻意只處理釋放後的復活：首次啟動、模型還沒下載時**絕不**在這裡
+        觸發 _load_worker()（那會在使用者只是點了「切分預檢」時拉起數百 MB
+        下載）。那種情況直接返回，交給呼叫端給出原本「請先下載並載入模型」
+        的可操作提示。
+        """
+        if getattr(self.engine, "ready", False):
+            return
+        # 背景載入正在跑 → 等它結束，避免並發載入兩份引擎。
+        deadline = time.monotonic() + 180
+        while self._loading and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if getattr(self.engine, "ready", False):
+            return
+        if not getattr(self, "_released_once", False):
+            return
+        self._loading = True
+        try:
+            self._load_worker()
+        finally:
+            self._loading = False
+        if not getattr(self.engine, "ready", False):
+            raise RuntimeError(self._load_err or "模型載入失敗，請至模型頁重新載入。")
+
+    def _begin_run(self):
+        self._ensure_engine()
+        with self._lock:
+            self._running += 1
+
+    def _end_run(self):
+        with self._lock:
+            self._running = max(0, self._running - 1)
+            busy = self._running > 0
+        # 不論是否卸載模型，都要丟掉本次的字級結果／VAD 診斷快取。
+        # 這份 rich 結果在數小時音檔上可達數十 MB，是「轉完記憶體沒回落」
+        # 的另一個來源。
+        self._drop_run_cache()
+        gc.collect()
+        if busy or self._batch_running or not self._auto_release_enabled():
+            return
+        try:
+            self.release_model(reason="auto")
+        except Exception:
+            pass
+
+    def _drop_run_cache(self):
+        for name in ("_last_segments_rich", "_last_vad_diag"):
+            try:
+                setattr(self.engine, name, None)
+            except Exception:
+                pass
 
     # ── 模型載入（背景執行緒呼叫）──────────────────────────
     def start_load(self):
@@ -669,6 +827,8 @@ class WebBackend:
             # J5: let a reloaded page re-show the TLS downgrade banner.
             "sslInsecure": self._ssl_insecure(),
             "firstRun": bool(getattr(self, "_first_run", False)),
+            # Wave 12：前端「轉檔後自動釋放」開關的目前值。
+            "autoReleaseModel": self._auto_release_enabled(),
         }
 
     @staticmethod
@@ -759,6 +919,20 @@ class WebBackend:
     # opts: {path, language, diarize, nSpeakers, align, hint}
     # progress_cb(pct:int, status:str)
     def transcribe(self, opts: dict, progress_cb=None) -> dict:
+        """轉寫入口：懶載入 → 執行 → 收尾釋放（Wave 12／問題 1）。
+
+        原本 transcribe() 跑完就把模型、字級結果全留在 self.engine 上，
+        記憶體一路佔到關程式。改成 try/finally 後，無論成功、取消或例外，
+        _end_run() 都會清掉本次增量快取，並在單檔任務結束時釋放模型；
+        下一次轉寫由 _begin_run() 自動重新載入，功能不受影響。
+        """
+        self._begin_run()
+        try:
+            return self._transcribe_impl(opts, progress_cb)
+        finally:
+            self._end_run()
+
+    def _transcribe_impl(self, opts: dict, progress_cb=None) -> dict:
         if not getattr(self.engine, "ready", False):
             raise RuntimeError("模型尚未載入完成，請稍候再試。")
         path = opts.get("path")
@@ -1044,6 +1218,9 @@ class WebBackend:
         path = (opts or {}).get("path")
         if not path or not Path(path).exists():
             raise RuntimeError("請先選擇音檔，再進行切分預檢。")
+        # Wave 12：模型可能已在上一輪轉寫後釋放；VAD 預檢需要 vad_sess，
+        # 這裡先同步復活引擎，不要再丟一句「模型尚未載入」給使用者。
+        self._ensure_engine()
         # 模型未載入時 vad_sess 為 None，LongformRunner 會拋 ValueError ——
         # 對使用者完全無用（看不出要幹嘛）。這裡攔下，給出可操作的提示。
         if getattr(self.engine, "vad_sess", None) is None:
@@ -1868,6 +2045,8 @@ class WebBackend:
             "align": bool(s.get("align", True)),
             "hint": s.get("hint", ""),
             "trial": bool(s.get("trial", False)),
+            # Wave 12：轉檔完成後自動釋放模型記憶體（GPU 後端會顯示為 off）。
+            "autoRelease": bool(s.get("auto_release_model", True)),
         }
 
     def set_settings(self, patch: dict) -> dict:
@@ -1891,7 +2070,9 @@ class WebBackend:
                    # Wave 4 (B3): transcription-page controls.
                    "language": "language", "diarize": "diarize",
                    "nSpeakers": "n_speakers", "align": "align", "hint": "hint",
-                   "trial": "trial"}
+                   "trial": "trial",
+                   # Wave 12 (問題 1): model memory lifecycle.
+                   "autoRelease": "auto_release_model"}
         for k, v in patch.items():
             if k in key_map:
                 cur[key_map[k]] = v
