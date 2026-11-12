@@ -1525,6 +1525,39 @@ class WebBackend:
         self._cancel_event.set()   # 同步通知长音频流式 Runner，使其保存断点后退出
         return True
 
+    def work_in_flight(self) -> bool:
+        """是否有正在进行的识别（单文件转写或批量队列）。
+
+        给 launcher 的关窗收尾用：窗口一关就 os._exit(0) 的话，正在跑的
+        runner 会被硬切，rich.json 根本来不及生成（paused 分支压根不会走到）。
+        这里只报「转写类」任务——模型下载/加载不算，它们要么可恢复、要么
+        本来就在等用户操作，不该拖住退出。
+        """
+        try:
+            if self._running > 0:
+                return True
+            q = getattr(self, "batch_queue", None)
+            if q is not None and getattr(q, "running", False):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def cancel_all(self) -> bool:
+        """关窗时的优雅取消：让 runner 走到 paused 分支，存断点 + 写部分 rich。
+
+        与 cancel() 的差别只在于「也停掉批量队列」。返回是否真的发了取消。
+        """
+        had = self.work_in_flight()
+        self.cancel()
+        try:
+            q = getattr(self, "batch_queue", None)
+            if q is not None and getattr(q, "running", False):
+                q.cancel()
+        except Exception:
+            traceback.print_exc()
+        return had
+
     def open_output_dir(self) -> bool:
         import os
         try:

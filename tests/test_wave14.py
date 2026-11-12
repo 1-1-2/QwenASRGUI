@@ -50,17 +50,26 @@ class Result:
 # 1~2、6、7：批量页布局与「只用本机路径」
 # ──────────────────────────────────────────────────────────────────────
 def test_batch_page_layout(r: Result):
-    print("\n[1] 批量页：拖放框独占整行、按钮下移、无「加入文件」按钮")
-    head = HTML.split('class="batch-head"', 1)[1].split("</div>\n\n        <!-- Wave 11", 1)[0]
-    drop_at = head.find('id="batch-drop"')
+    # Wave 16 推翻了 Wave 14 的 [1][2]：拖放框无法拿到本机路径，已整体取消。
+    # 这里改为守住「取消得干净 + 原因写明 + 有等效入口」三件事。
+    print("\n[1] 批量页：拖放框已取消，改由说明 + 加入文件按钮")
+    head = HTML.split('class="batch-head"', 1)[1].split("</div>\n\n        <!-- Wave 16", 1)[0]
+    note_at = head.find('id="batch-nodrop"')
     tools_at = head.find('class="batch-tools"')
-    r.check("拖放框在按钮列之前（独占一行）", 0 < drop_at < tools_at)
-    r.check("「加入檔案」按钮已移除", 'id="btn-batch-add"' not in HTML)
+    r.check("取消原因说明在按钮列之前（独占一行）", 0 < note_at < tools_at)
+    r.check("拖放框 DOM 与代码均已移除",
+            'id="batch-drop"' not in HTML and "batchDrop" not in APP)
+    r.check("「加入檔案」按钮已恢复", 'id="btn-batch-add"' in HTML)
     r.check("batch-tools 有独立样式", ".batch-tools" in CSS)
+    r.check("说明文案三语齐备",
+            all(k in I18N for k in ("batch.noDropTitle", "batch.noDropWhy", "batch.addFiles")))
+    r.check("取消原因点明 Chromium 限制与「不复制」契约",
+            all(k in I18N.split('"batch.noDropWhy"')[1].split("\n")[1]
+                for k in ("Chromium",)) or "Chromium" in I18N)
 
-    print("\n[2] 点击拖放框即叫出选档（含预览模式）")
-    r.check("点击绑定 pickBatchFiles", 'batchDrop.addEventListener("click", () => pickBatchFiles())' in APP)
-    r.check("键盘 Enter/Space 同样可用", 'e.key === "Enter" || e.key === " "' in APP)
+    print("\n[2] 加入文件走 pickBatchFiles（含预览模式）")
+    r.check("按钮绑定 pickBatchFiles",
+            'id="btn-batch-add"' in HTML and "pickBatchFiles();" in APP)
     r.check("预览模式退化为浏览器选档而非无反应",
             'if (API.mode !== "web") { batchInput.click(); return Promise.resolve(); }' in APP)
 
@@ -70,13 +79,12 @@ def test_batch_page_layout(r: Result):
     r.check("bridge 不再有上传版 batchAdd", "async batchAdd(" not in BRIDGE)
     r.check("前端不再调用 API.batchAdd(",
             not re.search(r"API\.batchAdd\(", APP))
-    r.check("拿不到绝对路径时给出明确引导",
-            'T("batch.dropNoPath"' in APP and 'T("batch.pickUnsupported")' in APP)
-    # Wave 15：提示要带上「收到几个文件」，否则用户无法判断拖放有没有生效。
-    r.check("拖放提示带上文件数",
-            re.search(r'T\("batch\.dropNoPath",\s*null,\s*\{\s*n:', APP) is not None)
+    # Wave 16：拖放取消后 dropNoPath 已无调用点，但保留 pickUnsupported 兜底
+    # （非 Windows / 精简环境叫不出原生选档时仍要引导用户改用贴路径）。
+    r.check("原生选档不可用时有引导",
+            'T("batch.pickUnsupported")' in APP)
     r.check("引导文案三语齐备",
-            all(k in I18N for k in ("batch.dropNoPath", "batch.pickUnsupported")))
+            all(k in I18N for k in ("batch.pickUnsupported", "batch.pathHowTo")))
 
 
 # ──────────────────────────────────────────────────────────────────────

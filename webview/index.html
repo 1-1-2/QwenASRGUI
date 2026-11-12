@@ -235,19 +235,25 @@
       <!-- ───── 批次辨識 ───── -->
       <section class="view" data-view="batch">
         <div class="batch-head">
-          <!-- Wave 14／需求 1、2、檔案加入：拖放框獨占一整行；「加入檔案」按鈕
-               移除，改由點拖放框直接叫出後端原生選檔（與拖放、貼路徑三者一致，
-               全部走本機路徑：不複製、不上傳、不產生暫存副本）。 -->
-          <div class="drop batch-drop" id="batch-drop" role="button" tabindex="0"
-               data-i18n-title="batch.dropTitle" title="選取本機音訊檔案">
-            <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></div>
-            <div class="big" data-i18n-html="batch.dropBig">拖曳多個音訊到此，或<b>點擊選取檔案</b></div>
-            <div class="sub" data-i18n="batch.dropSub">選取的檔案直接引用本機路徑：不複製、不上傳、不產生暫存副本</div>
+          <!-- Wave 16：拖放框整個移除。拖入的檔案在瀏覽器裡只有 File 物件、
+               拿不到絕對路徑（Chromium 安全模型，file.path 僅 Electron 有），
+               而批次流程的契約是「只引用路徑、不複製」——沒有路徑就無從引用。
+               留一個拖了會失敗的框只會誤導使用者，故取消並在原處說明原因，
+               改用「加入檔案」的系統多選框（同樣只引用路徑、不複製）。 -->
+          <div class="batch-nodrop" id="batch-nodrop">
+            <div class="nd-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16.5v.01"/></svg></div>
+            <div class="nd-txt">
+              <div class="nd-title" data-i18n="batch.noDropTitle">此頁不支援拖放</div>
+              <div class="nd-sub" data-i18n="batch.noDropWhy">瀏覽器不會把拖入檔案的真實路徑交給網頁（Chromium 安全限制，無法繞過），而批次處理只引用本機路徑、不複製檔案，所以拖放無法使用。請改用「加入檔案」按鈕，一次可選多個檔案。</div>
+            </div>
           </div>
 
-          <!-- 按鈕排在拖放框下方，獨立成一列。 -->
+          <!-- 按鈕排在說明下方，獨立成一列。 -->
           <div class="batch-tools">
-            <button class="btn btn-ghost" id="btn-batch-path"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg><span data-i18n="batch.addPath">貼上本機路徑</span></button>
+            <button class="btn btn-primary" id="btn-batch-add">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              <span data-i18n="batch.addFiles">加入檔案</span>
+            </button>
             <button class="btn btn-primary" id="btn-batch-run"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span data-i18n="batch.run">全部開始</span></button>
             <button class="btn btn-ghost" id="btn-batch-clear"><span data-i18n="batch.clear">清除已完成</span></button>
             <span class="batch-shared" data-i18n="batch.sharedOpts">語言、提示詞與說話者設定共用「音檔轉字幕」頁的設定</span>
@@ -256,14 +262,18 @@
           </div>
         </div>
 
-        <!-- Wave 11／問題 3：直接引用本機檔案（不複製、不上傳、不產生垃圾副本）。
-             瀏覽器 <input type=file> 拿不到絕對路徑，所以用「貼路徑」補上這條路。 -->
-        <div class="card batch-paths" id="batch-paths" hidden>
+        <!-- Wave 16：路徑框改為常顯（不再點按鈕才展開），並把「貼上本機路徑」
+             按鈕上的文案移到框頭當標題。摘要有兩個：為什麼走路徑、怎麼取得路徑
+             （Win10 Shift+右鍵「複製檔案地址」/ Win11 Ctrl+Shift+C）。 -->
+        <div class="card batch-paths" id="batch-paths">
+          <div class="bp-head">
+            <span class="bp-title" data-i18n="batch.pathTitle">貼上本機路徑</span>
+            <span class="bp-tip" data-i18n="batch.pathHowTo">Win10：Shift + 右鍵檔案／資料夾 →「複製檔案地址」；Win11：選取後按 Ctrl+Shift+C。可一次複製多個檔案再貼上，每行一個。</span>
+          </div>
           <div class="line">
             <textarea class="input" id="batch-path-input" data-i18n-ph="batch.pathPh"
                       placeholder="每行一個本機檔案絕對路徑，例如：&#10;C:\DATA\TMP\audio\001.m4a"></textarea>
             <button class="btn btn-primary" id="btn-batch-path-add" data-i18n="batch.pathAdd">加入路徑</button>
-            <button class="btn btn-ghost" id="btn-batch-path-close" data-i18n="common.close">關閉</button>
           </div>
           <div class="hint" data-i18n="batch.pathHint">直接引用本機檔案：不複製、不上傳、不佔用暫存空間；移除任務也不會刪除你的原檔。每行一個路徑，僅支援本機磁碟。</div>
           <div class="hint" id="batch-path-msg" hidden></div>

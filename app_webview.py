@@ -785,18 +785,28 @@ _EDGE_MIN_GRACE_SEC = 4.0         # 行程已結束時，至少再給頁面這�
 _EDGE_PROBE_INTERVAL_SEC = 0.1
 _EDGE_CLOSE_POLL_SEC = 0.3
 _EDGE_CLOSE_IDLE_SEC = 6.0        # SSE 斷線後的寬限（EventSource 會自動重連）
+_CLOSE_CANCEL_WAIT_SEC = 20.0     # 關窗時等 runner 存斷點的上限（超過照樣退出）
 
 
-def _wait_for_window_close(srv, idle_grace: float | None = None) -> None:
+def _wait_for_window_close(srv, idle_grace: float | None = None,
+                           cancel_grace: float | None = None) -> bool:
     """等到前端視窗真的關掉，才讓 main() 收網停 server。
 
     視窗開著時 /api/events 的 SSE 長連線一定還在；關掉後連線斷開，
     _Handler 的 finally 會 sse_leave()。另以 HWND 作快速輔助判定。
     兩者都消失且持續 idle_grace 秒才返回，避免 EventSource 重連的
     短暫空窗被誤判成關窗（那會提前關掉 server，視窗還在卻白屏）。
+
+    Wave 16：偵測到「視窗已關但任務還在跑」時，先發一次優雅取消，等 runner
+    存好檢查點（以及中斷時的 rich.json）再返回。不加這一步的話，收尾的
+    os._exit(0) 會把 runner 硬切在句子中間——paused 分支根本走不到，
+    使用者關窗後既沒有 rich.json，也丟掉最後一個 16 秒檢查點之後的進度。
+
+    回傳是否曾經觸發過取消（供 launcher.log 記錄）。
     """
     grace = _EDGE_CLOSE_IDLE_SEC if idle_grace is None else idle_grace
     idle = 0.0
+    canceled = False
     while True:
         alive = False
         try:
@@ -810,8 +820,42 @@ def _wait_for_window_close(srv, idle_grace: float | None = None) -> None:
         else:
             idle += _EDGE_CLOSE_POLL_SEC
             if idle >= grace:
-                return
+                if not canceled:
+                    # 只做一次，避免每次轮询都重复 cancel。
+                    canceled = _graceful_cancel(srv, cancel_grace)
+                    if canceled:
+                        continue          # 给 runner 一点时间收尾，再判一次
+                return canceled
         time.sleep(_EDGE_CLOSE_POLL_SEC)
+
+
+def _graceful_cancel(srv, wait_sec: float | None = None) -> bool:
+    """窗口已关但仍有任务在跑 → 发取消并等它落盘。
+
+    超时（默认 ``_CLOSE_CANCEL_WAIT_SEC``）无论如何都放行退出：宁可少写一次
+    检查点，也不能让「关了窗口进程却赖着不走」。
+    """
+    try:
+        backend = getattr(srv, "backend", None)
+        if backend is None or not backend.work_in_flight():
+            return False
+        _log(f"[{APP_NAME}] 視窗已關但仍有任務在跑 → 優雅取消，保存檢查點…")
+        backend.cancel_all()
+    except Exception:
+        traceback.print_exc()
+        return False
+    limit = _CLOSE_CANCEL_WAIT_SEC if wait_sec is None else wait_sec
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < limit:
+        try:
+            if not backend.work_in_flight():
+                _log(f"[{APP_NAME}] 任務已停止，用時 {time.monotonic() - t0:.1f}s")
+                return True
+        except Exception:
+            break
+        time.sleep(_EDGE_CLOSE_POLL_SEC)
+    _log(f"[{APP_NAME}] 等待逾時（{limit:.0f}s），強制退出；斷點仍可續跑")
+    return True
 
 
 def _run_edge_session(url: str, seen=None, wait_close=None,

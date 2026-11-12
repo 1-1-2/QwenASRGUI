@@ -126,22 +126,22 @@ def test_health_default_open(r: Result):
             'data-i18n="catalog.checking"' in HTML and "catalog.checking" in I18N)
 
 
-# ── 3. 拖放提示：说明原因 + 带文件数 ────────────────────────────────────
+# ── 3. 拖放：Wave 16 起整条链路取消，改为页面内说明 ──────────────────
 def test_drop_hint(r: Result):
-    print("\n[3] 拖放拿不到路径时给出可操作指引")
-    r.check("提示带上收到多少文件",
-            re.search(r'T\("batch\.dropNoPath",\s*null,\s*\{\s*n:', APP) is not None)
-    m = re.search(r'"batch\.dropNoPath":\s*\[(.*?)\]', I18N, re.S)
-    r.check("三语齐备", m is not None and m.group(1).count('"') >= 6)
+    # Wave 15 的「提示里带文件数」已被 Wave 16 推翻：拖放本身不再可用，
+    # 因此提示改在页面上静态说明，不再有「收到 N 个文件」这种运行时文案。
+    print("\n[3] 拖放已取消，改为页面内说明原因 + 等效入口")
+    r.check("拖放代码与 DOM 均已移除",
+            "batchDrop" not in APP and 'id="batch-drop"' not in HTML)
+    m = re.search(r'"batch\.noDropWhy":\s*\[(.*?)\],\n', I18N, re.S)
+    r.check("说明文案三语齐备", m is not None and m.group(1).count('"') >= 6)
     body = m.group(1) if m else ""
     r.check("说明这是浏览器限制而非程序缺陷",
-            "Chromium" in body and ("security" in body or "安全" in body))
-    r.check("给出替代操作（点框选档 / 贴路径）",
-            "点击此框" in body or "点击" in body or "Click this box" in body)
+            "Chromium" in body and ("安全" in body or "security" in body))
+    r.check("给出等效操作（加入文件按钮）",
+            "加入檔案" in body or "加入文件" in body or "Add files" in body)
     # 正式模式绝不能退化成「上传副本」—— 那会产生副本，与「只引用路径」矛盾
-    r.check("web 模式不上传、只提示",
-            "showPathMsg(T(\"batch.dropNoPath\"" in APP and
-            "await API.batchAdd(" not in APP)
+    r.check("批量页不存在任何上传路径", "await API.batchAdd(" not in APP)
 
 
 # ── 4. rich.json：中断也要产出 ─────────────────────────────────────────

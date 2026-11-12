@@ -331,10 +331,22 @@ button { font-family: inherit; }
 .drop .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .drop.has-file { border-style: solid; border-color: var(--line); padding: 20px; }
 /* Wave 12: batch page drop zone (same look as the recognition page).
-   Wave 14: it now owns a full row by itself; the tool buttons sit below it. */
-.batch-drop { width: 100%; margin-top: 0; box-sizing: border-box; }
-.batch-drop.hot { border-color: var(--accent); background: var(--accent-soft); }
-.batch-drop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+   Wave 14: it now owns a full row by itself; the tool buttons sit below it.
+   Wave 16: the drop zone is gone — Chromium never exposes a dropped file's
+   real path, and the batch flow only references paths. Replace it with a
+   stated-reason notice so the absence reads as intentional, not broken. */
+.batch-nodrop {
+  display: flex; align-items: flex-start; gap: 12px;
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--panel-2, rgba(127, 127, 127, .06));
+  padding: 16px 18px;
+}
+.batch-nodrop .nd-ico { flex: 0 0 auto; width: 22px; height: 22px; color: var(--muted); margin-top: 1px; }
+.batch-nodrop .nd-ico svg { width: 100%; height: 100%; }
+.batch-nodrop .nd-txt { min-width: 0; }
+.batch-nodrop .nd-title { font-size: 13.5px; font-weight: 700; color: var(--text); }
+.batch-nodrop .nd-sub { font-size: 12px; color: var(--muted); margin-top: 5px; line-height: 1.6; }
 .file-chip {
   display: inline-flex; align-items: center; gap: 9px;
   background: var(--accent-soft); color: var(--accent-strong);
@@ -634,6 +646,13 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 
 /* Wave 11／問題 3：貼上本機路徑直接引用，不複製不上傳。 */
 .batch-paths { margin-bottom: 12px; padding: 12px 16px; }
+/* Wave 16：路徑區改為常顯，框頭放標題與「怎麼取得路徑」的操作指引。 */
+.batch-paths .bp-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 9px;
+}
+.batch-paths .bp-title { font-size: 13px; font-weight: 700; color: var(--text); flex: 0 0 auto; }
+.batch-paths .bp-tip { font-size: 11.5px; color: var(--muted); line-height: 1.55; flex: 1 1 320px; }
 .batch-paths .line { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
 .batch-paths textarea {
   min-height: 58px; font-family: var(--font-mono); font-size: 12px;

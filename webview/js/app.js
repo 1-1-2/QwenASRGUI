@@ -234,6 +234,25 @@
     if (on) UI_BUSY.add(scope); else UI_BUSY.delete(scope);
     syncActionButtons();
   }
+
+  // ── Wave 16：關窗前攔截 ─────────────────────────────────────────────
+  // 關掉視窗會讓 launcher 走 os._exit(0)，正在跑的辨識被硬切；雖然檢查點
+  // 每 16 秒寫一次、續跑不會從頭，但使用者不知道會丟掉最後一小段。
+  // 這裡只在「真的有任務在跑」時攔，空閒關窗保持零摩擦。
+  // "model"（載入/下載模型）刻意不攔：那類操作本身可恢復，且下載常跑很久，
+  // 每次關窗都彈一次確認會變成噪音。
+  const _GUARD_SCOPES = ["transcribe", "batch"];
+  function _busyScopes() {
+    return [...UI_BUSY].filter(s => _GUARD_SCOPES.includes(s));
+  }
+  window.addEventListener("beforeunload", e => {
+    if (!_busyScopes().length) return;
+    // 標準寫法：preventDefault + returnValue。Chromium 只會顯示固定文案，
+    // 無法自訂——能說清的內容放在關窗後端的優雅取消裡（保存檢查點與 rich）。
+    e.preventDefault();
+    e.returnValue = "";
+    return "";
+  });
   function syncActionButtons() {
     const busy = UI_BUSY.size > 0;
     const run = $("#btn-run");
@@ -1527,7 +1546,7 @@
         // 原生選檔不可用（非 Windows / 精簡環境）：不要靜默失敗，
         // 也不退化成上傳，直接引導使用者改用「貼上本機路徑」。
         showPathMsg(T("batch.pickUnsupported"), true);
-        if (pathPanel) { pathPanel.hidden = false; pathInput && pathInput.focus(); }
+        pathInput && pathInput.focus();
         return;
       }
       if (!paths.length) return;                     // 使用者取消
@@ -1543,86 +1562,21 @@
       await refreshBatch();
     }).catch(() => {
       showPathMsg(T("batch.pickUnsupported"), true);
-      if (pathPanel) { pathPanel.hidden = false; pathInput && pathInput.focus(); }
+      pathInput && pathInput.focus();
     });
   }
 
-  // Wave 14／需求 7：拖放一律走 add_path。能拿到絕對路徑（file:// / X:\）
-  // 就直接引用；拿不到（瀏覽器只給 File 物件、無絕對路徑）就明白告訴使用者
-  // 改用點擊選檔，而不是偷偷上傳產生副本。
-  function extractLocalPaths(dt) {
-    if (!dt) return [];
-    const out = [], blobs = [];
-    for (const type of ["text/uri-list", "text/plain"]) {
-      try { const v = dt.getData(type); if (v) blobs.push(v); } catch {}
-    }
-    for (const blob of blobs) {
-      for (const line of String(blob).split(/\r?\n/)) {
-        let p = line.trim();
-        if (!p || p.startsWith("#")) continue;
-        if (p.startsWith("file://")) {
-          try { p = decodeURIComponent(new URL(p).pathname); } catch {}
-          if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);
-        }
-        if (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\")) out.push(p);
-      }
-    }
-    return [...new Set(out)];
-  }
-  const batchDrop = $("#batch-drop");
-  if (batchDrop) {
-    // 需求 6：點拖放框即叫出原生選檔（鍵盤 Enter/Space 同樣可用）。
-    batchDrop.addEventListener("click", () => pickBatchFiles());
-    batchDrop.addEventListener("keydown", e => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickBatchFiles(); }
-    });
-    ["dragover", "dragenter"].forEach(ev => batchDrop.addEventListener(ev, e => {
-      e.preventDefault(); batchDrop.classList.add("hot");
-    }));
-    ["dragleave", "drop"].forEach(ev => batchDrop.addEventListener(ev, e => {
-      e.preventDefault(); batchDrop.classList.remove("hot");
-    }));
-    batchDrop.addEventListener("drop", async e => {
-      const dt = e.dataTransfer;
-      const paths = extractLocalPaths(dt);
-      const files = Array.from((dt && dt.files) || []);
-      const opts = currentBatchOpts();
-      let ok = 0; const errs = [];
-      if (paths.length) {
-        for (const p of paths) {
-          try { await API.batchAddPath(p, opts); ok++; }
-          catch (err) { errs.push(`${p}: ${err.message || err}`); }
-        }
-      } else if (files.length) {
-        // 有檔案但拿不到絕對路徑（瀏覽器只給 File 物件）：
-        // 正式模式絕不改走「上傳副本」→ 引導使用者改用點擊選檔／貼路徑；
-        // 預覽（mock）模式沒有後端，只在記憶體裡放 File 物件，不落地。
-        //
-        // 這不是本程式能修的問題：Chromium 對拖入檔案只暴露 File 物件
-        // （name/size/內容），真實路徑 file.path 僅 Electron 這類桌面殼有。
-        // 識別頁之所以「拖了就有反應」，是因為它只消費檔案內容、不需要路徑；
-        // 批次頁刻意「不複製檔案」，所以非有真路徑不可 → 只能改用系統選檔，
-        // 那條路是後端原生對話框，回傳的是絕對路徑。
-        if (API.mode === "web") {
-          showPathMsg(T("batch.dropNoPath", null, { n: files.length }), true);
-          if (pathPanel) pathPanel.hidden = false;
-        } else {
-          for (const f of files) batchItems.push({
-            id: "m" + Math.random().toString(36).slice(2, 9), file: f,
-            name: f.name, status: "pending", progress: 0,
-          });
-          ok = files.length;
-        }
-      }
-      if (errs.length) showPathMsg(T("batch.pathPartial", null,
-        { ok, fail: errs.length, err: errs.join("; ") }), true);
-      else if (ok) showPathMsg(T("batch.dropAdded", null, { n: ok }), false);
-      if (API.mode === "web") await refreshBatch(); else renderBatch();
-    });
-  }
+  // Wave 16：拖放框及其 handler 已整個移除（見 index.html 的 batch-nodrop）。
+  // 原因：拖入的檔案只有 File 物件、拿不到絕對路徑，而批次流程只引用路徑不複製，
+  // 沒有路徑就無從引用。留一個拖了必然失敗的熱區只會誤導使用者，故取消並在
+  // 原位置說明原因。「加入檔案」走後端原生多選框，回傳絕對路徑。
+  $("#btn-batch-add") && $("#btn-batch-add").addEventListener("click", () => {
+    pickBatchFiles();
+  });
   // Wave 11／問題 3：本機路徑直引。<input type=file> 出於瀏覽器沙箱拿不到
   // 絕對路徑，所以補一條「貼路徑」通道：後端 add_path() 直接引用、不複製、
   // 不上傳；item 標 ownedPath=false，任何清理都不會動到使用者的原檔。
+  // Wave 16：此區改為常顯，不再需要展開／關閉按鈕。
   const pathPanel = $("#batch-paths"), pathInput = $("#batch-path-input"),
         pathMsg = $("#batch-path-msg");
   function showPathMsg(msg, bad) {
@@ -1631,14 +1585,6 @@
     pathMsg.textContent = msg;
     pathMsg.style.color = bad ? "var(--danger, #c0392b)" : "var(--ok, #1C8C5A)";
   }
-  $("#btn-batch-path") && $("#btn-batch-path").addEventListener("click", () => {
-    if (!pathPanel) return;
-    pathPanel.hidden = !pathPanel.hidden;
-    if (!pathPanel.hidden && pathInput) pathInput.focus();
-  });
-  $("#btn-batch-path-close") && $("#btn-batch-path-close").addEventListener("click", () => {
-    if (pathPanel) pathPanel.hidden = true;
-  });
   $("#btn-batch-path-add") && $("#btn-batch-path-add").addEventListener("click", async () => {
     const lines = String(pathInput ? pathInput.value : "")
       .split(/\r?\n/).map(s => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);

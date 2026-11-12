@@ -109,8 +109,9 @@ def main() -> int:
     r.check("HTTP 有 /api/batch/add-path 路由",
             'path == "/api/batch/add-path"' in server)
     r.check("bridge 有 batchAddPath", "async batchAddPath(" in bridge)
+    # Wave 16：貼路徑區改為常顯，入口按鈕與關閉按鈕已移除，改看框體與輸入框。
     r.check("前端有貼路徑入口",
-            'id="btn-batch-path"' in html and 'id="batch-path-input"' in html and
+            'id="batch-paths"' in html and 'id="batch-path-input"' in html and
             "API.batchAddPath(line, opts)" in app)
 
     print("\n[4] 佇列狀態管理（8 → 1 → 0 → 0）")

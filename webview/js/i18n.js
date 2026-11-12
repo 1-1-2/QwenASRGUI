@@ -74,6 +74,17 @@
     "batch.add": ["加入檔案", "添加文件", "Add files"],
     "batch.dropBig": ["拖曳多個音訊到此，或<b>點擊選取檔案</b>", "拖拽多个音频到此，或<b>点击选取文件</b>", "Drop audio files here, or <b>click to choose files</b>"],
     "batch.dropSub": ["選取的檔案直接引用本機路徑：不複製、不上傳、不產生暫存副本", "选取的文件直接引用本机路径：不复制、不上传、不产生暂存副本", "Files are referenced by local path: no copy, no upload, no temp files"],
+    "batch.noDropTitle": ["此頁不支援拖放", "此页不支持拖放", "Drag & drop is not supported on this page"],
+    "batch.noDropWhy": [
+      "瀏覽器不會把拖入檔案的真實路徑交給網頁（Chromium 的安全限制，無法繞過），而批次處理只引用本機路徑、不複製檔案，所以拖放無法使用。請改用下方「加入檔案」按鈕，可一次選取多個檔案。",
+      "浏览器不会把拖入文件的真实路径交给网页（Chromium 的安全限制，无法绕过），而批量处理只引用本机路径、不复制文件，所以拖放无法使用。请改用下方“加入文件”按钮，可一次选取多个文件。",
+      "Browsers never expose the real path of a dropped file (a Chromium security rule with no workaround), and batch processing references local paths without copying — so drag & drop cannot work here. Use the “Add files” button below; it accepts multiple files at once."],
+    "batch.addFiles": ["加入檔案", "加入文件", "Add files"],
+    "batch.pathTitle": ["貼上本機路徑", "粘贴本机路径", "Paste local paths"],
+    "batch.pathHowTo": [
+      "Win10：Shift + 右鍵檔案／資料夾 →「複製檔案地址」；Win11：選取後按 Ctrl+Shift+C。可一次複製多個檔案再貼上。",
+      "Win10：Shift + 右键文件／文件夹 →“复制文件地址”；Win11：选取后按 Ctrl+Shift+C。可一次复制多个文件再粘贴。",
+      "Win10: Shift + right-click a file or folder → “Copy as path”. Win11: select, then press Ctrl+Shift+C. You can copy several files at once."],
     "batch.dropAdded": ["已加入 {n} 個檔案", "已添加 {n} 个文件", "Added {n} files"],
     "batch.run": ["全部開始", "全部开始", "Start all"],
     "welcome.text": ["初次使用：請先在「模型與裝置」頁選擇並下載辨識模型，完成後即可開始轉寫。",
@@ -109,6 +120,7 @@
     "common.close": ["關閉", "关闭", "Close"],
 
     // Wave 11：本機路徑直引（問題 3）與批次頁獨立進度（問題 8）
+    "batch.pathAdd": ["加入路徑", "加入路径", "Add paths"],
     "batch.addPath": ["貼上本機路徑", "粘贴本机路径", "Add local path"],
     "batch.pathPh": ["每行一個本機檔案絕對路徑，例如：\nC:\\DATA\\TMP\\audio\\001.m4a",
                      "每行一个本机文件绝对路径，例如：\nC:\\DATA\\TMP\\audio\\001.m4a",

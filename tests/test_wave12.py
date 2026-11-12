@@ -247,22 +247,28 @@ def test_issue3(r: Result):
     i18n = (ROOT / "webview/js/i18n.js").read_text(encoding="utf-8")
     server_src = (ROOT / "webview_server.py").read_text(encoding="utf-8")
 
-    r.check("批量頁有拖放區 #batch-drop", 'id="batch-drop"' in html and
-            'class="drop batch-drop"' in html)
-    # Wave 14：加入檔案改由「拖放框點擊」直接叫出原生選檔，按鈕已移除。
-    r.check("點拖放框即叫出原生選檔（pickBatchFiles）",
+    # Wave 16：拖放框整個取消（瀏覽器不給本機路徑，而批次只引用路徑不複製）。
+    # 改為驗「確實沒有拖放區、但有用文字說明原因、且恢復了加入檔案按鈕」。
+    r.check("批量頁已移除拖放區 #batch-drop",
+            'id="batch-drop"' not in html and 'batch-drop' not in app_js and
+            'id="batch-nodrop"' in html)
+    r.check("移除拖放後在原位說明原因",
+            'batch.noDropTitle' in html and 'batch.noDropWhy' in html)
+    r.check("恢復「加入檔案」按鈕並綁 pickBatchFiles",
             "function pickBatchFiles(" in app_js and
-            'batchDrop.addEventListener("click", () => pickBatchFiles())' in app_js and
-            'id="btn-batch-add"' not in html)
+            'id="btn-batch-add"' in html and
+            'addEventListener("click", () => {\n    pickBatchFiles();' in app_js)
     r.check("選到路徑後走 batchAddPath（零複製）",
             "await API.batchAddPath(p, opts)" in app_js)
-    r.check("拖放會嘗試取出本機絕對路徑",
-            "function extractLocalPaths(" in app_js and
-            "text/uri-list" in app_js and "file://" in app_js)
-    # Wave 14／需求 7：上傳路由已徹底移除，拿不到路徑時改為引導使用者選檔／貼路徑。
-    r.check("拖放拿不到路徑時不再上傳，改提示本機路徑",
+    # Wave 16：拖放整條鏈路（含 extractLocalPaths）已移除。
+    r.check("拖放處理代碼已徹底移除",
+            "function extractLocalPaths(" not in app_js and
+            "text/uri-list" not in app_js)
+    # 上傳路由自 Wave 14 起已刪除，現在連拖放都不存在，更不可能回退上傳。
+    r.check("批量頁不存在任何上傳路徑",
             "await API.batchAdd(" not in app_js and
-            "batch.dropNoPath" in app_js and "async batchAdd(" not in bridge)
+            "async batchAdd(" not in bridge and
+            "batch.dropNoPath" not in app_js)
     r.check("bridge 有 pickFiles() 打 /api/pick-files",
             "async pickFiles()" in bridge and '"/api/pick-files"' in bridge)
     r.check("後端有原生選檔與 /api/pick-files 路由",
