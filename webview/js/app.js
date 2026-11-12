@@ -1256,6 +1256,9 @@
       return;
     }
     batchItems.forEach((it, idx) => host.appendChild(batchRow(it, idx)));
+    // 「可拖曳」提示只在真的能拖时出现（≥2 个 pending），否则是噪音。
+    const hint = $("#batch-move-hint");
+    if (hint) hint.hidden = batchItems.filter(x => x.status === "pending").length < 2;
   }
 
   /* ── 佇列排序 ──────────────────────────────────────────────────────────

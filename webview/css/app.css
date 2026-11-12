@@ -655,9 +655,17 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 /* 佇列排序：只有 pending 的列可拖（draggable 由 JS 設），其餘列仍接受
    dragover 以顯示放置位置，但拖不動。 */
 .b-row[draggable="true"] { cursor: grab; }
+.b-row[draggable="true"]:hover { border-color: var(--accent); }
 .b-row.dragging { opacity: .45; cursor: grabbing; }
 .b-row.drop-before { box-shadow: 0 -2px 0 0 var(--accent) inset; }
 .b-row.drop-after { box-shadow: 0 2px 0 0 var(--accent) inset; }
+/* 「可拖曳」提示小徽标：靠右，弱化存在感但能看见。 */
+.hint-badge {
+  margin-left: auto; font-size: 11px; font-weight: 400;
+  color: var(--muted); border: 1px dashed var(--line);
+  border-radius: 999px; padding: 1px 9px; white-space: nowrap;
+}
+.hint-badge[hidden] { display: none; }
 .b-row .ic {
   grid-area: ic; color: var(--accent-strong); font-size: 11px; text-align: center;
 }
