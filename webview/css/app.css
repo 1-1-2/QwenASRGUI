@@ -423,14 +423,45 @@ button { font-family: inherit; }
    顯示在 chip 的模式標籤上。 */
 .drop-mode.is-compact .dm-why { display: none; }
 
-/* 已選檔案上的模式標籤：綠＝可接續，灰＝一次性 */
+/* 已選檔案上的模式標籤：綠＝可接續（本機直引），灰＝可接續但要重傳 */
 .chip-mode {
   font-size: 11px; font-weight: 600; line-height: 1;
   padding: 3px 6px; border-radius: var(--r-pill);
   white-space: nowrap;
 }
 .chip-mode.is-ok { color: var(--accent-strong); background: var(--accent-soft); }
-.chip-mode.is-once { color: var(--muted); background: var(--panel-2, rgba(127,127,127,.12)); }
+.chip-mode.is-warn { color: var(--warn-ink, #8a5a00); background: var(--warn-soft, rgba(224,165,59,.16)); }
+
+/* 斷點記錄：摘要一行可展開，右側清除
+   <details>/<summary> 原生支援鍵盤與摺疊，不需要額外 JS 狀態。 */
+.ckpt-bar {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding-top: 10px; border-top: 1px solid var(--line);
+}
+.ckpt-box { flex: 1; min-width: 0; }
+.ckpt-box > summary {
+  cursor: pointer; font-size: 12.5px; color: var(--ink-2);
+  padding: 4px 0; list-style: none;
+}
+.ckpt-box > summary::-webkit-details-marker { display: none; }
+.ckpt-box > summary::before { content: "▸ "; color: var(--muted); }
+.ckpt-box[open] > summary::before { content: "▾ "; }
+.ckpt-box > summary:hover { color: var(--ink); }
+.ckpt-list { margin-top: 8px; max-height: 260px; overflow: auto; }
+.ckpt-list .ck-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 62px 96px 76px;
+  gap: 8px; align-items: baseline;
+  padding: 5px 2px; border-bottom: 1px solid var(--line);
+  font-size: 11.5px; color: var(--ink-2);
+}
+.ckpt-list .ck-row.head {
+  color: var(--muted); font-weight: 600; position: sticky; top: 0;
+  background: var(--panel);
+}
+.ckpt-list .ck-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ckpt-list .ck-row .ck-name { font-family: var(--font-mono); }
+.ckpt-list .ck-row .ck-num { text-align: right; }
+.ckpt-list .ck-more { font-size: 11.5px; color: var(--muted); padding: 6px 2px; }
 /* Wave 12: batch page drop zone (same look as the recognition page).
    Wave 14: it now owns a full row by itself; the tool buttons sit below it.
    Wave 16: the drop zone is gone — Chromium never exposes a dropped file's

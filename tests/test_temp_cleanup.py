@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QWENASR_WEBVIEW_BUILD", "1")
 
 from webview_backend import WebBackend            # noqa: E402
-from webview_server import (prune_finished_state,  # noqa: E402
+from webview_server import (prune_checkpoints,    # noqa: E402
                             sweep_stale_uploads)
 
 
@@ -72,7 +72,7 @@ def main() -> int:
         res2 = sweep_stale_uploads(min_age=600, root=root)
         r.check("重複呼叫安全", res2["removed"] == 0 and res2["failed"] == 0, str(res2))
 
-    print("\n[2] 拖放（上传副本）：每次都是独立任务 —— 也就是「不支持接续」")
+    print("\n[2] 拖放（上传副本）：靠内容哈希认出同一个档案 → 可接续")
     with tempfile.TemporaryDirectory() as raw:
         d = Path(raw)
         payload = b"RIFF" + b"\x11\x22" * 500_000
@@ -81,12 +81,20 @@ def main() -> int:
         for p in (a, b):
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(payload)
-        id_a = WebBackend._source_identity(a)
-        id_b = WebBackend._source_identity(b)
-        r.check("内容相同、临时目录不同 → 不同任务（不接续）",
-                id_a[0] != id_b[0], f"{id_a[0]} / {id_b[0]}")
-        r.check("同一路径重复调用稳定（同一任务内不会漂移）",
-                WebBackend._source_identity(a)[0] == id_a[0])
+        id_a = WebBackend._source_identity(a, "課程.wav", upload=True)
+        id_b = WebBackend._source_identity(b, "課程.wav", upload=True)
+        r.check("内容相同、临时目录不同 → 同一个任务（可接续）",
+                id_a[0] == id_b[0], f"{id_a[0]} / {id_b[0]}")
+        r.check("指紋的 src 分量也相同（不会误判成参数变更）", id_a[1] == id_b[1],
+                f"{id_a[1]} / {id_b[1]}")
+
+        c = d / "up3" / "upload.wav"
+        c.parent.mkdir(parents=True, exist_ok=True)
+        c.write_bytes(payload[:-1] + b"\x99")            # 尾端差一个 byte
+        r.check("内容不同 → 不同任务",
+                WebBackend._source_identity(c, "課程.wav", upload=True)[0] != id_a[0])
+        r.check("档名不同 → 不同任务",
+                WebBackend._source_identity(a, "另一堂.wav", upload=True)[0] != id_a[0])
 
     print("\n[3] 本機路徑以路徑為身分（點選／批次可續跑）")
     with tempfile.TemporaryDirectory() as raw:
@@ -105,9 +113,10 @@ def main() -> int:
                 ix[1].startswith("src=100/") and ix[1] != iy2[1],
                 f"{ix[1]} vs {iy2[1]}")
 
-    print("\n[4] longform_state：只清「已完成且很久沒動」的逐段記錄")
+    print("\n[4] 斷點記錄：按「保留天數」清理久未續跑的記錄（任何狀態都適用）")
     with tempfile.TemporaryDirectory() as raw:
         d = Path(raw)
+        old = time.time() - 40 * 86400
         _mk(d / "done_old.segments.jsonl", 1000, 40 * 86400)
         _mk(d / "paused_old.segments.jsonl", 2000, 40 * 86400)
         _mk(d / "done_fresh.segments.jsonl", 4000, 60)
@@ -117,24 +126,28 @@ def main() -> int:
                     "next_frame INTEGER, next_index INTEGER, status TEXT, "
                     "updated_at REAL, fingerprint TEXT DEFAULT '', "
                     "vad_state TEXT DEFAULT '', out_name TEXT DEFAULT '')")
-        con.executemany("INSERT INTO progress VALUES (?,0,1,?,0,'','','')", [
-            ("done_old", "done"), ("paused_old", "paused"), ("done_fresh", "done")])
+        con.executemany("INSERT INTO progress VALUES (?,0,1,?,?,'','','')", [
+            ("done_old", "done", old), ("paused_old", "paused", old),
+            ("done_fresh", "done", time.time())])
         con.commit(); con.close()
-        res = prune_finished_state(max_age_days=30, state_dir=d)
-        r.check("刪了 2 份（done+舊、無斷點孤兒）", res["removed"] == 2, str(res))
-        r.check("釋放位元組算對", res["freed"] == 9000, str(res["freed"]))
-        r.check("未完成的任務絕不刪", (d / "paused_old.segments.jsonl").is_file())
+        # days=0 → 使用者選了永久保留，什麼都不動
+        r.check("保留天數 0 = 永久保留",
+                prune_checkpoints(0, state_dir=d)["removed"] == 0)
+        res = prune_checkpoints(30, state_dir=d)
+        r.check("刪了 3 份（done 舊、paused 舊、無斷點孤兒）", res["removed"] == 3, str(res))
+        r.check("釋放位元組算對", res["freed"] == 11000, str(res["freed"]))
+        r.check("久未續跑的 paused 也會清（按天數，不看狀態）",
+                not (d / "paused_old.segments.jsonl").exists())
         r.check("30 天內的不刪", (d / "done_fresh.segments.jsonl").is_file())
         con = sqlite3.connect(d / "checkpoints.db")
         try:
             rows = {r[0] for r in con.execute("SELECT task_id FROM progress")}
         finally:
             con.close()
-        r.check("被刪記錄對應的斷點列也清掉", "done_old" not in rows, str(sorted(rows)))
-        r.check("保留的任務斷點列還在",
-                {"paused_old", "done_fresh"} <= rows, str(sorted(rows)))
-        r.check("重複呼叫安全",
-                prune_finished_state(max_age_days=30, state_dir=d)["removed"] == 0)
+        r.check("被刪記錄對應的斷點列也清掉",
+                "done_old" not in rows and "paused_old" not in rows, str(sorted(rows)))
+        r.check("保留的任務斷點列還在", "done_fresh" in rows, str(sorted(rows)))
+        r.check("重複呼叫安全", prune_checkpoints(30, state_dir=d)["removed"] == 0)
 
     print(f"\nResult: {sum(r.items)}/{len(r.items)} passed")
     return 0 if r.ok else 1

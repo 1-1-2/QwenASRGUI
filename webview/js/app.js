@@ -27,6 +27,8 @@
     $("#view-ctx").textContent = "";
     if (name === "batch") renderBatch();
     if (name === "model") { renderModel(); renderDownloadCenter(); }
+    // 設定頁的斷點條數會隨任務變化，每次進來重讀一次，避免顯示開機當下的舊值。
+    if (name === "settings") refreshCheckpoints();
     if (name === "record") { enumerateMics(); refreshMicPerm(); }   // 列舉裝置 + 麥克風權限狀態
   }
 
@@ -206,11 +208,11 @@
     const s = await API.getStatus();
     _lastStatus = s;
     // 沒有原生選檔能力時（非 Windows／精簡環境），「點選」其實也走 <input
-    // type=file>，兩種來源就都是暫存副本、都不支援接續。這時候不能留一句
-    // 「僅點選支援中斷接續」在那裡 —— 宣稱的能力必須與實際相符。
+    // type=file>，兩種來源都是暫存副本、都要重新上傳。文案要跟著換，
+    // 不能還寫「點選＝重新選同一個檔案即可」。
     if (s.pickerSupported === false) {
-      const note = $("#drop-mode");
-      if (note) note.hidden = true;
+      const main = $("#drop-mode .dm-main");
+      if (main) { main.dataset.i18n = "file.modeHintNoPicker"; I18N.apply(main); }
     }
     // 批次頁的「本次執行設定」要顯示模型與推理方式，兩者只在 status 裡；
     // 這裡補一次重繪，值沒變時 renderBatchConfig 自己會跳過重建。
@@ -349,16 +351,17 @@
     drop.classList.add("has-file");
     const meta = f.sizeSec ? T("batch.seconds", null, { n: f.sizeSec })
       : (f.size ? (f.size / 1048576).toFixed(1) + " MB" : "");
-    // 模式標籤：使用者必須一眼看出「這一份能不能在取消後接著跑」。
-    // 有 path（原生選檔）＝直接引用本機檔案，可接續；
-    // 只有 File 物件（拖放／瀏覽器選檔）＝暫存副本，一次性。
+    // 模式標籤：兩種來源都能接續，差別在「要不要重傳」。
+    //   有 path（原生選檔）＝直接引用本機檔案，重新選同一個檔案即可接續；
+    //   只有 File 物件（拖放／瀏覽器選檔）＝暫存副本，靠內容哈希認得同一個
+    //   檔案，但重新拖入時整份要再上傳一次。
     const byPath = !f.file && !!f.path;
     const tag = byPath ? T("file.modeLocal", "本機直引") : T("file.modeDragChip", "拖放副本");
     const tagNote = byPath ? T("file.modeLocalNote", "可中斷接續")
-                           : T("file.modeDragNote", "一次性 · 不可接續");
+                           : T("file.modeDragNote", "可接續 · 需重新上傳");
     drop.innerHTML = `<span class="file-chip">${escapeHtml(f.name)}
       ${meta ? `<span class="meta">${meta}</span>` : ""}
-      <span class="chip-mode ${byPath ? "is-ok" : "is-once"}">${escapeHtml(tag)} · ${escapeHtml(tagNote)}</span>
+      <span class="chip-mode ${byPath ? "is-ok" : "is-warn"}">${escapeHtml(tag)} · ${escapeHtml(tagNote)}</span>
       <button class="x" title="${T("batch.remove", "移除")}">✕</button></span>`;
     drop.querySelector(".x").addEventListener("click", ev => { ev.stopPropagation(); setFile(null); });
     syncActionButtons();
@@ -2405,6 +2408,9 @@
     // 輸出資料夾：顯示真實路徑（唯讀）。以前的這一列只有標題沒有值，
     // 使用者無從確認字幕到底寫到哪裡。
     if ($("#set-outputdir-path")) $("#set-outputdir-path").value = s.outputDir || "";
+    // 斷點保留天數 + 目前留存的記錄（條數／占用／明細）
+    if ($("#set-ckpt-days")) $("#set-ckpt-days").value = (s.checkpointDays ?? 30);
+    refreshCheckpoints();
     applyTheme(s.theme || "light");                 // 啟動即套用深/淺色
     $("#set-mirror").value = s.mirror || "";
     $("#set-ffmpeg").value = s.ffmpeg || "";
@@ -2681,6 +2687,86 @@
       if (span) { span.dataset.i18n = "set.tempClean"; I18N.apply(btn); }
     }
   });
+
+  // 斷點記錄：摘要一行（條數 + 占用）可展開明細，右側一鍵清除。
+  // 摘要與明細都是動態文字，不能掛 data-i18n（會被 I18N.apply 覆蓋成 key），
+  // 所以改在語言切換後重繪一次。
+  function ckStateLabel(s) {
+    const map = {
+      done: "batch.stDone", running: "batch.stRunning", new: "batch.stPending",
+      paused: "set.ckptStPaused", orphan: "set.ckptStOrphan",
+    };
+    return map[s] ? T(map[s], s) : (s || "—");
+  }
+  function ckWhen(ts) {
+    if (!ts) return "—";
+    try {
+      const d = new Date(ts * 1000);
+      const p = n => String(n).padStart(2, "0");
+      const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+      // 今年只顯示月/日 + 時分，省下 4 個字元；跨年才帶完整年份，
+      // 否則「最後活動」欄永遠被省略號截斷。
+      return d.getFullYear() === new Date().getFullYear()
+        ? `${p(d.getMonth() + 1)}/${p(d.getDate())} ${hm}`
+        : `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())}`;
+    } catch (e) { return "—"; }
+  }
+  async function refreshCheckpoints() {
+    const sum = $("#ckpt-summary"), list = $("#ckpt-list"), clr = $("#btn-clear-ckpt");
+    if (!sum || !list) return;
+    let r;
+    try { r = await API.getCheckpoints(); } catch (e) { return; }
+    if (r.retentionDays != null && $("#set-ckpt-days") &&
+        document.activeElement !== $("#set-ckpt-days")) {
+      $("#set-ckpt-days").value = r.retentionDays;
+    }
+    const n = r.count || 0;
+    sum.textContent = n
+      ? T("set.ckptSummary", null, { n, mb: fmtBytes(r.bytes || 0) })
+      : T("set.ckptEmpty", "目前沒有斷點記錄");
+    if (clr) clr.disabled = !n;
+    if (!n) { list.innerHTML = ""; return; }
+    const head = `<div class="ck-row head">`
+      + `<span>${esc(T("set.ckptColTask", "任務／輸出檔"))}</span>`
+      + `<span>${esc(T("set.ckptColState", "狀態"))}</span>`
+      + `<span>${esc(T("set.ckptColTime", "最後活動"))}</span>`
+      + `<span class="ck-num">${esc(T("set.ckptColSize", "占用"))}</span></div>`;
+    const rows = (r.items || []).map(it => {
+      const name = it.name || it.task;
+      return `<div class="ck-row">`
+        + `<span class="ck-name" title="${esc(name)}">${esc(name)}</span>`
+        + `<span>${esc(ckStateLabel(it.status))}</span>`
+        + `<span>${esc(ckWhen(it.updatedAt))}</span>`
+        + `<span class="ck-num">${esc(it.bytes ? fmtBytes(it.bytes) : "—")}</span></div>`;
+    }).join("");
+    const extra = (r.total || 0) - (r.items || []).length;
+    list.innerHTML = head + rows + (extra > 0
+      ? `<div class="ck-more">${esc(T("set.ckptMore", null, { n: extra }))}</div>` : "");
+  }
+  $("#set-ckpt-days") && $("#set-ckpt-days").addEventListener("change", async e => {
+    let v = parseInt(e.target.value, 10);
+    if (!isFinite(v) || v < 0) v = 0;
+    v = Math.min(3650, v);
+    e.target.value = v;
+    await API.setSettings({ checkpointDays: v });
+    refreshCheckpoints();
+  });
+  $("#btn-clear-ckpt") && $("#btn-clear-ckpt").addEventListener("click", async () => {
+    const btn = $("#btn-clear-ckpt");
+    const span = btn.querySelector("[data-i18n]");
+    btn.disabled = true;
+    if (span) { span.dataset.i18n = "set.ckptClearing"; I18N.apply(btn); }
+    try {
+      await API.clearCheckpoints();
+      await refreshCheckpoints();
+    } catch (e) {
+      logLine("✕ " + (e.message || e));
+    } finally {
+      if (span) { span.dataset.i18n = "set.ckptClear"; I18N.apply(btn); }
+      refreshCheckpoints();      // 清除失敗時把按鈕狀態還原成實際條數
+    }
+  });
+  if (window.I18N && I18N.onAfterLang) I18N.onAfterLang(() => refreshCheckpoints());
 
   // ── 共用工具 ────────────────────────────────────────────
   function fmtClock(sec) {

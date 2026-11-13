@@ -135,13 +135,16 @@
     "file.cancel": ["取消", "取消", "Cancel"],
     "file.canceling": ["正在取消…", "正在取消…", "Canceling…"],
     "file.cancelSent": ["已送出取消，正在保存已完成的部分…", "已发出取消，正在保存已完成的部分…", "Cancel requested - saving what is already transcribed…"],
-    // 拖放 vs 點選的能力差異：這句是需求指定的主文案，放在拖放區正下方。
-    "file.modeHint": ["僅點選支援中斷接續，拖放因瀏覽器限制不支援。", "仅点选支持中断接续，拖放因浏览器限制不支持。", "Only click-to-pick can resume after a stop; drag-and-drop cannot (browser limitation)."],
-    "file.modeHintWhy": ["點選直接引用本機檔案（不複製、不佔暫存）；拖放會先複製一份到系統暫存資料夾，請求結束即刪除，中止後沒有可接續的來源。", "点选直接引用本机文件（不复制、不占临时空间）；拖放会先复制一份到系统临时文件夹，请求结束即删除，中止后没有可接续的来源。", "Click-to-pick references your file in place (no copy, no temp space). Drag-and-drop copies the whole file into the system temp folder and deletes it when the run ends, so nothing is left to resume from."],
+    // 拖放 vs 點選的差異：兩者都能接續，差別在「要不要重傳」。
+    // 拖放的副本每次落在隨機臨時目錄，靠內容哈希認出是同一個檔案，所以
+    // 重新拖入同一支檔案接得上，但整份檔案要再上傳一次。
+    "file.modeHint": ["中斷後都能接續：點選＝重新選同一個檔案即可；拖放＝需重新拖入同一檔案（會重新上傳一次）。", "中断后都能接续：点选＝重新选同一个文件即可；拖放＝需重新拖入同一文件（会重新上传一次）。", "Both can resume after a stop: click-to-pick just needs the same file picked again; drag-and-drop needs the same file dropped again (it is re-uploaded)."],
+    "file.modeHintWhy": ["拖放會先把整份檔案複製到系統暫存資料夾（瀏覽器不交出真實路徑），請求結束即刪；斷點以檔案內容辨識，所以重新拖入同一支檔案仍接得上，只是要再傳一遍。點選直接引用本機檔案，不重傳。", "拖放会先把整份文件复制到系统临时文件夹（浏览器不交出真实路径），请求结束即删除；断点以文件内容识别，所以重新拖入同一个文件仍接得上，只是要再传一遍。点选直接引用本机文件，不重传。", "Drag-and-drop first copies the whole file into the system temp folder (the browser never reveals its real path) and deletes it when the run ends. Breakpoints are keyed by file content, so dropping the same file again still resumes - it just uploads once more. Click-to-pick references your file in place with no re-upload."],
+    "file.modeHintNoPicker": ["中斷後可接續：重新選擇同一檔案即可（會重新上傳一次）。", "中断后可接续：重新选择同一个文件即可（会重新上传一次）。", "You can resume after a stop: pick the same file again (it is re-uploaded)."],
     "file.modeLocal": ["本機直引", "本机直引", "In place"],
     "file.modeLocalNote": ["可中斷接續", "可中断接续", "resumable"],
     "file.modeDragChip": ["拖放副本", "拖放副本", "Temp copy"],
-    "file.modeDragNote": ["一次性 · 不可接續", "一次性 · 不可接续", "one-shot"],
+    "file.modeDragNote": ["可接續 · 需重新上傳", "可接续 · 需重新上传", "resumable · re-uploads"],
     "batch.cancel": ["取消佇列", "取消队列", "Cancel queue"],
     "batch.clear": ["清除已完成", "清除已完成", "Clear finished"],
     "batch.resumeHint": ["服務端佇列：重新整理頁面仍會保留進度與斷點",
@@ -410,9 +413,24 @@
     "set.nameOverwrite": ["覆蓋", "覆盖", "Overwrite"],
     "set.nameHash": ["雜湊後綴", "哈希后缀", "Hash"],
     "set.tempTitle": ["暫存檔清理", "临时文件清理", "Temp files"],
-    "set.tempDesc": ["轉檔時上傳的音檔會先複製到系統暫存資料夾，正常結束就刪除；程式崩潰或被強制結束時，整份副本會留在系統碟上。啟動時會自動清一次，也可以在這裡手動清（只清 10 分鐘前、且只清本程式建立的目錄）。已完成的逐段記錄會在啟動時按 30 天清理，未完成的斷點一律保留。", "转档时上传的音频会先复制到系统临时文件夹，正常结束就删除；程序崩溃或被强制结束时，整份副本会留在系统盘上。启动时会自动清一次，也可以在这里手动清（只清 10 分钟前、且只清本程序创建的目录）。已完成的逐段记录会在启动时按 30 天清理，未完成的断点一律保留。", "Uploads are copied into the system temp folder and deleted when the run ends. If the app crashes or is force-closed, the full copy stays on your system drive. It is swept once at startup; you can also clean it here (only folders this app created, older than 10 minutes). Finished per-segment records are pruned at startup after 30 days; unfinished breakpoints are never touched."],
+    "set.tempDesc": ["轉檔時上傳的音檔會先複製到系統暫存資料夾，正常結束就刪除；程式崩潰或被強制結束時，整份副本會留在系統碟上。啟動時會自動清一次，也可以在這裡手動清（只清 10 分鐘前、且只清本程式建立的目錄）。", "转档时上传的音频会先复制到系统临时文件夹，正常结束就删除；程序崩溃或被强制结束时，整份副本会留在系统盘上。启动时会自动清一次，也可以在这里手动清（只清 10 分钟前、且只清本程序创建的目录）。", "Uploads are copied into the system temp folder and deleted when the run ends. If the app crashes or is force-closed, the full copy stays on your system drive. It is swept once at startup; you can also clean it here (only folders this app created, older than 10 minutes)."],
     "set.tempClean": ["立即清理", "立即清理", "Clean now"],
     "set.tempCleaning": ["清理中…", "清理中…", "Cleaning…"],
+    "set.ckptTitle": ["斷點記錄", "断点记录", "Breakpoints"],
+    "set.ckptDesc": ["取消或中斷的任務會留下斷點與逐段記錄，用來接續。超過保留天數沒有續跑，會在啟動時自動清理；設 0 表示永久保留。清除只刪狀態，不影響 subtitles 裡已產生的字幕。", "取消或中断的任务会留下断点与逐段记录，用来接续。超过保留天数没有续跑，会在启动时自动清理；设 0 表示永久保留。清除只删状态，不影响 subtitles 里已产生的字幕。", "Stopped or cancelled runs leave a breakpoint plus per-segment records so they can continue. Breakpoints untouched for longer than the retention period are pruned at startup; 0 keeps them forever. Clearing removes state only - subtitles already in the output folder are untouched."],
+    "set.ckptKeep": ["保留天數", "保留天数", "Keep for"],
+    "set.ckptDayUnit": ["天（0 = 永久保留）", "天（0 = 永久保留）", "days (0 = keep forever)"],
+    "set.ckptSummary": ["已留存 {n} 條斷點記錄（點擊查看詳情），占用 {mb}", "已留存 {n} 条断点记录（点击查看详情），占用 {mb}", "{n} breakpoint record(s) kept (click for details), using {mb}"],
+    "set.ckptEmpty": ["目前沒有斷點記錄", "目前没有断点记录", "No breakpoint records"],
+    "set.ckptClear": ["清除", "清除", "Clear"],
+    "set.ckptClearing": ["清除中…", "清除中…", "Clearing…"],
+    "set.ckptMore": ["另有 {n} 條未列出", "另有 {n} 条未列出", "{n} more not listed"],
+    "set.ckptColTask": ["任務／輸出檔", "任务／输出文件", "Task / output"],
+    "set.ckptColState": ["狀態", "状态", "State"],
+    "set.ckptColTime": ["最後活動", "最后活动", "Last activity"],
+    "set.ckptColSize": ["占用", "占用", "Size"],
+    "set.ckptStPaused": ["已中止", "已中止", "Stopped"],
+    "set.ckptStOrphan": ["無斷點列", "无断点列", "No record"],
     "dl.importDirHint": ["用途：從別台電腦／瀏覽器手動下載好模型檔後，把「裝著這些檔案的資料夾」貼進來，按「匯入並驗證」即會核對大小與 SHA256 並複製到正確位置；不會重新下載。", "用途：从别的电脑／浏览器手动下载好模型文件后，把“装着这些文件的文件夹”贴进来，按“导入并校验”会核对大小与 SHA256 并复制到正确位置；不会重新下载。", "Purpose: after downloading model files manually (another machine or a browser), paste the folder that contains them and click Import & verify — sizes and SHA256 are checked, files are copied into place, nothing is re-downloaded."],
 
     "batch.runAll": ["全部開始", "全部开始", "Start all"],
@@ -684,6 +702,7 @@
     "dl.runtimeVadOk": ["VAD 已就緒（隨套件附帶，或已在模型目錄）", "VAD 已就绪（随套件附带，或已在模型目录）", "VAD ready (bundled, or present in the model directory)"],
     "dl.runtimeVadMissing": ["找不到 silero VAD 模型，需重新安裝或手動放入 ov_models", "找不到 silero VAD 模型，需重新安装或手动放入 ov_models", "silero VAD model not found; reinstall or place it in ov_models"],
     "set.tempDone": ["已清理 {n} 個暫存目錄，釋放 {mb} MB", "已清理 {n} 个临时目录，释放 {mb} MB", "Cleaned {n} temporary folder(s), freed {mb} MB"],
+    "set.ckptCleared": ["已清除 {n} 條斷點記錄", "已清除 {n} 条断点记录", "Cleared {n} breakpoint record(s)"],
   };
 
   function renderMsg(key, vars, fallbackText) {

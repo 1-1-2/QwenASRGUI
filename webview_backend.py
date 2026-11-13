@@ -1357,10 +1357,12 @@ class WebBackend:
                                 except OSError:
                                     pass
 
-                # 身分來源：本機路徑（點選／批次）→ 抽出的 audio_path；拖放上傳
-                # → 原始上傳檔（隨機臨時路徑，天然一任務一次，不支援接續）。
+                # 身分來源：本機路徑（點選／批次）沿用 audio_path（影片會是抽出的
+                # wav）；拖放上傳用原本那個檔的內容身分 —— 臨時路徑每次不同，
+                # 但內容相同，所以重拖同一支檔案仍認得是同一個任務、能接續。
                 _ident_path = path if opts.get("uploaded") else audio_path
-                task_id, _src_part = self._source_identity(_ident_path)
+                task_id, _src_part = self._source_identity(
+                    _ident_path, opts.get("name") or "", bool(opts.get("uploaded")))
                 # Wave 14／需求 3：讓後續 progress / progress-detail 事件都帶上
                 # taskId，前端才能分辨「同一檔案的續跑」與「換了檔案」。
                 self._current_task_id = task_id
@@ -1465,14 +1467,12 @@ class WebBackend:
                     limit_sec=limit_sec)
 
                 def _discard_if_one_shot():
-                    """一次性來源（拖放副本／試跑）的斷點永遠接不上，用完即清。
+                    """試跑用完即清：每次都只跑前 5 分鐘，斷點永遠不會被續用。
 
-                    拖放的副本在請求結束就被刪、task_id 取自隨機臨時路徑，
-                    下一支檔案必然是新任務；試跑每次也只跑前 5 分鐘。留著
-                    只會讓 longform_state 越長越大。必須在 finalize 之後呼叫
-                    —— 那時 JSONL 已經用來重建過 rich.json。
+                    拖放上傳**不在此列** —— 它用內容身分，重拖同一支檔案會
+                    接上同一個 task_id，斷點必須保留。
                     """
-                    if not (opts.get("uploaded") or trial):
+                    if not trial:
                         return
                     try:
                         runner.discard_state()
@@ -1494,7 +1494,7 @@ class WebBackend:
                     _discard_if_one_shot()
                     raise RuntimeError(
                         "已取消；已完成字幕已保存。"
-                        + ("拖放方式不支持接续（临时副本已删除），重新拖入会从头开始。"
+                        + ("重新拖入同一檔案即可接續（會重新上傳一次）。"
                            if opts.get("uploaded")
                            else "重新选择同一文件可从断点继续。"))
                 srt = runner.out_srt
@@ -1734,21 +1734,21 @@ class WebBackend:
         return True
 
     # ── 輸入身分（task_id / 指紋的 src 分量）───────────────────────────
-    @staticmethod
-    def _source_identity(path):
+    _ID_SAMPLE_BYTES = 1 << 20        # 首尾各抽 1MB
+
+    @classmethod
+    def _source_identity(cls, path, name: str = "", upload: bool = False):
         """回傳 ``(task_id, 指紋的 src 分量)``。
 
-        **以「解析後的路徑 + 大小/修改時間」為身分**，這是原本的算法，刻意
-        保留：
+        本機來源（點選／批次）用「解析後路徑 + 大小/修改時間」，這是原本的
+        算法，既有斷點不受影響。
 
-        * 點選／批次引用的是使用者真正的檔案，路徑穩定 → 斷點能接續；
-        * 拖放是「上傳一份副本」，副本落在隨機臨時目錄（``asr_web_xxxx``），
-          請求結束就刪除。路徑每次不同 → 每次都是獨立任務 → **不支援接續**，
-          與介面文案一致（見 file.modeHint）。
-
-        曾經考慮改用「內容哈希」讓拖放也能接續，但那樣使用者必須把整份檔案
-        重新上傳一次才能接上，對多 GB 的素材等於沒有續傳；不如把能力差異講
-        清楚，把接續留給點選。
+        **上傳來源（拖放）改用內容身分**：檔名＋大小＋首尾各 1MB 抽樣。
+        拖放的副本每次落在不同的隨機臨時目錄（``asr_web_xxxx``），若拿臨時
+        路徑當身分，同一支錄音「取消後重拖一次」就變成另一個任務，斷點永遠
+        接不上 —— 續跑等於不存在。用內容身分則同一個檔案無論上傳幾次，都
+        認得是同一個任務，斷點、同名輸出檔都接得上（代价是重拖時要再上傳
+        一次整份檔案，介面已如實說明）。
         """
         p = Path(path)
         try:
@@ -1756,8 +1756,22 @@ class WebBackend:
             size, mtime = int(st.st_size), int(st.st_mtime)
         except OSError:
             size, mtime = 0, 0
-        return (hashlib.sha1(str(p.resolve()).encode("utf-8")).hexdigest()[:12],
-                f"src={size}/{mtime}")
+        if not upload:
+            return (hashlib.sha1(str(p.resolve()).encode("utf-8")).hexdigest()[:12],
+                    f"src={size}/{mtime}")
+        h = hashlib.sha1()
+        h.update(str(name or p.name).encode("utf-8"))
+        h.update(f"|{size}|".encode("ascii"))
+        try:
+            with open(p, "rb") as f:
+                h.update(f.read(cls._ID_SAMPLE_BYTES))
+                if size > cls._ID_SAMPLE_BYTES * 2:
+                    f.seek(-cls._ID_SAMPLE_BYTES, os.SEEK_END)
+                    h.update(f.read(cls._ID_SAMPLE_BYTES))
+        except OSError:
+            pass
+        digest = h.hexdigest()
+        return digest[:12], f"src={size}/{digest[:16]}"
 
     # ── 暫存檔清理 ──────────────────────────────────────────────────
     def cleanup_temp(self, min_age_sec: float = 600) -> dict:
@@ -1777,6 +1791,114 @@ class WebBackend:
         except Exception:
             pass
         return res
+
+    # ── 斷點記錄（longform_state）──────────────────────────────────
+    def state_dir(self) -> Path:
+        """斷點與逐段記錄的目錄（BASE_DIR 可被測試替換，故不直接用 app_paths）。"""
+        return Path(BASE_DIR) / "longform_state"
+
+    def checkpoints_info(self, limit: int = 100) -> dict:
+        """斷點記錄概況：條數、占用空間、最近 N 筆明細。
+
+        只讀，不刪任何東西。明細給設定頁的「查看詳情」用；超過 limit 筆時
+        只回最近的，另附 total 讓前端說明「還有 n 筆」。
+        """
+        import sqlite3
+        d = self.state_dir()
+        info = {"count": 0, "bytes": 0, "retentionDays": self._ckpt_days(),
+                "items": [], "total": 0}
+        if not d.is_dir():
+            return info
+        rows = []
+        db = d / "checkpoints.db"
+        if db.is_file():
+            try:
+                con = sqlite3.connect(str(db), timeout=10)
+                try:
+                    rows = list(con.execute(
+                        "SELECT task_id, status, updated_at, out_name "
+                        "FROM progress ORDER BY updated_at DESC"))
+                finally:
+                    con.close()
+            except sqlite3.Error:
+                rows = []
+        # 有 jsonl 但沒有斷點列的（舊版殘留）也算一條，否則「占用」對不上
+        seen = {r[0] for r in rows}
+        for f in d.glob("*.segments.jsonl"):
+            tid = f.name[:-len(".segments.jsonl")]
+            if tid not in seen:
+                try:
+                    rows.append((tid, "orphan", f.stat().st_mtime, ""))
+                except OSError:
+                    pass
+        total_bytes = 0
+        for name in ("checkpoints.db", "checkpoints.db-wal", "checkpoints.db-shm",
+                     "checkpoints.json"):
+            p = d / name
+            try:
+                if p.is_file():
+                    total_bytes += p.stat().st_size
+            except OSError:
+                pass
+        items = []
+        for tid, status, updated, out_name in rows:
+            jf = d / f"{tid}.segments.jsonl"
+            try:
+                jb = jf.stat().st_size if jf.is_file() else 0
+            except OSError:
+                jb = 0
+            total_bytes += jb
+            items.append({"task": tid, "name": out_name or "", "status": status or "",
+                          "updatedAt": float(updated or 0), "bytes": jb})
+        info["count"] = len(rows)
+        info["total"] = len(rows)
+        info["bytes"] = total_bytes
+        info["items"] = items[:limit]
+        return info
+
+    def clear_checkpoints(self) -> dict:
+        """清空所有斷點記錄（含逐段 jsonl）。
+
+        只刪狀態，不動 ``subtitles/`` 裡已產出的字幕 —— 那些是使用者的成品。
+        正在跑的任務若佔用 DB 會失敗，回報 failed 而不是靜默吞掉。
+        """
+        d = self.state_dir()
+        res = {"removed": 0, "freed": 0, "failed": 0}
+        if not d.is_dir():
+            return res
+        for f in list(d.glob("*.segments.jsonl")):
+            try:
+                size = f.stat().st_size
+                f.unlink()
+                res["removed"] += 1
+                res["freed"] += size
+            except OSError:
+                res["failed"] += 1
+        for name in ("checkpoints.db", "checkpoints.db-wal", "checkpoints.db-shm",
+                     "checkpoints.json", "checkpoints.json.tmp"):
+            p = d / name
+            try:
+                if p.is_file():
+                    size = p.stat().st_size
+                    p.unlink()
+                    res["freed"] += size
+            except OSError:
+                res["failed"] += 1
+        msg = _t.msg("set.ckptCleared", n=res["removed"])
+        self._emit("status", {"message": _t.plain(msg)})
+        try:
+            self.run_log.add(_t.plain(msg), level="info", source="ckpt")
+        except Exception:
+            pass
+        return res
+
+    def _ckpt_days(self) -> int:
+        """斷點保留天數（0 = 永不自動清理）。"""
+        try:
+            v = int(self._settings_raw().get("checkpoint_days", 30))
+        except (TypeError, ValueError):
+            v = 30
+        return max(0, min(3650, v))
 
     def work_in_flight(self) -> bool:
         """是否有正在进行的识别（单文件转写或批量队列）。
@@ -2531,6 +2653,8 @@ class WebBackend:
             # 實際輸出目錄（唯讀顯示）。以前設定頁這一列只有標題沒有值，
             # 使用者無從得知字幕到底落在哪；這裡回真實路徑。
             "outputDir": str(Path(getattr(core, "SRT_DIR", BASE_DIR / "subtitles"))),
+            # 斷點保留天數（0 = 永不自動清理）
+            "checkpointDays": self._ckpt_days(),
         }
 
     def set_settings(self, patch: dict) -> dict:
@@ -2558,7 +2682,9 @@ class WebBackend:
                    # Wave 12 (問題 1): model memory lifecycle.
                    "autoRelease": "auto_release_model",
                    # 同名檔案策略（suffix / overwrite / hash）
-                   "outNaming": "out_naming"}
+                   "outNaming": "out_naming",
+                   # 斷點保留天數（0 = 永不自動清理）
+                   "checkpointDays": "checkpoint_days"}
         for k, v in patch.items():
             if k in key_map:
                 cur[key_map[k]] = v
@@ -2566,6 +2692,12 @@ class WebBackend:
         # （讀的時候雖然會回退成 suffix，但存一個看不懂的值沒有意義）。
         if "out_naming" in cur and cur["out_naming"] not in ("suffix", "overwrite", "hash"):
             cur["out_naming"] = "suffix"
+        # 天數要能安全轉成 int（前端是數字輸入框，仍可能送空字串）
+        if "checkpoint_days" in cur:
+            try:
+                cur["checkpoint_days"] = max(0, min(3650, int(cur["checkpoint_days"])))
+            except (TypeError, ValueError):
+                cur["checkpoint_days"] = 30
         try:
             f.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:

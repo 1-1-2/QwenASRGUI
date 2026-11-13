@@ -147,58 +147,77 @@ def sweep_stale_uploads(min_age: float = TMP_SWEEP_AGE_SEC,
     return res
 
 
-def prune_finished_state(max_age_days: float = 30,
-                         state_dir: Path | None = None) -> dict:
-    """清掉「已完成且很久沒動」的逐段記錄（longform_state）。
+def prune_checkpoints(days: int, state_dir: Path | None = None) -> dict:
+    """按「保留天數」清掉久未續跑的斷點記錄（longform_state）。
 
-    ``*.segments.jsonl`` 是續跑與 enrich 的原始資料，**未完成的任務一律保留**
-    （paused / running = 還能接續）。只有 status 為 done（或根本沒有斷點列）且
-    超過 ``max_age_days`` 的才會刪 —— 那些任務的 rich.json 早就重建完成，
-    再留著只是佔位。
+    與上一版的分工不同：**任何狀態都適用**。一個 paused 的任務放了 90 天
+    沒人續跑，留著也只是佔空間；``days <= 0`` 表示使用者選了永久保留，
+    直接不動。
 
-    也是「永不拋例外」：開機流程不能被一個壞掉的 DB 卡住。
+    判斷依據是 checkpoint 的 ``updated_at``（沒有這一列時退回 jsonl 的 mtime）。
+    只刪狀態（DB 列 + ``*.segments.jsonl``），**絕不動 ``subtitles/`` 的成品**。
+
+    永不拋例外：這是開機流程的一部分，不能被一個壞掉的 DB 卡住。
     """
     import sqlite3
     import time as _t
-    res = {"removed": 0, "freed": 0}
+    res = {"removed": 0, "freed": 0, "days": int(days or 0)}
     d = Path(state_dir) if state_dir else app_paths.user_path("longform_state")
-    if not d.is_dir():
+    if not d.is_dir() or int(days or 0) <= 0:
         return res
-    cutoff = _t.time() - max_age_days * 86400
-    status: dict[str, str] = {}
+    cutoff = _t.time() - int(days) * 86400
     db = d / "checkpoints.db"
+    rows = []
     if db.is_file():
         try:
             con = sqlite3.connect(str(db), timeout=10)
             try:
-                for tid, st in con.execute("SELECT task_id, status FROM progress"):
-                    status[str(tid)] = str(st)
+                rows = list(con.execute(
+                    "SELECT task_id, updated_at FROM progress"))
             finally:
                 con.close()
         except sqlite3.Error:
-            pass                      # 讀不到就只刪「沒有斷點列」的孤兒檔
+            rows = []                 # 讀不到就只處理「沒有斷點列」的孤兒檔
+    known = set()
     suffix = ".segments.jsonl"
+    for tid, updated in rows:
+        tid = str(tid); known.add(tid)
+        try:
+            if float(updated or 0) >= cutoff:
+                continue
+        except (TypeError, ValueError):
+            continue
+        freed = 0
+        jf = d / f"{tid}{suffix}"
+        try:
+            if jf.is_file():
+                freed = jf.stat().st_size
+                jf.unlink()
+        except OSError:
+            continue                  # 檔案被佔用：整條記錄留著，下次再試
+        try:
+            con = sqlite3.connect(str(db), timeout=10)
+            try:
+                con.execute("DELETE FROM progress WHERE task_id=?", (tid,))
+                con.commit()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            pass
+        res["removed"] += 1
+        res["freed"] += freed
+    # 沒有斷點列的孤兒 jsonl（舊版殘留 / 清過 DB 但沒清檔）
     for f in d.glob("*" + suffix):
+        tid = f.name[:-len(suffix)]
+        if tid in known:
+            continue
         try:
             if f.stat().st_mtime >= cutoff:
                 continue
-            tid = f.name[:-len(suffix)]
-            if status.get(tid) not in (None, "done"):
-                continue              # paused / running：還能接續，不准刪
             size = f.stat().st_size
             f.unlink()
             res["removed"] += 1
             res["freed"] += size
-            if tid in status:
-                try:
-                    con = sqlite3.connect(str(db), timeout=10)
-                    try:
-                        con.execute("DELETE FROM progress WHERE task_id=?", (tid,))
-                        con.commit()
-                    finally:
-                        con.close()
-                except sqlite3.Error:
-                    pass
         except OSError:
             continue
     return res
@@ -408,13 +427,15 @@ class WebViewServer:
                 self.backend.run_log.add(note, level="info", source="temp")
         except Exception:
             pass
-        # 已完成的逐段記錄（30 天）順手收一下；未完成的斷點一律保留。
+        # 依「保留天數」清理久未續跑的斷點記錄（設定頁可調，0 = 永久保留）。
         try:
-            pruned = prune_finished_state()
+            pruned = prune_checkpoints(self.backend._ckpt_days(),
+                                       state_dir=self.backend.state_dir())
             if pruned["removed"]:
                 self.backend.run_log.add(
-                    f"longform_state：清理 {pruned['removed']} 份已完成記錄、"
-                    f"釋放 {pruned['freed'] / (1024 * 1024):.0f} MB",
+                    f"longform_state：清理 {pruned['removed']} 份斷點記錄、"
+                    f"釋放 {pruned['freed'] / (1024 * 1024):.0f} MB"
+                    f"（保留 {pruned['days']} 天）",
                     level="info", source="temp")
         except Exception:
             pass
@@ -506,6 +527,9 @@ class WebViewServer:
                     return self._qr(urlparse(self.path).query)
                 if path == "/api/batch":
                     return self._json(server.batch_queue.snapshot())
+                if path == "/api/checkpoints":
+                    # 唯讀：條數 / 占用 / 明細（設定頁「斷點記錄」）
+                    return self._json(server.backend.checkpoints_info())
                 if path == "/api/logs":
                     limit = None
                     try:
@@ -654,6 +678,9 @@ class WebViewServer:
                         # 設定頁「立即清理」：清 %TEMP% 下本程式遺留的副本。
                         # 只清 10 分鐘前的，避免刪掉此刻正在寫入的那一份。
                         return self._json(server.backend.cleanup_temp())
+                    if path == "/api/checkpoints/clear":
+                        # 只清斷點狀態，不動 subtitles/ 的成品
+                        return self._json(server.backend.clear_checkpoints())
                     if path == "/api/transcribe-path":
                         # 單檔頁「點擊選檔」走原生對話框 → 直接引用本機路徑，
                         # 不複製、不上傳、不產生 %TEMP% 副本（與批次頁同一套）。

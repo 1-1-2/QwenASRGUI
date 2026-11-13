@@ -58,6 +58,15 @@ class FakeBackend:
         self.cleaned_at = min_age_sec
         return {"removed": 2, "freed": 2048, "kept": 0, "failed": 0}
 
+    def checkpoints_info(self, limit=100):
+        return {"count": 2, "total": 2, "bytes": 4096, "retentionDays": 30,
+                "items": [{"task": "t1", "name": "a.srt", "status": "paused",
+                           "updatedAt": 1700000000, "bytes": 2048}]}
+
+    def clear_checkpoints(self):
+        self.ckpt_cleared = True
+        return {"removed": 2, "freed": 4096, "failed": 0}
+
 
 def multipart(name: str, data: bytes = b"RIFF-fake"):
     boundary = "----QwenASRB4Test"
@@ -218,6 +227,20 @@ def main() -> int:
             r.check("手動清理只清 10 分鐘前的",
                     getattr(srv.backend, "cleaned_at", None) == 600,
                     str(getattr(srv.backend, "cleaned_at", None)))
+
+            # ── 設定頁「斷點記錄」：概況（含明細）+ 清除 ──
+            code, info = request(base, "/api/checkpoints")
+            r.check("GET /api/checkpoints 回傳條數與占用",
+                    code == 200 and info.get("count") == 2 and
+                    info.get("bytes") == 4096, str(info)[:120])
+            r.check("明細帶狀態與時間（前端要畫列表）",
+                    info["items"][0]["status"] == "paused" and
+                    info["items"][0]["updatedAt"] > 0)
+            code, cleared = request(base, "/api/checkpoints/clear", "POST", b"{}",
+                                    "application/json")
+            r.check("POST /api/checkpoints/clear 已接通",
+                    code == 200 and cleared.get("removed") == 2 and
+                    srv.backend.ckpt_cleared, str(cleared))
 
             # Wave 11／問題 4 的真正根因：HTTP/1.1 keep-alive 下，/api/batch/start
             # 這類「不讀 body」的 POST 會把前端送的 `{}` 留在連線裡，

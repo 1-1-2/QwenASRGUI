@@ -183,6 +183,8 @@ TEMPLATES: dict[str, str] = {
 
     # 暫存清理（啟動時自動掃一次 + 設定頁手動按鈕）
     "set.tempDone": "已清理 {n} 個暫存目錄，釋放 {mb} MB",
+    # 斷點記錄（設定頁清除按鈕）
+    "set.ckptCleared": "已清除 {n} 條斷點記錄",
 }
 
 

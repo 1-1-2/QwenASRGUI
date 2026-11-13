@@ -216,9 +216,9 @@ def main() -> int:
     r.check("没有意外的 course (2).srt",
             not (tmp / "subtitles" / "course (2).srt").exists())
 
-    # ── 5. 拖放（上传副本）是「一次性」：不支持接续，断点用完即清 ──
-    # 副本落在随机临时目录、请求结束就删，task_id 取自这条随机路径 →
-    # 重新拖入必然是新任务。这也是介面文案「拖放不支持接续」的依据。
+    # ── 5. 拖放（上传副本）：靠内容哈希认出同一个档案，所以也能接续 ──
+    # 副本落在随机临时目录、请求结束就删，路径每次都不同；但 task_id 取自
+    # 内容（档名+大小+首尾抽样），重复拖入同一支档案仍认作同一个任务。
     up1 = tmp / "up1" / "upload.wav"
     up2 = tmp / "up2" / "upload.wav"
     for p in (up1, up2):
@@ -232,26 +232,28 @@ def main() -> int:
             f"calls={calls6} segments={len(res6.get('segments') or [])}")
 
     import sqlite3
-    up_id = wb.WebBackend._source_identity(up1)[0]
+    up_id = wb.WebBackend._source_identity(up1, "課程.wav", upload=True)[0]
     local_id = wb.WebBackend._source_identity(wav)[0]
     con = sqlite3.connect(str(tmp / "longform_state" / "checkpoints.db"))
     try:
         rows = {r[0] for r in con.execute("SELECT task_id FROM progress")}
     finally:
         con.close()
-    r.check("拖放任务的断点用完即清（永远接不上）", up_id not in rows, str(sorted(rows)))
-    r.check("拖放任务的逐段记录也删了",
-            not (tmp / "longform_state" / f"{up_id}.segments.jsonl").exists())
-    r.check("本机路径的断点仍然保留（点选可续跑）", local_id in rows, str(sorted(rows)))
+    r.check("拖放任务的断点保留（要能接续）", up_id in rows, str(sorted(rows)))
+    r.check("拖放任务的逐段记录保留",
+            (tmp / "longform_state" / f"{up_id}.segments.jsonl").is_file())
+    r.check("本机路径的断点也在", local_id in rows, str(sorted(rows)))
 
-    # 换个临时目录再拖一次 ⇒ 新任务、从头跑、另存 (1)：与「不支持接续」一致
+    # 换个临时目录再拖一次（内容相同）⇒ 同一个任务 ⇒ 命中 done 断点，不重跑
     be7 = make_backend(tmp)
     res7 = be7.transcribe({"path": str(up2), "name": "課程.wav",
                            "uploaded": True}, progress_cb=lambda p, s: None)
-    r.check("重新拖入会从头开始（不接续）", be7.engine.calls > 0,
+    r.check("重新拖入同一檔案 → 认出同一任务（不重跑引擎）", be7.engine.calls == 0,
             f"calls={be7.engine.calls}")
-    r.check("重拖另存为 (1)，不覆盖上一份",
-            Path(res7["srtPath"]).name == "課程 (1).srt", res7.get("srtPath"))
+    r.check("接续指向同一份字幕", res7.get("srtPath") == res6.get("srtPath"),
+            f"{res7.get('srtPath')} vs {res6.get('srtPath')}")
+    r.check("没有多出 (1) 副本",
+            not (tmp / "subtitles" / "課程 (1).srt").exists())
 
     passed = sum(r.items)
     print(f"\n结果：{passed}/{len(r.items)} 项通过")

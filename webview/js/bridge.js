@@ -154,6 +154,17 @@
       if (MODE !== "web") return { ok: true, removed: 0, freed: 0, kept: 0, failed: 0 };
       return apiPost("/api/cleanup-temp", {});
     },
+    // 斷點記錄（設定頁）：唯讀概況 + 一鍵清除
+    async getCheckpoints() {
+      if (MODE !== "web") {
+        return { count: 0, bytes: 0, total: 0, items: [], retentionDays: 30, mock: true };
+      }
+      return apiGet("/api/checkpoints");
+    },
+    async clearCheckpoints() {
+      if (MODE !== "web") return { removed: 0, freed: 0, failed: 0, mock: true };
+      return apiPost("/api/checkpoints/clear", {});
+    },
     async checkUpdate() {
       if (MODE === "web") { try { return await apiPost("/api/check-update", {}); } catch {} }
       window.open("https://github.com/1-1-2/QwenASRGUI/releases/latest", "_blank");
