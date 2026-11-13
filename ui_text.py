@@ -70,7 +70,7 @@ TEMPLATES: dict[str, str] = {
     "health.group.chatllm": "Qwen · chatllm（Vulkan · 相容）",
     "health.ov.model": "ASR 模型（{size}）",
     "health.ov.vad": "語音分段 VAD（silero）",
-    "health.ov.fa": "時間軸對齊 FA（ForcedAligner .bin）",
+    "health.ov.fa": "詞級優化模型（ForcedAligner .bin）",
     "health.ov.diar": "說話者分離（外部 ONNX）",
     "health.crisp.core": "CrispASR {version} 核心（{variant}）",
     "health.crisp.coreMissing": "未下載或版本不符（約 {size}MB，啟用時下載）",
@@ -82,7 +82,7 @@ TEMPLATES: dict[str, str] = {
     "health.crisp.qwenJaMissing": "未下載（日語增強，啟用時下載）",
     "health.crisp.tea": "TEA-ASR-1.1 台灣國語模型（Q8）",
     "health.crisp.teaMissing": "未下載（繁中／台灣用語增強，啟用時下載）",
-    "health.crisp.fa": "時間軸對齊 FA（aligner gguf {quant}）",
+    "health.crisp.fa": "詞級優化模型（aligner gguf {quant}）",
     "health.crisp.faMissing": "未下載（約 643MB，啟用時下載）",
     "health.crisp.diar": "說話者分離（外部 ONNX，與 OpenVINO 共用）",
     "health.shared.ffmpeg": "FFmpeg（影片抽音軌用）",
@@ -93,7 +93,7 @@ TEMPLATES: dict[str, str] = {
     "health.chatllm.core": "chatllm 核心（libchatllm.dll）",
     "health.chatllm.model": "Qwen3-ASR 模型（.bin）",
     "health.chatllm.modelMissing": "未下載（約 2.3GB，啟用時自動下載）",
-    "health.chatllm.fa": "時間軸對齊 FA（ForcedAligner .bin）",
+    "health.chatllm.fa": "詞級優化模型（ForcedAligner .bin）",
 
     # ── 裝置與 GPU 診斷 ───────────────────────────────────────────────
     "device.inUse": "使用中",
