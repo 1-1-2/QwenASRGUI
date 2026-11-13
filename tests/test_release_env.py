@@ -108,7 +108,8 @@ CHAIN = [
     "endpoint_tab", "model_tab", "batch_tab", "subtitle_editor", "setting",
     # 下面这些过去靠「静态可追踪 / hidden-import」被收进包，从没进过这份清单。
     # 它们缺了同样会让启动器起来，所以一并纳入模拟。
-    "cf_tunnel", "chatllm_engine", "fa_aligner", "postprocess", "processor_numpy",
+    "cf_tunnel", "chatllm_engine", "fa_aligner", "fa_segmenter",
+    "postprocess", "processor_numpy",
 ]
 
 
