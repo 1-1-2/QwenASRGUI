@@ -47,8 +47,10 @@ ALL_PUNCT = STRONG_PUNCT | WEAK_PUNCT | frozenset(". ")
 # 默认参数（实测较优，见模块文档的对比表）
 WEAK_MIN_CHARS = 12      # 弱标点断行所需的最短累积字数
 MAX_CHARS = 20           # 单行上限（与 subtitle_lines.MAX_CHARS 一致）
+MAX_OVERFLOW = 2         # 为保住完整词，允许临时超出 MAX_CHARS 的字数
 GAP_BREAK = 0.35         # 字间间隔超过此值强制断行（秒）
 GAP_MERGE = 0.20         # 相邻行间隔小于此值可合并（秒）
+MIN_GAP = 0.08           # 相邻行之间的最小留白（秒）
 
 
 def _expand(items):
@@ -80,37 +82,79 @@ def build_lines(
     max_chars: int = MAX_CHARS,
     gap_break: float = GAP_BREAK,
     offset: float = 0.0,
+    word_bounds: set[int] | None = None,
 ):
     """字级时间戳 + 原文 → 字幕行 ``[(start, end, text), ...]``。
 
     ``items``：``[(word, start_sec, end_sec), ...]``，时间相对音频起点。
     ``raw_text``：该段 ASR 原文（含标点，标点只作切分信号、不进字幕）。
     ``offset``：音频起点相对整段的偏移，加到输出时间上。
+    ``word_bounds``：可选的词边界集合（字符索引），用于硬切时避免把词劈开。
+        传 ``None`` 表示不启用（默认，行为与旧版一致）。
 
     返回 ``None`` 表示输入不可用（应由调用方回退旧路径）。
+
+    三条切行信号（按优先级）：
+      1. 强标点（。？！；）→ 立即切
+      2. 弱标点（，、：…—）且累积 >= ``weak_min`` 字 → 切
+      3. 字间间隔 >= ``gap_break`` 秒 → 强制切（**标点给不出的声学信号**）
+    外加兜底：累积达 ``max_chars`` 时切，但会先前瞻几个字——
+    若紧随其后就有标点，宁可多显示 1~2 个字也要等标点切，
+    避免把「十五页左右」切成「左」+「右，」。
     """
     if not items or not raw_text or not raw_text.strip():
         return None
 
-    chars = [c for c in raw_text if not c.isspace()]
+    # seq 保留标点（前瞻要看得到标点），chars 只用于词边界计数
+    seq = [c for c in raw_text if not c.isspace()]
     expanded = _expand(items)
+
+    # 累计消费的「非标点字数」，用于把局部索引映射到全局词边界
+    consumed = 0
 
     lines: list[tuple[float, float, str]] = []
     buf: list[str] = []
     start: float | None = None
     end: float = 0.0
     last_end: float | None = None
+    hard_cut = False
     ci = 0
 
-    def emit() -> None:
-        nonlocal buf, start, end, last_end
+    def emit(is_hard: bool = False) -> None:
+        nonlocal buf, start, end, last_end, hard_cut
         if buf and start is not None:
             text = "".join(buf).strip()
             if text:
-                lines.append((start + offset, max(end, start + 1e-3) + offset, text))
-        buf, start, end, last_end = [], None, 0.0, None
+                lines.append((start + offset,
+                              max(end, start + 1e-3) + offset, text, is_hard))
+        buf, start, end, last_end, hard_cut = [], None, 0.0, None, False
 
-    for ch in chars:
+    def hard_emit() -> None:
+        """达上限时切，优先切在词边界上（避免劈词）。"""
+        nonlocal buf, start, end, last_end, consumed
+        cut = len(buf)
+        if word_bounds:
+            local = {k - consumed for k in word_bounds}
+            n = len(buf)
+            after = [k for k in local if n <= k <= n + MAX_OVERFLOW]
+            before = [k for k in local if k <= max_chars]
+            if after:
+                cut = min(after)
+            elif before:
+                cut = max(before)
+        if 0 < cut < len(buf):
+            head, tail = buf[:cut], buf[cut:]
+            text = "".join(head).strip()
+            if text:
+                lines.append((start + offset, last_end + offset, text, True))
+            consumed += cut
+            buf = tail
+            start = last_end
+            end = last_end
+        else:
+            emit(True)
+
+    for idx, ch in enumerate(seq):
         if ch in ALL_PUNCT:
             if ch in STRONG_PUNCT:
                 emit()
@@ -137,10 +181,124 @@ def build_lines(
         last_end = e
 
         if len(buf) >= max_chars:
-            emit()
+            ahead = seq[idx + 1: idx + 1 + MAX_OVERFLOW + 1]
+            if len(buf) >= max_chars + MAX_OVERFLOW:
+                hard_emit()                      # 已经超太多，必须切
+            elif not any(c in ALL_PUNCT for c in ahead):
+                hard_emit()                      # 后面没标点，切
+            # 否则等标点来切（能保住完整的词/短句）
 
     emit()
-    return lines or None
+    if not lines:
+        return None
+    consumed = sum(len(t) for _s, _e, t, _h in lines)
+    return [(s, e, t) for s, e, t, _h in lines]
+
+
+def build_lines_marked(
+    items,
+    raw_text: str,
+    **kwargs,
+):
+    """同 ``build_lines``，但保留 hard_cut 标记（供合并判断用）。"""
+    max_chars = kwargs.get("max_chars", MAX_CHARS)
+    weak_min = kwargs.get("weak_min", WEAK_MIN_CHARS)
+    gap_break = kwargs.get("gap_break", GAP_BREAK)
+    offset = kwargs.get("offset", 0.0)
+    word_bounds = kwargs.get("word_bounds")
+
+    if not items or not raw_text or not raw_text.strip():
+        return None
+
+    seq = [c for c in raw_text if not c.isspace()]
+    expanded = _expand(items)
+    consumed = 0
+    rows: list[list] = []
+    buf: list[str] = []
+    start: float | None = None
+    end: float = 0.0
+    last_end: float | None = None
+    ci = 0
+
+    def emit(is_hard: bool = False) -> None:
+        nonlocal buf, start, end, last_end
+        if buf and start is not None:
+            text = "".join(buf).strip()
+            if text:
+                rows.append([start + offset,
+                             max(end, start + 1e-3) + offset, text, is_hard])
+        buf, start, end, last_end = [], None, 0.0, None
+
+    def hard_emit() -> None:
+        nonlocal buf, start, end, last_end, consumed
+        cut = len(buf)
+        if word_bounds:
+            local = {k - consumed for k in word_bounds}
+            n = len(buf)
+            after = [k for k in local if n <= k <= n + MAX_OVERFLOW]
+            before = [k for k in local if k <= max_chars]
+            if after:
+                cut = min(after)
+            elif before:
+                cut = max(before)
+        if 0 < cut < len(buf):
+            head, tail = buf[:cut], buf[cut:]
+            text = "".join(head).strip()
+            if text:
+                rows.append([start + offset, last_end + offset, text, True])
+            consumed += cut
+            buf = tail
+            start = last_end
+            end = last_end
+        else:
+            emit(True)
+
+    for idx, ch in enumerate(seq):
+        if ch in ALL_PUNCT:
+            if ch in STRONG_PUNCT:
+                emit()
+            elif len(buf) >= weak_min:
+                emit()
+            continue
+        if ci < len(expanded):
+            _c, s, e = expanded[ci]
+            ci += 1
+        else:
+            s = e = last_end if last_end is not None else 0.0
+        if last_end is not None and (s - last_end) >= gap_break:
+            emit()
+        if start is None:
+            start = s
+        buf.append(ch)
+        end = max(end, e) if end else e
+        last_end = e
+        if len(buf) >= max_chars:
+            ahead = seq[idx + 1: idx + 1 + MAX_OVERFLOW + 1]
+            if len(buf) >= max_chars + MAX_OVERFLOW:
+                hard_emit()
+            elif not any(c in ALL_PUNCT for c in ahead):
+                hard_emit()
+    emit()
+    return rows or None
+
+
+def merge_hard_cuts(rows, *, max_chars: int = MAX_CHARS):
+    """合并「被硬切开」的相邻行，时间取外沿。
+
+    只合并标了 ``hard_cut`` 的那一行——否则会把「右」这类跨句碎片
+    并进下一句（实测反例：「右因为前面这个哲学呢…」）。
+    """
+    if not rows:
+        return rows
+    out = []
+    for r in rows:
+        if out and out[-1][3] and len(out[-1][2]) + len(r[2]) <= max_chars:
+            out[-1][1] = r[1]
+            out[-1][2] += r[2]
+            out[-1][3] = r[3]
+            continue
+        out.append(list(r))
+    return out
 
 
 def merge_by_gap(lines, *, gap: float = GAP_MERGE, max_chars: int = MAX_CHARS):
@@ -194,16 +352,26 @@ def align_to_lines(
     max_chars: int = MAX_CHARS,
     gap_break: float = GAP_BREAK,
     gap_merge: float = GAP_MERGE,
+    word_bounds: set[int] | None = None,
 ):
     """一步到位：FA 字级时间戳 → 最终字幕行。
 
+    流程：
+      1. 三条信号切行（标点强度 + 声学间隔 + 上限前瞻），保留 hard_cut 标记
+      2. 只合并「被硬切开」的相邻行（不跨句乱并）
+      3. 强制留出最小间隔，避免 ``end[i] == start[i+1]`` 的字幕瞬切
+
+    ``word_bounds`` 非空时，硬切会优先切在词边界（不劈词）；默认 None。
+
     返回 ``None`` 时调用方必须回退旧路径。
     """
-    lines = build_lines(items, raw_text, weak_min=weak_min,
-                        max_chars=max_chars, gap_break=gap_break,
-                        offset=offset)
-    if lines and merge:
-        lines = merge_by_gap(lines, gap=gap_merge, max_chars=max_chars)
-    if lines:
-        lines = normalize_gaps(lines)
+    rows = build_lines_marked(items, raw_text, weak_min=weak_min,
+                              max_chars=max_chars, gap_break=gap_break,
+                              offset=offset, word_bounds=word_bounds)
+    if not rows:
+        return None
+    if merge:
+        rows = merge_hard_cuts(rows, max_chars=max_chars)
+    lines = [(r[0], r[1], r[2]) for r in rows]
+    lines = normalize_gaps(lines)
     return lines

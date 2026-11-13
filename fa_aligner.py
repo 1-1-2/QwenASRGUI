@@ -26,6 +26,26 @@ FA_BIN_NAME = "qwen3-focedaligner-0.6b.bin"
 # Windows：隱藏子程序主控台視窗
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
+# 子程序優先級。FA 與 ASR 併發時，把 FA 壓到低優先級讓系統自動調度，
+# 比手工綁核更穩且更快（實測：綁核 FA 慢 19%，BELOW_NORMAL 只慢 6%）。
+# 優先級不限制「用哪些核」，只影響搶 CPU 的順序——Windows 會把低優先級
+# 線程排到空閒核上，效果等同於「自動找空閒核」，且換機器不用改配置。
+_BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+_IDLE_PRIORITY_CLASS = 0x00000040
+
+# 可由呼叫端覆寫：0=正常，1=BELOW_NORMAL（默認），2=IDLE
+FA_PRIORITY = 1
+
+
+def _priority_flag() -> int:
+    if sys.platform != "win32":
+        return 0
+    if FA_PRIORITY == 2:
+        return _IDLE_PRIORITY_CLASS
+    if FA_PRIORITY == 1:
+        return _BELOW_NORMAL_PRIORITY_CLASS
+    return 0
+
 
 def _startup_info():
     if sys.platform == "win32":
@@ -164,7 +184,8 @@ class ChatLLMAligner:
                 text=True, encoding="utf-8", errors="replace",
                 timeout=30, cwd=str(self._chatllm_dir),
                 env=build_env(),
-                creationflags=_CREATE_NO_WINDOW, startupinfo=_startup_info(),
+                creationflags=_CREATE_NO_WINDOW | _priority_flag(),
+                startupinfo=_startup_info(),
             )
             out = r.stdout + r.stderr
             if "ForcedAligner" not in out:
@@ -209,7 +230,8 @@ class ChatLLMAligner:
                 text=True, encoding="utf-8", errors="replace",
                 timeout=120, cwd=str(self._chatllm_dir),
                 env=build_env(),
-                creationflags=_CREATE_NO_WINDOW, startupinfo=_startup_info(),
+                creationflags=_CREATE_NO_WINDOW | _priority_flag(),
+                startupinfo=_startup_info(),
             )
         except Exception:
             return []

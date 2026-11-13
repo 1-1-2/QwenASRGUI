@@ -1198,12 +1198,23 @@ class WebBackend:
                 # 才注册；失败自动回退 _splitter，见 fa_segmenter 的降级契约。
                 _fa_lines = None
                 if _align_active and getattr(self.engine, "_align_chunk", None):
+                    # 跨 chunk 边界的上一行结束时间。FA 的逐字时间戳首尾相接，
+                    # 若两个 chunk 恰好切在同一个时间点，会出现 end[i]==start[i+1]
+                    # 的字幕瞬切；align_to_lines 的 normalize_gaps 只管 chunk 内部，
+                    # 所以边界这一处必须在这里补。
+                    _prev_end = [None]
+
                     def _fa_lines(chunk, text, t0, t1, _lang=_lang):
                         """chunk → 临时 wav → FA 字级时间戳 → 字幕行。"""
                         import os as _os
                         import tempfile
                         import soundfile as _sf
-                        from fa_segmenter import align_to_lines
+                        from fa_segmenter import align_to_lines, MIN_GAP
+
+                        if _os.environ.get("QWENASR_FA_DEBUG"):
+                            import sys as _sys
+                            print(f"[FA] 进入: t0={t0:.2f} t1={t1:.2f} "
+                                  f"chars={len(text)}", file=_sys.stderr)
 
                         path = None
                         try:
@@ -1218,9 +1229,25 @@ class WebBackend:
                                 return None
                             # align_chunk 返回的是「相对这段 wav 起点」的时间
                             # （0 起算），加上 t0 即转成整段音频的绝对时间。
-                            return align_to_lines(items, text, offset=float(t0),
-                                                  merge=True)
-                        except Exception:
+                            lines = align_to_lines(items, text, offset=float(t0),
+                                                   merge=True)
+                            if not lines:
+                                return None
+                            # 跨 chunk：本段首行不早于上一段末行 + MIN_GAP
+                            if _prev_end[0] is not None:
+                                s, e, t = lines[0]
+                                floor = _prev_end[0] + MIN_GAP
+                                if s < floor - 1e-6 and e > floor + 0.12:
+                                    lines[0] = (floor, e, t)
+                            _prev_end[0] = lines[-1][1]
+                            return lines
+                        except Exception as _exc:
+                            if _os.environ.get("QWENASR_FA_DEBUG"):
+                                import traceback as _tb
+                                print("[FA] 对齐失败，回退比例分配："
+                                      f"{type(_exc).__name__}: {_exc}",
+                                      file=__import__("sys").stderr)
+                                _tb.print_exc()
                             return None
                         finally:
                             if path:
