@@ -7,13 +7,16 @@ name: Build Windows Release
 # launcher no longer unpacks ~200 MB to %TEMP% on each start.
 #
 # Triggers:
-#   - Manual "Run workflow" uploads an Actions artifact; optionally create a
-#     permanent Release. This is the primary, deliberate build entry point.
-#   - Pushing a v* tag builds and creates a Release automatically.
+#   - Manual "Run workflow" ONLY. It builds the ZIP and uploads it as an
+#     Actions artifact; tick `create_release` to also publish a GitHub Release.
+#   - Pushing a branch or a tag does NOT build and does NOT publish. Release is
+#     a deliberate, confirmed action: a stray `git push --tags` must never make
+#     a new version appear under releases/latest (the in-app "check update"
+#     reads exactly that endpoint, so it would be offered to every user).
 #
 # Runner economy:
-#   - No push-to-branch trigger at all: routine commits never build a 200 MB
-#     Windows artifact. Only a deliberate manual run or a version tag does.
+#   - No push trigger at all: routine commits never build a 200 MB Windows
+#     artifact. Only a manual run does.
 #   - `concurrency` groups runs by ref; cancel-in-progress is FALSE because
 #     cancelling a release build halfway leaves a broken/empty Release.
 #   - A second manual run on the same ref waits for the previous one instead
@@ -42,9 +45,6 @@ on:
         description: 'Release tag (manual + create_release only; blank = auto)'
         required: false
         default: ''
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
@@ -291,11 +291,11 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Create Release (optional)
-        if: ${{ inputs.create_release == true || github.event_name == 'push' }}
+      - name: Create Release (manual opt-in only)
+        if: ${{ inputs.create_release == true }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event_name == 'push' && github.ref_name || (inputs.release_tag != '' && inputs.release_tag || format('v{0}', steps.ver.outputs.version)) }}
+          tag_name: ${{ inputs.release_tag != '' && inputs.release_tag || format('v{0}', steps.ver.outputs.version) }}
           name: QwenASR Longform ${{ steps.ver.outputs.version }}
           body: |
             ## Windows portable build
@@ -325,7 +325,7 @@ jobs:
             echo "- Version: \`${{ steps.ver.outputs.version }}\`"
             echo "- Bundled ffmpeg: \`${{ steps.ff.outputs.has }}\`"
             echo "- Download: Actions -> Artifacts -> QwenASR-WebView-Windows-x64"
-            if [ "${{ inputs.create_release == true || github.event_name == 'push' }}" = "true" ]; then
+            if [ "${{ inputs.create_release == true }}" = "true" ]; then
               echo "- Permanent link: this repository's Releases page"
             fi
             echo ""
