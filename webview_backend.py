@@ -800,13 +800,16 @@ class WebBackend:
     # of a 3-5 h lecture (thousands of DOM nodes) crashed the WebView2
     # renderer with "Out of memory" right after a successful run.
     _MAX_PREVIEW_SEGMENTS = 200
-    def _apply_chunk_secs(self) -> None:
+    def _apply_chunk_secs(self, chunk_secs=None) -> None:
         eng = getattr(self, "engine", None)
         ceiling = getattr(type(eng), "max_chunk_secs", None) if eng is not None else None
         if not isinstance(ceiling, int):
             return                                  # crispasr 等：不以 max_chunk_secs 分段
+        raw = self._settings_raw().get("chunk_secs", 0)
+        if chunk_secs is not None:
+            raw = chunk_secs                        # 本次執行顯式指定（批次佇列帶入）
         try:
-            want = int(self._settings_raw().get("chunk_secs", 0) or 0)
+            want = int(raw or 0)
         except Exception:
             want = 0
         eff = ceiling if want <= 0 else max(self._CHUNK_FLOOR, min(want, ceiling))
@@ -1107,6 +1110,13 @@ class WebBackend:
             limit_sec = TRIAL_MINUTES * 60 if trial else None
 
             _st = self._settings_raw()
+            # 本次執行的切分參數可被 opts 覆寫。批次佇列在「開始」那一刻把
+            # 音檔頁當下的 VAD / 每段秒數一併帶進來，讓整條佇列用同一組值；
+            # 單檔 / CLI 不傳這兩個鍵，行為與以往完全相同。
+            if opts.get("chunkSecs") not in (None, ""):
+                _st["chunk_secs"] = opts.get("chunkSecs")
+            if opts.get("vadThreshold") not in (None, ""):
+                _st["vad_threshold"] = opts.get("vadThreshold")
             _ceiling = getattr(type(self.engine), "max_chunk_secs", None)
             if not isinstance(_ceiling, int):
                 _ceiling = 30
@@ -1177,7 +1187,7 @@ class WebBackend:
                 out_ref = srt_dir / "transcript"
 
             with self._lock:
-                self._apply_chunk_secs()      # 依設定夾定本次 max_chunk_secs（夾到模型上限）
+                self._apply_chunk_secs(_st.get("chunk_secs", 0))   # 依設定夾定本次 max_chunk_secs（夾到模型上限）
                 # 清除上一輪字級殘留，避免本輪若提前 return 時讀到舊資料
                 try:
                     self.engine._last_segments_rich = None

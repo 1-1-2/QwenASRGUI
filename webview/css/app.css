@@ -95,6 +95,14 @@
 html, body { margin: 0; height: 100%; }
 /* hidden 屬性必須勝過 .banner/.rec-live-wave 等 display:flex 類別（否則 el.hidden 無效）*/
 [hidden] { display: none !important; }
+/* 首屏語言閘門：i18n.js 在 DOM 就緒後套用 <html data-locale> 的語言，然後
+   標上 data-i18n-ready。在那之前先不畫，避免先看到繁中再跳成設定語言。
+   另有 1.5s 的保底動畫：萬一腳本掛掉，畫面仍會自己出現，不會永久空白。*/
+html:not([data-i18n-ready]) body {
+  opacity: 0;
+  animation: i18n-gate-fallback 0s 1.5s forwards;
+}
+@keyframes i18n-gate-fallback { to { opacity: 1; } }
 body {
   font-family: var(--font-ui);
   color: var(--ink);
@@ -654,9 +662,29 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 }
 .batch-progress .detail #batch-prog-active { color: var(--ink-2); }
 
+/* 層級標籤：佇列級在上、檔案級縮排在左側豎線裡，一眼看出誰屬於誰。 */
+.lv {
+  display: inline-block; font-size: 10.5px; font-weight: 700;
+  letter-spacing: .06em; color: var(--muted);
+}
+.lv-queue { margin-bottom: 6px; }
+.cur-head .lv {
+  padding: 1px 6px; border-radius: 4px;
+  background: var(--panel-2); letter-spacing: .04em;
+}
+
 /* 目前檔案：第二層進度條 + 明細 */
 .batch-progress .cur {
-  margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line);
+  margin-top: 12px; padding: 2px 0 0 12px;
+  border-left: 2px solid var(--line);
+}
+.cur-head {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px; flex-wrap: wrap;
+}
+.cur-head .cur-name {
+  font-size: 12px; color: var(--ink-2); font-weight: 600;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .cur-bar-row { display: flex; align-items: center; gap: 10px; }
 .cur-bar-row .bar { flex: 1; height: 6px; }
@@ -672,6 +700,24 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
   display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px;
   font-family: var(--font-mono); font-size: 11px; color: var(--muted);
 }
+
+/* 本次執行設定：把音檔頁每一個控制項與它「實際會用的值」並列。
+   用 flex 換行而不是固定欄數——中文/英文標籤長度差很多，固定欄數會鋸齒。 */
+.batch-cfg { margin-bottom: 12px; padding: 12px 16px; }
+.cfg-head {
+  display: flex; align-items: baseline; gap: 10px;
+  margin-bottom: 10px; flex-wrap: wrap;
+}
+.cfg-head .t { font-size: 13px; font-weight: 600; color: var(--ink); }
+.cfg-head .d { font-size: 11.5px; color: var(--muted); }
+.cfg-head .d.is-locked { color: var(--warn-fg); }
+.cfg-grid { display: flex; flex-wrap: wrap; gap: 10px 26px; }
+.cfg-item { display: flex; flex-direction: column; gap: 2px; min-width: 84px; }
+.cfg-item .k { font-size: 11px; color: var(--muted); }
+.cfg-item .v {
+  font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--ink);
+}
+.cfg-item .v.is-na { color: var(--faint); font-weight: 500; }
 
 /* 佇列標題 */
 .batch-queue-head {

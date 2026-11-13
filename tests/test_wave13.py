@@ -39,8 +39,11 @@ RUNNER = (ROOT / "longform_runner.py").read_text(encoding="utf-8")
 
 WAVE13_KEYS = [
     "batch.queue", "batch.queueMeta", "batch.currentFile", "batch.noActive",
-    "batch.elapsed", "batch.doneRatio", "batch.groups", "batch.fileElapsed",
-    "batch.speed", "batch.fileRemaining", "batch.noDetail", "batch.used",
+    "batch.elapsed", "batch.queueEta", "batch.groups", "batch.fileElapsed",
+    # doneRatio / speed 已被 queueEta / rateLong / rate5m 取代：
+    # 佇列級要的是「整批還剩多久」，檔案級要的是「全程 vs 近 5 分鐘」兩個倍率。
+    "batch.rateLong", "batch.rate5m", "batch.fileRemaining", "batch.noDetail",
+    "batch.used",
     "batch.left", "batch.etaPending", "batch.menuTitle", "batch.menuOpenOut",
     "batch.menuRetry", "batch.menuSkip", "batch.menuStop", "batch.menuRemove",
     "batch.removeBusy",

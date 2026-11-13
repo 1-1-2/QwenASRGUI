@@ -60,6 +60,10 @@ TRIAL_MINUTES = 5
 PREVIEW_MINUTES = 5
 WAVE_BINS = 200                  # waveform bars rendered by the frontend
 
+# 「近 5 分鐘倍率」的滑動窗口。全部用累計平均會把開頭的載模型時間永久攤進
+# 分母，長片會顯示得比實際樂觀；窗口倍率只反映當下，用來交叉判讀。
+RATE_WINDOW_SEC = 300.0
+
 _MIN_CH = 16                    # 最短语音段（帧）≈ 0.5s
 _PAD_CH = 5                     # 段前后各补 5 帧 ≈ 0.16s
 _MERGE_CH = 16                  # 相邻间隔 ≤16 帧则合并
@@ -750,6 +754,15 @@ class LongformRunner:
         self._start_wall = time.monotonic()
         self._last_done_sec = 0.0
         self._last_group_count = 0
+        # 倍率取樣：(單調時鐘, 已處理音訊秒)。用來算「近 5 分鐘」的即時倍率。
+        # 全程倍率是「累計已處理 ÷ 累計牆鐘」，開頭偏慢會被永久攤平（例如前
+        # 10 秒在載模型），對長片有系統性樂觀；5 分鐘窗口只反映當下速度。
+        self._rate_samples: list[tuple[float, float]] = []
+        self._last_eta_basis = "long"
+        # 續跑時 doneSec 是「檔案內的絕對位置」（例如從第 28 分鐘接著跑），
+        # 但牆鐘只算了本輪。直接 done/elapsed 會得出 9.9× 這種假倍率，
+        # 所以倍率與 ETA 都以本輪起點為基準。
+        self._rate_base = 0.0
 
     def _emit(self, pct: int, status: str, detail: dict | None = None):
         pct = max(0, min(100, int(pct)))
@@ -765,10 +778,21 @@ class LongformRunner:
                 # factor so the batch page can show "本檔已耗時 / 速度 N×"
                 # from real data instead of a client-side estimate.
                 done = float(payload.get("doneSec") or 0)
-                elapsed = max(0.0, time.monotonic() - self._start_wall)
+                now = time.monotonic()
+                elapsed = max(0.0, now - self._start_wall)
                 payload["elapsedSec"] = round(elapsed, 1)
-                if elapsed > 0 and done > 0:
-                    payload["speedX"] = round(done / elapsed, 2)
+                # 只算「本輪新處理」的音訊秒，續跑才不會虛報倍率。
+                net = max(0.0, done - getattr(self, "_rate_base", 0.0))
+                if elapsed > 0 and net > 0:
+                    payload["speedX"] = round(net / elapsed, 2)
+                # 5 分鐘窗口倍率：資料不足時**不出現這個鍵**，前端據此隱藏，
+                # 而不是顯示一個假的數字。
+                self._mark_progress(done, now)
+                sp5 = self._speed_5m(done, now)
+                if sp5:
+                    payload["speed5m"] = round(sp5, 2)
+                if "etaSec" in payload:
+                    payload["rateBasis"] = getattr(self, "_last_eta_basis", "long")
             try:
                 self.detail_cb(payload)
             except Exception:
@@ -802,14 +826,64 @@ class LongformRunner:
             pass
 
     def _eta_sec(self, done_sec: float, total_sec: float) -> float | None:
-        """Extrapolate remaining wall time from processed audio seconds."""
+        """估算本檔剩餘牆鐘秒數。
+
+        有效倍率優先取「近 5 分鐘窗口」，資料不足（本次執行未滿 5 分鐘）才
+        退回全程累計平均；用了哪一種會寫進 ``rateBasis`` 供前端標注。
+        """
         if not total_sec or done_sec <= 0:
             return None
-        elapsed = max(1e-3, time.monotonic() - self._start_wall)
-        rate = done_sec / elapsed
-        if rate <= 0:
-            return None
+        now = time.monotonic()
+        rate = self._speed_5m(done_sec, now)
+        basis = "5m"
+        if not rate:
+            net = done_sec - getattr(self, "_rate_base", 0.0)
+            if net <= 0:
+                return None                     # 續跑剛起步，還沒有可用的速度
+            elapsed = max(1e-3, now - self._start_wall)
+            rate = net / elapsed
+            basis = "long"
+        self._last_eta_basis = basis
+        if rate <= 0:            return None
         return max(0.0, (total_sec - done_sec) / rate)
+
+    def _mark_progress(self, done_sec: float, now: float | None = None) -> None:
+        """記錄一個取樣點（已處理音訊秒, 牆鐘），供 5 分鐘窗口倍率使用。"""
+        d = float(done_sec or 0)
+        if d <= 0:
+            return
+        # 測試會用 __new__ 直接造 runner（不跑 __init__），所以這裡惰性補上。
+        samples = getattr(self, "_rate_samples", None)
+        if samples is None:
+            samples = self._rate_samples = []
+        now = time.monotonic() if now is None else now
+        if samples and now - samples[-1][0] < 0.5:
+            samples[-1] = (now, d)              # 同一刻重複上報，覆蓋即可
+            return
+        samples.append((now, d))
+        # 只保留「窗口外的第一個取樣」當錨點，記憶體不隨片長增長。
+        while len(samples) >= 2 and samples[1][0] <= now - RATE_WINDOW_SEC:
+            samples.pop(0)
+
+    def _speed_5m(self, done_sec: float,
+                  now: float | None = None) -> float | None:
+        """近 5 分鐘倍率 = 窗口內新增音訊秒 ÷ 窗口牆鐘秒。
+
+        窗口內資料不足（執行還不到 5 分鐘）一律回 None —— 用 2 分鐘的數據
+        冒充「5 分鐘倍率」只是又一個更短的累計平均，會誤導使用者。
+        """
+        samples = getattr(self, "_rate_samples", None) or []
+        if len(samples) < 2:
+            return None
+        now = time.monotonic() if now is None else now
+        t0, d0 = samples[0]
+        span = now - t0
+        if span < RATE_WINDOW_SEC * 0.98:
+            return None
+        gained = float(done_sec) - d0
+        if gained <= 0 or span <= 0:
+            return None
+        return gained / span
 
     def _init_outputs(self, next_index: int):
         if next_index <= 1:
@@ -895,6 +969,8 @@ class LongformRunner:
         self._init_outputs(next_index)
 
         start_sec = next_frame * VAD_CHUNK / SR
+        # 續跑的倍率基準：本輪真正新處理的音訊從 start_sec 起算。
+        self._rate_base = float(start_sec or 0.0)
         # Wave 14／需求 3：续跑时把「已完成的段数」一并送给前端，否则界面会
         # 从 0 段开始显示、看起来像从头识别。
         self._emit(0, f"从第 {start_sec / 60:.1f} 分钟续跑" if start_sec else "开始流式分段",

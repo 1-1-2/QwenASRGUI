@@ -261,9 +261,11 @@
       if (MODE !== "web") return { ok: true, paths: [], supported: false, mock: true };
       return apiPost("/api/pick-files", {});
     },
-    async batchStart() {
+    async batchStart(opts) {
       if (MODE !== "web") return { ok: true, mock: true };
-      return apiPost("/api/batch/start", {});
+      // opts = 開始當下音檔頁的設定快照；後端據此鎖定整條佇列的執行參數，
+      // 之後即使使用者改動滑桿也不會讓同一批檔案跑在兩套參數上。
+      return apiPost("/api/batch/start", { opts: opts || {} });
     },
     async batchCancel() {
       if (MODE !== "web") return { ok: true, mock: true };

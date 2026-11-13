@@ -141,7 +141,7 @@ def make_backend(tmp: Path, events: list, settings: dict | None = None):
         st.update(settings)
     be._settings_raw = lambda: st
     be._emit = lambda e, p: events.append((e, p))
-    be._apply_chunk_secs = lambda: None
+    be._apply_chunk_secs = lambda *a, **k: None
     be._resolve_ffmpeg = lambda: "ffmpeg"
     be.engine = FakeEngine()
     fake_core.SRT_DIR = tmp / "subtitles"

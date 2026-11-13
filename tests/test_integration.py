@@ -136,7 +136,7 @@ def make_backend(tmp: Path):
                                 # 故這裡明確關掉（生命週期由 test_wave12 覆蓋）。
                                 "auto_release_model": False}
     be._emit = lambda e, p: None
-    be._apply_chunk_secs = lambda: None
+    be._apply_chunk_secs = lambda *a, **k: None
     be._resolve_ffmpeg = lambda: "ffmpeg"
     be.engine = FakeEngine()
     fake_core.SRT_DIR = tmp / "subtitles"

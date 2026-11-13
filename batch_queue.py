@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -46,6 +47,14 @@ _AUDIO_EXTS = {
     ".mp4", ".mkv", ".mov", ".avi", ".webm", ".ts", ".m4v", ".wmv",
     ".aiff", ".aif", ".amr", ".3gp",
 }
+
+# 「開始」時鎖定的執行參數。與音檔頁的設定項一一對應：
+#   language / diarize / nSpeakers / align / hint  → 由前端 currentBatchOpts() 帶入
+#   vadThreshold / chunkSecs                      → 切分參數面板的兩個滑桿
+# trial（試跑前 5 分鐘）刻意不在此列：它只對單檔預覽有意義，
+# 對整條佇列套用會產出一堆被截斷的字幕。
+RUN_OPT_KEYS = ("language", "diarize", "nSpeakers", "align", "hint",
+                "vadThreshold", "chunkSecs")
 
 
 def _now() -> str:
@@ -79,9 +88,16 @@ class BatchQueue:
         self.active_id: str | None = None
         self.cancel_requested = False
         self._worker: threading.Thread | None = None
-        # Wave 11：generation 保證「停止後立刻再開始」時，舊 worker 收尾不會
-        # 覆蓋新 worker 的 running 狀態，也不會被 start() 重置的
-        # cancel_requested 復活去多跑一個檔。
+        # 本次佇列「開始」時鎖定的執行參數。舊版只在入隊時把
+        # language/diarize/nSpeakers/align/hint 快照進 item.opts，
+        # 而 vad/chunk 卻是每個檔開跑時現讀 settings —— 同一條佇列裡
+        # 一半參數凍結、一半會中途變動，與音檔頁對不上。
+        # 現在統一在 start() 收一次，整條佇列（含續跑）都用這一份。
+        self.run_opts: dict = {}
+        # 佇列級計時（與單檔 elapsedSec 分開，兩層各報各的）。
+        # 續跑（停止→開始）時累加，不從零重算；全新一批才歸零。
+        self.started_at: float | None = None
+        self.elapsed_sec: float = 0.0
         self._gen = 0
         self._load()
         self._sweep_orphans()
@@ -90,6 +106,9 @@ class BatchQueue:
     def _load(self):
         try:
             data = json.loads(self.state_file.read_text(encoding="utf-8"))
+            ro = data.get("runOpts")
+            if isinstance(ro, dict):
+                self.run_opts = ro
             items = data.get("items", [])
             if not isinstance(items, list):
                 return
@@ -274,7 +293,7 @@ class BatchQueue:
         tmp = self.state_file.with_suffix(".json.tmp")
         try:
             tmp.write_text(json.dumps(
-                {"version": 1, "items": self.items},
+                {"version": 1, "items": self.items, "runOpts": self.run_opts},
                 ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(self.state_file)
         except OSError:
@@ -290,19 +309,32 @@ class BatchQueue:
                 pass
 
     # ── public API ─────────────────────────────────────────────────────
+    def _freeze_elapsed(self) -> None:
+        """把本輪已跑的時間併進累計值（停止／結束時呼叫）。"""
+        if self.started_at:
+            self.elapsed_sec += max(0.0, time.time() - self.started_at)
+            self.started_at = None
+
     def summary(self) -> dict:
         items = self.items
         done = sum(1 for i in items if i.get("status") == _DONE)
         failed = sum(1 for i in items if i.get("status") == _FAILED)
         total = len(items)
         avg = (sum(float(i.get("progress") or 0) for i in items) / total) if total else 0.0
+        # 佇列級耗時：從按下「開始」算起，跟單檔耗時是兩回事（舊版把單檔的
+        # elapsedSec 拿來當佇列耗時，於是兩層顯示同一個數字）。
+        elapsed = self.elapsed_sec
+        if self.running and self.started_at:
+            elapsed += time.time() - self.started_at
         return {"total": total, "done": done, "failed": failed,
                 "active": self.active_id, "running": self.running,
+                "elapsedSec": round(elapsed, 1),
                 "progress": round(avg, 4)}
 
     def snapshot(self) -> dict:
         with self._lock:
             return {"summary": self.summary(),
+                    "runOpts": dict(self.run_opts or {}),
                     "items": [dict(i) for i in self.items]}
 
     def add(self, src_path: Path, name: str, opts: dict | None = None) -> dict:
@@ -344,12 +376,27 @@ class BatchQueue:
         self._probe_duration_async(snapshot["id"])
         return snapshot
 
-    def start(self) -> dict:
+    def start(self, opts: dict | None = None) -> dict:
+        """開始（或續跑）佇列。
+
+        ``opts`` 是「開始」當下的音檔頁設定快照。傳了就整條佇列都用它，
+        包含停止後的續跑；不傳（CLI／舊前端）則沿用每個 item 入隊時記下的
+        opts，行為與過去相同。
+        """
         with self._lock:
             if self.running:
                 return self.summary()
             if not any(i.get("status") == "pending" for i in self.items):
                 return self.summary()
+            if isinstance(opts, dict):
+                merged = dict(self.run_opts or {})
+                merged.update({k: opts[k] for k in RUN_OPT_KEYS if k in opts})
+                self.run_opts = merged
+                self._save()
+            # 全新一批（沒有任何已完成項）才把佇列耗時歸零；停止後續跑則累加。
+            if not any(i.get("status") == _DONE for i in self.items):
+                self.elapsed_sec = 0.0
+            self.started_at = time.time()
             self.cancel_requested = False
             self.running = True
             self._gen += 1
@@ -370,6 +417,7 @@ class BatchQueue:
         with self._lock:
             self.cancel_requested = True
             self.running = False
+            self._freeze_elapsed()
             self._gen += 1
             for it in self.items:
                 if it.get("status") == "running":
@@ -542,7 +590,10 @@ class BatchQueue:
                     self.active_id = nxt["id"]
                     self._save()
                     item_id = nxt["id"]
+                    # 開始時鎖定的參數優先於入隊快照：同一條佇列的每個檔
+                    # 都用同一組值，且與使用者在音檔頁看到的一致。
                     opts = dict(nxt.get("opts") or {})
+                    opts.update(self.run_opts or {})
                     self._emit(nxt, "start")
 
                 def _progress(pct, status, _id=item_id):
@@ -596,12 +647,14 @@ class BatchQueue:
                 # running 改成 False，否則「停止後立刻再開始」會立刻顯示停了。
                 if self._gen == gen:
                     self.running = False
+                    self._freeze_elapsed()
                     self._save()
                     self._broadcast()
         except Exception:
             with self._lock:
                 if self._gen == gen:
                     self.running = False
+                    self._freeze_elapsed()
                     self._save()
             traceback.print_exc()
         finally:

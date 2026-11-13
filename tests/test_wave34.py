@@ -276,16 +276,19 @@ def main() -> int:
             'id="batch-prog-bar"' in html and 'id="batch-prog-status"' in html)
     r.check("percentage bar retained", 'id="prog-bar"' in html and 'id="prog-pct"' in html)
     r.check("live subtitle panel exists", 'id="live-list"' in html and 'id="live-panel"' in html)
-    r.check("batch page shares options hint", 'batch.sharedOpts' in html)
+    # 舊版這裡只是一行「設定共用音檔頁」的提示；現在改成把每一項與它實際
+    # 生效的值列出來，所以改驗設定卡存在且由 JS 產生。
+    r.check("batch page lists the effective options",
+            'id="batch-cfg"' in html and 'id="batch-cfg-grid"' in html
+            and "function renderBatchConfig(" in app)
     r.check("batch page no longer has duplicate toggles",
             'id="sw-batch-diar"' not in html and 'id="sel-batch-spk"' not in html)
     r.check("batch opts reuse shared controls",
             'hint: $("#hint-box").value.trim()' in app and
             '...diarOpts($("#sel-diar")' in app)
-    # The literal moved into the dictionary in Wave 7 (so the summary follows
-    # the UI language); assert the key is used and carries the wording.
+    # 總進度仍在進度卡上，只是不再重複寫在工具列那行摘要裡。
     r.check("batch summary shows overall percentage",
-            'T("batch.progress"' in app and "總進度" in i18n)
+            '$("#batch-prog-pct")' in app and 'pct + "%"' in app and "總進度" in i18n)
     r.check("i18n has sharedOpts in three languages", '"batch.sharedOpts"' in i18n)
 
     passed = sum(r.items)

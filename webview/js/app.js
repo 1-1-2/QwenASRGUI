@@ -226,6 +226,11 @@
   const UI_BUSY = new Set();       // "transcribe" | "model" | "preview" | "batch"
   let batchItems = [];             // declared here so syncActionButtons is safe
   let batchRunning = false, batchMockRunning = false, batchActiveIdx = -1;
+  // 本輪佇列在「開始」時鎖定的執行參數（由後端 snapshot 帶回）。執行中要
+  // 顯示的就是它，而不是使用者此刻可能已經改過的滑桿值。
+  let batchRunOpts = {};
+  // 佇列級耗時（後端從按下「開始」起算，續跑會累加）。與單檔 elapsedSec 不同。
+  let batchElapsed = 0;
   let batchDragId = null;          // 正在被拖動的項目 id（null = 沒在拖）
   let logExpanded = false;   // Wave 14：上傳通道已移除，不再有 batchUploadErrors
   let lastBatchDetail = null;      // Wave 11：批次頁目前任務的進度明細
@@ -486,6 +491,9 @@
       redrawProgressText();
       relocalizeMics();
       if (typeof renderBasic === "function") renderBasic();
+      // 佇列列與「本次執行設定」卡片都是 JS 拼出來的字串，靜態的 data-i18n
+      // 掃不到，語言一換就得自己重建。
+      if (typeof renderBatch === "function") renderBatch();
       _relocalizeAsync();
     });
   }
@@ -586,8 +594,13 @@
       else if (d && d.groups != null) parts.push(T("batch.groups", null, { n: d.groups }));
       const el = batchElapsedSec(d);
       if (el > 0) parts.push(T("batch.fileElapsed", null, { t: fmtDur(el) }));
+      // 兩個倍率並列：全程＝累計已處理÷累計牆鐘（含開頭載模型，偏保守）；
+      // 近 5 分鐘＝滑動窗口（反映當下）。後端在執行未滿 5 分鐘時不給
+      // speed5m，這裡就不顯示 —— 不拿短窗口冒充「5 分鐘」。
       if (d && Number(d.speedX) > 0)
-        parts.push(T("batch.speed", null, { x: Number(d.speedX).toFixed(1) }));
+        parts.push(T("batch.rateLong", null, { x: Number(d.speedX).toFixed(1) }));
+      if (d && Number(d.speed5m) > 0)
+        parts.push(T("batch.rate5m", null, { x: Number(d.speed5m).toFixed(1) }));
       if (d && d.etaSec != null)
         parts.push(T("batch.fileRemaining", null, { t: fmtDur(d.etaSec) }));
       detailEl.textContent = parts.length ? parts.join(" · ")
@@ -1107,15 +1120,21 @@
   batchInput.multiple = true; batchInput.style.display = "none";
   document.body.appendChild(batchInput);
 
-  // Wave 14／需求 4：批次只用「語言／分離／對齊／提示詞」，不繼承音檔頁的
-  // 「試跑前 5 分鐘」與切分參數。後端 add_path 的白名單本來就只收這幾個
-  // 欄位，這裡把多傳的 trial 拿掉，前後端口徑一致；不加任何額外提示。
+  // 批次執行參數＝音檔頁當下的設定，逐項對齊：
+  //   language / diarize+nSpeakers / align / hint / vadThreshold / chunkSecs
+  // 不繼承「試跑前 5 分鐘」：那只是單檔預覽，套到整條佇列會產出一堆被截斷
+  // 的字幕。除此之外沒有第二套規則 —— 這個函式的產出就是批次會用的值，
+  // 批次頁的設定卡顯示的也是同一份。
   function currentBatchOpts() {
     return {
       language: $("#sel-lang") ? $("#sel-lang").value : null,
       ...diarOpts($("#sel-diar") ? $("#sel-diar").value : "off"),
       align: $("#sw-align") ? $("#sw-align").checked : false,
       hint: $("#hint-box") ? $("#hint-box").value.trim() : "",
+      // 切分參數：新版一併在「開始」時鎖進佇列（RUN_OPT_KEYS），
+      // 不再讓每個檔開跑時現讀 settings —— 否則同一批會有兩套時間軸。
+      vadThreshold: $("#seg-vad") ? Number($("#seg-vad").value) : null,
+      chunkSecs: $("#seg-chunk") ? Number($("#seg-chunk").value) : null,
     };
   }
 
@@ -1147,7 +1166,10 @@
     }
     if (!snap || !Array.isArray(snap.items)) return;   // 髒資料不覆寫
     batchItems = snap.items.map(it => Object.assign({}, it, { file: null }));
+    batchRunOpts = (snap && snap.runOpts) || {};
     batchRunning = !!(snap.summary && snap.summary.running);
+    if (snap.summary && snap.summary.elapsedSec != null)
+      batchElapsed = Number(snap.summary.elapsedSec) || 0;
     renderBatch();
     syncActionButtons();
   }
@@ -1192,6 +1214,8 @@
     }
     if (payload.summary) batchRunning = !!payload.summary.running;
     else if (typeof payload.running === "boolean") batchRunning = payload.running;
+    if (payload.summary && payload.summary.elapsedSec != null)
+      batchElapsed = Number(payload.summary.elapsedSec) || 0;
     renderBatch();
     syncActionButtons();
   });
@@ -1205,6 +1229,26 @@
       { i: idx + 1, n: batchItems.length, name: batchItems[idx].name });
   }
 
+  /** 佇列級剩餘時間：把「本檔還沒跑完的音訊 + 所有等待中檔案的音訊」
+      一起除以目前有效倍率。與檔案級的「本檔剩餘」是兩個不同問題。
+      任一等待中檔案還沒探測到時長就回 null（顯示 —），不估算。 */
+  function queueEtaSec() {
+    if (!batchRunning) return null;
+    const d = lastBatchDetail || {};
+    const rate = Number(d.speed5m) || Number(d.speedX) || 0;
+    if (!(rate > 0)) return null;
+    let rest = 0;
+    if (Number(d.totalSec) > 0)
+      rest += Math.max(0, Number(d.totalSec) - (Number(d.doneSec) || 0));
+    const pend = batchItems.filter(i => i.status === "pending");
+    for (const it of pend) {
+      const dur = Number(it.durationSec);
+      if (!(dur > 0)) return null;      // 時長未探測完 → 不給假數字
+      rest += dur;
+    }
+    return rest > 0 ? rest / rate : null;
+  }
+
   function batchSummary() {
     const total = batchItems.length;
     const done = batchItems.filter(i => i.status === "done").length;
@@ -1214,18 +1258,16 @@
     const avg = total
       ? batchItems.reduce((a, b) => a + (b.progress || 0), 0) / total : 0;
     const pct = Math.round(avg * 100);
-    let text = T("batch.progress", null, { done, total, pct });
-    if (failed) text += T("batch.failedSuffix", null, { n: failed });
-    if (batchRunning) text += T("batch.runningSuffix", " · 執行中");
-    const el = $("#batch-summary"); if (el) el.textContent = text;
 
-    // Wave 11／問題 8：批次頁獨立進度（以前只有上面那行純文字）。
+    // ── 佇列級 ─────────────────────────────────────────────
     const bar = $("#batch-prog-bar"), pctEl = $("#batch-prog-pct"),
           statusEl = $("#batch-prog-status"), countEl = $("#batch-prog-count");
     if (bar) bar.style.width = pct + "%";
     if (pctEl) pctEl.textContent = pct + "%";
     if (statusEl) {
-      if (active) statusEl.textContent = T("batch.progRunning", null, { name: active.name });
+      // 狀態只講「處於什麼狀態」，檔案名交給下面的檔案級區塊，避免同一句
+      // 話在兩層各說一遍（舊版 status 與 active 都帶 name）。
+      if (active) statusEl.textContent = T("batch.stRunning", "辨識中");
       else if (batchRunning) statusEl.textContent = T("batch.progPaused", null, { n: pending });
       else if (!total) statusEl.textContent = T("batch.progEmpty", "尚未加入檔案");
       else if (done + failed === total) statusEl.textContent = T("batch.progDone", "全部完成");
@@ -1236,31 +1278,78 @@
       if (failed) c += " · " + T("batch.progFailed", null, { n: failed });
       countEl.textContent = c;
     }
-    // Wave 13：總進度卡片的「已耗時 / 已完成」與佇列標題統計。
+    // 佇列級「已耗時」放 meta；「預計剩餘」放 detail 的尾端，兩者互不重複。
     const metaEl = $("#batch-prog-meta");
     if (metaEl) {
-      const el = batchElapsedSec(lastBatchDetail);
-      const bits = [];
-      if (el > 0) bits.push(T("batch.elapsed", null, { t: fmtDur(el) }));
-      bits.push(T("batch.doneRatio", null, { done: done + failed, total }));
-      metaEl.textContent = bits.join(" · ");
+      metaEl.textContent = batchElapsed > 0
+        ? T("batch.elapsed", null, { t: fmtDur(batchElapsed) }) : "";
     }
+    const qEtaEl = $("#batch-prog-eta");
+    if (qEtaEl) {
+      const t = queueEtaSec();
+      qEtaEl.hidden = t == null;
+      qEtaEl.textContent = t == null ? "" : T("batch.queueEta", null, { t: fmtDur(t) });
+    }
+    // 佇列標題只留「檔數 + 總音訊」；本檔剩餘屬檔案級，已移到上面那層。
     const qEl = $("#batch-queue-meta");
     if (qEl) {
       const sumSec = batchItems.reduce(
         (a, b) => a + (Number(b.durationSec) || 0), 0);
-      const eta = lastBatchDetail && lastBatchDetail.etaSec != null
-        ? fmtDur(lastBatchDetail.etaSec) : "—";
       qEl.textContent = T("batch.queueMeta", null,
-        { n: total, audio: sumSec ? fmtDur(sumSec) : "—", left: eta });
+        { n: total, audio: sumSec ? fmtDur(sumSec) : "—" });
     }
     refreshBatchActiveText();
     renderCurrentFile();
+  }
+
+  /** 本次執行設定卡：逐項列出音檔頁的控制項與它「現在實際會用的值」。
+      執行中顯示開始那一刻鎖定的值（batchRunOpts），並標明已鎖定；
+      閒置時直接讀控制項，等同「按下去會用什麼」。 */
+  let _batchCfgSig = "";
+  function renderBatchConfig() {
+    const host = $("#batch-cfg-grid"); if (!host) return;
+    const locked = batchRunning && Object.keys(batchRunOpts || {}).length > 0;
+    const src = locked ? batchRunOpts : currentBatchOpts();
+    const note = $("#batch-cfg-note");
+    if (note) {
+      note.textContent = T(locked ? "batch.cfgLocked" : "batch.cfgLive");
+      note.classList.toggle("is-locked", locked);
+    }
+    const auto = T("batch.cfgAuto", "自動");
+    const diar = src.diarize
+      ? (String(src.nSpeakers || "auto") === "auto"
+         ? auto : T("batch.cfgSpeakers", null, { n: src.nSpeakers }))
+      : T("batch.cfgOff", "關閉");
+    const hintLen = String(src.hint || "").trim().length;
+    const vad = (src.vadThreshold === null || src.vadThreshold === undefined ||
+                 src.vadThreshold === "")
+      ? "—" : Number(src.vadThreshold).toFixed(2);
+    const chunkN = Number(src.chunkSecs);
+    const chunk = chunkN > 0 ? T("batch.cfgSecs", null, { n: chunkN }) : auto;
+    const rows = [
+      [T("batch.cfgLang", "辨識語言"), src.language || auto, false],
+      [T("batch.cfgDiar", "說話者分離"), diar, false],
+      [T("batch.cfgAlign", "詞級優化"),
+       src.align ? T("batch.cfgOn", "開") : T("batch.cfgOff", "關"), false],
+      [T("batch.cfgHint", "辨識提示"),
+       hintLen ? T("batch.cfgHintOn", null, { n: hintLen }) : T("batch.cfgNone", "無"), false],
+      [T("batch.cfgVad", "VAD 靈敏度"), vad, false],
+      [T("batch.cfgChunk", "每段最長"), chunk, false],
+      // 試跑只對單檔有意義，明確標「不適用」而不是默默忽略。
+      [T("batch.cfgTrial", "試跑前 5 分鐘"), T("batch.cfgNa", "不適用"), true],
+    ];
+    const sig = JSON.stringify(rows);
+    if (sig === _batchCfgSig) return;     // 佇列事件很密，值沒變就不重建 DOM
+    _batchCfgSig = sig;
+    host.innerHTML = rows.map(([k, v, na]) =>
+      `<div class="cfg-item"><span class="k">${esc(k)}</span>` +
+      `<span class="v${na ? " is-na" : ""}">${esc(v)}</span></div>`).join("");
   }
   function renderBatch() {
     trackBatchTiming();
     closeBatchMenu();          // 佇列重繪會移除舊按鈕，選單跟著關掉
     batchSummary();
+    renderBatchConfig();
     const host = $("#batch-list"); if (!host) return;
     host.innerHTML = "";
     if (!batchItems.length) {
@@ -1620,8 +1709,10 @@
   async function runBatch() {
     if (API.mode === "web") {
       try {
+        // 開始／續跑都把音檔頁「此刻」的設定帶給後端，整條佇列鎖定同一組值。
+        // 「跳過目前檔案」的重新啟動不帶（見選單），沿用已鎖定的那一份。
         if (batchRunning) await API.batchCancel();
-        else await API.batchStart();
+        else await API.batchStart(currentBatchOpts());
       } catch (err) { logLine("✕ " + (err.message || err)); }
       await refreshBatch();
       return;

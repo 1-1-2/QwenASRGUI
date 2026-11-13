@@ -1,7 +1,13 @@
 <!DOCTYPE html>
-<html lang="zh-Hant">
+<!-- data-locale 由 webview_server 在输出时替换成设置里的界面语言。
+     i18n.js 在 <head> 里同步解析，DOM 一就绪就套用并解锁 CSS 闸门，
+     因此首帧就是正确语言，不会先闪一下繁中。
+     translate="no" + 下方 meta 一起压掉浏览器翻译提示：本页语言由用户
+     在设置里选定、文本由字典提供，机器翻译只会把术语翻坏。 -->
+<html lang="zh-Hant" data-locale="hant" translate="no">
 <head>
 <meta charset="utf-8">
+<meta name="google" content="notranslate">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>聲音辨識小工具</title>
 <link rel="icon" type="image/png" href="favicon.png">
@@ -9,6 +15,9 @@
      且 <link rel="stylesheet"> 是渲染阻塞资源，加载不出来会白屏 20+ 秒）。
      优先级：系统 UI 字体 → 平台默认无衬线 → monospace 兜底。 -->
 <link rel="stylesheet" href="css/app.css">
+<!-- i18n 必须早于首帧：放在 head 里同步加载，配合 CSS 的 data-i18n-ready
+     闸门，保证第一次绘制就是设置的语言。 -->
+<script src="js/i18n.js"></script>
 </head>
 <body>
 <!-- J5: persistent banner for security-relevant runtime states (e.g. TLS
@@ -290,10 +299,19 @@
             </button>
             <button class="btn btn-primary" id="btn-batch-run"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span data-i18n="batch.run">全部開始</span></button>
             <button class="btn btn-ghost" id="btn-batch-clear"><span data-i18n="batch.clear">清除已完成</span></button>
-            <span class="batch-shared" data-i18n="batch.sharedOpts">語言、提示詞與說話者設定共用「音檔轉字幕」頁的設定</span>
             <div class="sp"></div>
-            <div class="summary" id="batch-summary">—</div>
           </div>
+        </div>
+
+        <!-- 本次執行設定：把音檔頁的每個控制項與它「現在實際會用的值」並列，
+             使用者不必切頁來回比對。執行中顯示的是開始那一刻鎖定的值，
+             並標明「本次已鎖定」，避免以為改滑桿能影響正在跑的佇列。 -->
+        <div class="card batch-cfg" id="batch-cfg">
+          <div class="cfg-head">
+            <span class="t" data-i18n="batch.cfgTitle">本次執行設定</span>
+            <span class="d" id="batch-cfg-note" data-i18n="batch.cfgLive">與「音檔轉字幕」頁同步</span>
+          </div>
+          <div class="cfg-grid" id="batch-cfg-grid"></div>
         </div>
 
         <!-- Wave 16：路徑框改為常顯（不再點按鈕才展開），並把「貼上本機路徑」
@@ -316,7 +334,12 @@
         <!-- Wave 13：批次頁改成「總進度 → 目前檔案 → 佇列」三層。
              保留 batch-progress / batch-prog-bar / batch-prog-status 等既有 id，
              讓既有靜態回歸不需改動。後端拿不到的數值一律顯示 —，不編造。 -->
+        <!-- 進度分兩層，用縮排與左側豎線表達從屬關係：
+             ① 佇列級（整批）＝狀態 + 總進度條 + 完成數 + 預計剩餘
+             ② 檔案級（當前這一支）＝第 i/n 支 + 本檔進度 + 本檔已用/剩餘/倍率
+             兩層各只顯示自己那層獨有的數字，不重複同一句話。 -->
         <div class="progress card batch-progress" id="batch-progress">
+          <div class="lv lv-queue" data-i18n="batch.lvQueue">佇列</div>
           <div class="meta">
             <span class="s" id="batch-prog-status" data-i18n="batch.idle">待處理</span>
             <span class="m" id="batch-prog-meta"></span>
@@ -325,9 +348,13 @@
           <div class="bar"><i id="batch-prog-bar" style="width:0%"></i></div>
           <div class="detail" id="batch-prog-detail">
             <span id="batch-prog-count">0 / 0 完成</span>
-            <span id="batch-prog-active">—</span>
+            <span id="batch-prog-eta"></span>
           </div>
           <div class="cur" id="batch-cur" hidden>
+            <div class="cur-head">
+              <span class="lv lv-file" data-i18n="batch.lvFile">目前檔案</span>
+              <span class="cur-name" id="batch-prog-active">—</span>
+            </div>
             <div class="cur-bar-row">
               <div class="bar"><i id="batch-cur-bar" style="width:0%"></i></div>
               <span class="pct" id="batch-cur-pct">0%</span>
@@ -568,7 +595,7 @@
 
 <input id="hidden-file" type="file" accept="audio/*,video/*" style="display:none">
 <script src="js/bridge.js"></script>
-<script src="js/i18n.js"></script>
+<!-- i18n.js 已在 <head> 同步載入（首帧語言），這裡不再重複引入 -->
 <script src="js/app.js"></script>
 </body>
 </html>

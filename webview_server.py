@@ -67,6 +67,34 @@ _CONTENT_TYPES = {
     ".woff2": "font/woff2",
 }
 
+# ── 首屏語言注入 ─────────────────────────────────────────────────────
+# index.html 是繁體寫死的骨架；若等 app.js 讀完 settings 再切換，使用者會看到
+# 「先繁中、再跳成設定的語言」。所以輸出 HTML 時就把設定語言寫進
+# <html data-locale lang>，i18n.js 在 head 同步解析後即可直接套用。
+_LOCALE_MAP = {
+    "hant": "hant", "hans": "hans", "en": "en",
+    "繁體中文": "hant", "简体中文": "hans", "簡體中文": "hans", "English": "en",
+}
+_LOCALE_LANG = {"hant": "zh-Hant", "hans": "zh-Hans", "en": "en"}
+
+
+def _inject_locale(data: bytes, server) -> bytes:
+    """把設定裡的介面語言寫進 index.html 的 <html> 標籤。"""
+    try:
+        raw = str(server.backend._settings_raw().get("ui_lang", "") or "")
+    except Exception:
+        raw = ""
+    loc = _LOCALE_MAP.get(raw, "hant")
+    if loc == "hant":
+        return data                       # HTML 預設就是繁中，不用改
+    try:
+        html = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+    html = html.replace('data-locale="hant"', f'data-locale="{loc}"', 1)
+    html = html.replace('lang="zh-Hant"', f'lang="{_LOCALE_LANG[loc]}"', 1)
+    return html.encode("utf-8")
+
 
 def pick_local_files() -> list[str]:
     """Open a native Windows multi-select dialog and return absolute paths.
@@ -445,8 +473,13 @@ class WebViewServer:
                         except ValueError as e:
                             return self._err(400, str(e))
                     if path == "/api/batch/start":
+                        # 開始當下的音檔頁設定（語言／分離／詞級優化／提示詞／
+                        # VAD／每段秒數）隨請求帶入，整條佇列鎖定同一組值。
+                        # body 在 do_POST 開頭已統一讀進 _post_body，這裡只解析。
+                        body = self._read_json_body()
+                        opts = body.get("opts") if isinstance(body, dict) else None
                         return self._json({"ok": True,
-                                           "summary": server.batch_queue.start()})
+                                           "summary": server.batch_queue.start(opts)})
                     if path == "/api/batch/cancel":
                         return self._json({"ok": True,
                                            "summary": server.batch_queue.cancel()})
@@ -537,6 +570,9 @@ class WebViewServer:
                 if not target.is_file():
                     return self._err(404, "not found")
                 data = target.read_bytes()
+                # 首屏語言：只改 HTML 入口，其餘靜態檔原樣輸出。
+                if target.name == "index.html":
+                    data = _inject_locale(data, server)
                 ctype = _CONTENT_TYPES.get(target.suffix.lower(), "application/octet-stream")
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)

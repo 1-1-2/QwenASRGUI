@@ -134,9 +134,9 @@
     "batch.resumeHint": ["服務端佇列：重新整理頁面仍會保留進度與斷點",
                          "服务端队列：刷新页面仍会保留进度与断点",
                          "Server-side queue: refresh keeps progress and checkpoints"],
-    "batch.sharedOpts": ["語言、提示詞、切分與試跑參數共用「音檔轉字幕」頁的設定",
-                         "语言、提示词、切分与试跑参数共用「音频转字幕」页的设置",
-                         "Language, hint, segmentation and trial options are shared with the Audio page"],
+    "batch.sharedOpts": ["語言、提示詞與切分參數共用「音檔轉字幕」頁；試跑只對單檔生效",
+                         "语言、提示词与切分参数共用「音频转字幕」页；试跑只对单文件生效",
+                         "Language, hint and chunking come from the Audio page; the 5-min trial applies to single files only"],
     "common.close": ["關閉", "关闭", "Close"],
 
     // Wave 11：本機路徑直引（問題 3）與批次頁獨立進度（問題 8）
@@ -162,11 +162,10 @@
     "batch.progFailed": ["{n} 失敗", "{n} 失败", "{n} failed"],
     "batch.progActive": ["目前：{name} · {status}", "当前：{name} · {status}", "Now: {name} · {status}"],
     "batch.queue": ["佇列", "队列", "Queue"],
-    "batch.queueMeta": ["{n} 個檔案 · 總音訊 {audio} · 本檔剩餘 {left}", "{n} 个文件 · 总音频 {audio} · 本档剩余 {left}", "{n} files · total {audio} · current left {left}"],
+    "batch.queueMeta": ["{n} 個檔案 · 總音訊 {audio}", "{n} 个文件 · 总音频 {audio}", "{n} files · total {audio}"],
     "batch.currentFile": ["目前第 {i}/{n} 個 · 正在識別：{name}", "当前第 {i}/{n} 个 · 正在识别：{name}", "File {i}/{n} · transcribing: {name}"],
     "batch.noActive": ["—", "—", "—"],
     "batch.elapsed": ["已耗時 {t}", "已耗时 {t}", "Elapsed {t}"],
-    "batch.doneRatio": ["已完成 {done}/{total}", "已完成 {done}/{total}", "{done}/{total} done"],
     "batch.groups": ["已識別 {n} 段", "已识别 {n} 段", "{n} segments done"],
     "batch.pickUnsupported": [
       "此環境無法叫出系統選檔視窗，請改用「貼上本機路徑」",
@@ -177,8 +176,30 @@
       "已收到 {n} 个文件，但浏览器不会把拖入文件的真实路径交给网页（Chromium 的安全设计，无法绕过）。请改为「点击此框」用系统选档，可一次选多个——同样只引用路径、不复制；或把路径粘贴到下方。",
       "Received {n} file(s), but the browser never exposes the real path of a dropped file (a Chromium security rule with no workaround). Click this box to pick several files at once via the system dialog — still referenced by path, never copied — or paste a path below."],
     "batch.fileElapsed": ["本檔已耗時 {t}", "本档已耗时 {t}", "File elapsed {t}"],
-    "batch.speed": ["速度 {x}×", "速度 {x}×", "Speed {x}×"],
     "batch.fileRemaining": ["預計本檔剩餘 {t}", "预计本档剩余 {t}", "File ETA {t}"],
+    "batch.rateLong": ["全程 {x}×", "全程 {x}×", "Overall {x}×"],
+    "batch.rate5m": ["近 5 分鐘 {x}×", "近 5 分钟 {x}×", "Last 5 min {x}×"],
+    "batch.queueEta": ["預計剩餘 {t}", "预计剩余 {t}", "Queue ETA {t}"],
+    "batch.lvQueue": ["佇列", "队列", "Queue"],
+    "batch.lvFile": ["目前檔案", "当前文件", "Current file"],
+    "batch.cfgTitle": ["本次執行設定", "本次执行设置", "Settings for this run"],
+    "batch.cfgLive": ["與「音檔轉字幕」頁同步", "与「音频转字幕」页同步", "Mirrors the Audio → Subtitle page"],
+    "batch.cfgLocked": ["本次執行已鎖定，改動下次生效", "本次执行已锁定，改动下次生效", "Locked for this run; changes apply next time"],
+    "batch.cfgLang": ["辨識語言", "识别语言", "Language"],
+    "batch.cfgDiar": ["說話者分離", "说话者分离", "Speakers"],
+    "batch.cfgAlign": ["詞級優化", "词级优化", "Word refine"],
+    "batch.cfgHint": ["辨識提示", "识别提示", "Hint"],
+    "batch.cfgHintOn": ["已填 {n} 字", "已填 {n} 字", "{n} chars"],
+    "batch.cfgNone": ["無", "无", "None"],
+    "batch.cfgVad": ["VAD 靈敏度", "VAD 灵敏度", "VAD"],
+    "batch.cfgChunk": ["每段最長", "每段最长", "Max chunk"],
+    "batch.cfgSecs": ["{n} 秒", "{n} 秒", "{n} s"],
+    "batch.cfgTrial": ["試跑前 5 分鐘", "试跑前 5 分钟", "5-min trial"],
+    "batch.cfgNa": ["不適用", "不适用", "N/A"],
+    "batch.cfgAuto": ["自動", "自动", "Auto"],
+    "batch.cfgOff": ["關閉", "关闭", "Off"],
+    "batch.cfgOn": ["開", "开", "On"],
+    "batch.cfgSpeakers": ["{n} 人", "{n} 人", "{n} speakers"],
     "batch.noDetail": ["—", "—", "—"],
     "batch.used": ["已用 {t}", "已用 {t}", "Used {t}"],
     "batch.left": ["剩餘 {t}", "剩余 {t}", "Left {t}"],
@@ -1050,4 +1071,23 @@
                   get msgKeys() { return Object.keys(M); },
                   get tKeys() { return Object.keys(D); },
                   hasMsg(k) { return Object.prototype.hasOwnProperty.call(M, k); } };
+
+  // ── 首屏語言 ────────────────────────────────────────────────────
+  // 伺服器輸出 index.html 時，已把設定裡的介面語言寫進 <html data-locale>。
+  // 這裡在 DOM 一就緒就套用，並解除 CSS 閘門
+  // （html:not([data-i18n-ready]) body 先隱藏）。這一步早於 app.js 的
+  // getSettings()，所以首帧就是正確語言，不會「先繁中、再跳簡中」。
+  function bootstrapLang() {
+    // 單元測試在 Node 裡跑這個檔（document 只是個 stub），所以先確認
+    // documentElement 真的支援 getAttribute，否則直接跳過。
+    const root = (typeof document !== "undefined" && document.documentElement) || null;
+    if (!root || typeof root.getAttribute !== "function") return;
+    const boot = root.getAttribute("data-locale");
+    try { setLang(boot || LOCALE); }
+    catch (e) { console.warn("[i18n] bootstrap failed", e); }
+    root.setAttribute("data-i18n-ready", "1");
+  }
+  if (typeof document !== "undefined" && document.readyState === "loading")
+    document.addEventListener("DOMContentLoaded", bootstrapLang, { once: true });
+  else bootstrapLang();
 })();
