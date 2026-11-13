@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -54,6 +55,48 @@ def find_chatllm_dir() -> Path | None:
         if (cand / "main.exe").exists():
             return cand
     return None
+
+
+def build_env() -> dict[str, str]:
+    """回傳給 main.exe 的環境變數，保證它找得到 ffmpeg。
+
+    為什麼需要：``main.exe`` 解碼音訊是**透過 PATH 呼叫 ffmpeg** 的子程序。
+    系統 PATH 沒有 ffmpeg 時它不會報錯，而是印一行
+    ``'ffmpeg' is not recognized``，然後**仍然輸出一份合法的 JSON**——
+    固定 32 項、覆蓋 0~2.00s 的兜底對齊。呼叫端看到「有結果」就照單全收，
+    字幕時間被壓扁到前兩秒，而且全程靜默。
+
+    實測：45s chunk 在有/無 ffmpeg 下，覆蓋範圍分別是 13.12s 與 2.00s；
+    端到端字幕空白率 96% vs 4%。也就是說「FFmpeg 沒裝」這個環境問題，
+    表現出來是「對齊品質莫名變差」，極難歸因。
+
+    因此把能找到的 ffmpeg 目錄**前置**到子程序的 PATH：系統 PATH 優先級
+    維持不變（有的話照用），沒有時自動用 app 自帶的那份。找不到就原樣
+    返回，讓上游照舊失敗——但至少不會因為「忘了加 PATH」而靜默降級。
+    """
+    env = os.environ.copy()
+    try:
+        from ffmpeg_utils import find_ffmpeg
+        exe = find_ffmpeg()
+    except Exception:
+        exe = None
+    if exe is None:
+        return env
+
+    ff_dir = str(Path(exe).parent)
+    # Windows 的 PATH 鍵大小寫不固定（實測有 Path / PATH 兩種），逐一處理
+    for key in ("PATH", "Path", "path"):
+        if key in env:
+            parts = [p for p in env[key].split(os.pathsep) if p]
+            if ff_dir not in parts:
+                env[key] = os.pathsep.join([ff_dir, *parts])
+            break
+    else:
+        env["PATH"] = ff_dir
+
+    # 讓下游也能直接取用（部分 ffmpeg 封裝會讀這個）
+    env.setdefault("FFMPEG_PATH", str(exe))
+    return env
 
 
 class ChatLLMAligner:
@@ -120,6 +163,7 @@ class ChatLLMAligner:
                 capture_output=True, stdin=subprocess.DEVNULL,
                 text=True, encoding="utf-8", errors="replace",
                 timeout=30, cwd=str(self._chatllm_dir),
+                env=build_env(),
                 creationflags=_CREATE_NO_WINDOW, startupinfo=_startup_info(),
             )
             out = r.stdout + r.stderr
@@ -164,6 +208,7 @@ class ChatLLMAligner:
                 cmd, capture_output=True, stdin=subprocess.DEVNULL,
                 text=True, encoding="utf-8", errors="replace",
                 timeout=120, cwd=str(self._chatllm_dir),
+                env=build_env(),
                 creationflags=_CREATE_NO_WINDOW, startupinfo=_startup_info(),
             )
         except Exception:
