@@ -472,6 +472,18 @@ class WebViewServer:
                             return self._json({"ok": True, "item": item})
                         except ValueError as e:
                             return self._err(400, str(e))
+                    if path == "/api/catalog/verify":
+                        body = self._read_json_body()
+                        bid = (body or {}).get("id") if isinstance(body, dict) else None
+                        if not bid:
+                            return self._err(400, "missing id")
+                        return self._json(server.backend.verify_catalog_bundle(bid))
+                    if path == "/api/catalog/open":
+                        body = self._read_json_body()
+                        bid = (body or {}).get("id") if isinstance(body, dict) else None
+                        if not bid:
+                            return self._err(400, "missing id")
+                        return self._json(server.backend.open_catalog_dir(bid))
                     if path == "/api/batch/start":
                         # 開始當下的音檔頁設定（語言／分離／詞級優化／提示詞／
                         # VAD／每段秒數）隨請求帶入，整條佇列鎖定同一組值。

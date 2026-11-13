@@ -116,12 +116,14 @@ def test_vad_consistent(r: Result):
 
 
 def test_health_default_open(r: Result):
-    print("\n[2] 自检默认展开，且状态徽标会更新")
-    r.check("details 默认 open", re.search(r'id="health-fold"\s+open', HTML) is not None)
+    # 需求变更：自检信息量太大，改为**默认收起**，只在红燈（缺且不可自动补）
+    # 时自动展开——黄灯可补，不打扰。
+    print("\n[2] 自检默认收起，红灯时自动展开")
+    r.check("details 默认不 open", re.search(r'id="health-fold"\s+open', HTML) is None)
     r.check("health-sum 只有一处（重复 id 会让徽标永远停在初始文案）",
             HTML.count('id="health-sum"') == 1)
-    r.check("不再按红/黄灯强制展开",
-            "h.summary.red > 0) fold.open = true" not in APP)
+    r.check("红灯时自动展开",
+            "h.summary.red > 0) fold.open = true" in APP)
     r.check("初始占位走 i18n（切语言会变）",
             'data-i18n="catalog.checking"' in HTML and "catalog.checking" in I18N)
 

@@ -628,7 +628,7 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .batch-head { margin-bottom: 14px; }
 .batch-tools {
   display: flex; align-items: center; gap: 12px;
-  margin-top: 12px; flex-wrap: wrap;
+  margin: 12px 0 14px; flex-wrap: wrap;
 }
 .batch-tools .sp { flex: 1; }
 .batch-tools .summary { font-size: 12.5px; color: var(--muted); font-family: var(--font-mono); }
@@ -711,8 +711,15 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .cfg-head .t { font-size: 13px; font-weight: 600; color: var(--ink); }
 .cfg-head .d { font-size: 11.5px; color: var(--muted); }
 .cfg-head .d.is-locked { color: var(--warn-fg); }
-.cfg-grid { display: flex; flex-wrap: wrap; gap: 10px 26px; }
-.cfg-item { display: flex; flex-direction: column; gap: 2px; min-width: 84px; }
+/* 固定柵格：9 項參數排成整齊幾列，避免 flex 逐項撐寬造成「第一行 7 個、
+   第二行 2 個」的參差感。 */
+.cfg-grid {
+  display: grid; gap: 10px 18px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+@media (max-width: 900px) { .cfg-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .cfg-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.cfg-item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .cfg-item .k { font-size: 11px; color: var(--muted); }
 .cfg-item .v {
   font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--ink);
@@ -1024,4 +1031,124 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
+}
+
+/* ============================================================
+   模型頁：狀態卡 / 卡片頭 / 統一折疊三角
+   目標：預設只看得到「結論」，長說明收進 hover；三段式字級
+   （13.5 標題 / 12.5 值 / 11.5 說明）取代原本的 6 檔字級。
+   ============================================================ */
+.model-status { padding: 14px 16px; }
+.ms-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ms-model { font-size: 15px; font-weight: 700; color: var(--ink); }
+.ms-state { font-size: 12.5px; color: var(--muted); }
+.ms-devices {
+  display: flex; gap: 16px; flex-wrap: wrap;
+  margin-top: 9px; font-size: 12px; color: var(--ink-2);
+}
+.ms-devices .dev {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0; border: 0; background: none;
+}
+.ms-devices .dev .ic { width: 14px; height: 14px; flex: 0 0 auto; }
+.ms-devices .dev .nm { font-weight: 400; }
+.ms-devices .dev .vram { color: var(--faint); }
+/* 「使用中 / 12.6 GB 可用」與裝置名之間補一個分隔點，否則會黏成一長串。 */
+.ms-devices .dev .vram::before { content: "·"; margin-right: 6px; opacity: .6; }
+
+.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.card-head .card-title { font-size: 13.5px; font-weight: 700; color: var(--ink); }
+.inline-state { font-size: 12px; color: var(--muted); }
+.inline-state b { color: var(--ink-2); font-weight: 600; }
+
+/* 自檢：一行只留「名稱 + 值」，長說明掛在圓形感嘆號上 */
+.hc-item { gap: 7px; padding: 4px 0; }
+.hc-item .hi-label {
+  color: var(--ink-2); flex: 0 1 auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hc-item .hi-value {
+  margin-left: auto; color: var(--faint); font-size: 11.5px;
+  white-space: nowrap; flex: 0 0 auto;
+}
+.hi-info {
+  flex: 0 0 auto; width: 14px; height: 14px; padding: 0;
+  border: 1px solid var(--line-strong); border-radius: 50%;
+  background: none; color: var(--muted); cursor: help;
+  font-size: 9px; font-weight: 700; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  position: relative;
+}
+.hi-info:hover, .hi-info:focus-visible { color: var(--ink); border-color: var(--muted); }
+.hi-info::after {
+  content: attr(data-tip);
+  position: absolute; left: 0; top: calc(100% + 6px); z-index: 40;
+  width: max-content; max-width: 240px; white-space: normal; text-align: left;
+  background: var(--panel); color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 9px; font-size: 11.5px; font-weight: 400; line-height: 1.55;
+  box-shadow: var(--shadow-md);
+  opacity: 0; visibility: hidden; transition: opacity .12s;
+}
+.hi-info:hover::after, .hi-info:focus-visible::after { opacity: 1; visibility: visible; }
+/* 觸屏沒有 hover：點一下切換（由 JS 加 .tip-on） */
+.hi-info.tip-on::after { opacity: 1; visibility: visible; }
+
+/* 備用後端：預設折成一行，不佔版面也不計入摘要 */
+.hc-inactive {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; font-size: 12px; color: var(--muted);
+  border: 1px dashed var(--line-strong); border-radius: 10px;
+  background: none; cursor: pointer; text-align: left; width: 100%;
+}
+.hc-inactive:hover { color: var(--ink-2); border-color: var(--muted); }
+.hc-inactive .chev { margin-left: auto; transition: transform .15s; }
+.hc-inactive[aria-expanded="true"] .chev { transform: rotate(90deg); }
+
+/* 統一的折疊三角（自檢 + 下載組） */
+.diag-fold { margin-top: 0; padding: 12px 16px; }
+.diag-fold > summary::before { content: none; }
+.diag-fold > summary .chev,
+.dl-group > summary .chev {
+  flex: 0 0 auto; color: var(--muted); font-size: 16px; line-height: 1;
+  transition: transform .15s;
+}
+.diag-fold[open] > summary .chev,
+.dl-group[open] > summary .chev { transform: rotate(90deg); }
+
+/* 下載中心：摘要一行、每組自帶三角、一次性說明收到底部折疊 */
+.catalog-summary { font-size: 12.5px; color: var(--ink-2); margin-bottom: 10px; }
+.dl-group {
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 9px 12px; margin-bottom: 8px; background: var(--panel);
+}
+.dl-group > summary {
+  cursor: pointer; font-size: 13px; color: var(--ink);
+  display: flex; gap: 8px; align-items: center; list-style: none;
+}
+.dl-group > summary::-webkit-details-marker { display: none; }
+.dl-group > summary::marker { content: ""; }
+.dl-actions { display: flex; gap: 8px; align-items: center; margin: 9px 0 6px; flex-wrap: wrap; }
+.catalog-note { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.catalog-note > summary {
+  cursor: pointer; font-size: 11.5px; color: var(--muted); list-style: none;
+}
+.catalog-note > summary::-webkit-details-marker { display: none; }
+
+/* 批量頁：拖放說明併入路徑卡，一行弱提示 + 展開看原因。
+   字級與行距刻意比輸入框低一級（11.5 / 1.55），保持「主操作 → 附註」的層級。 */
+.bp-nodrop { margin-top: 8px; }
+.bp-nodrop > summary {
+  display: inline-flex; align-items: center; gap: 6px;
+  cursor: pointer; list-style: none;
+  font-size: 11.5px; color: var(--muted); line-height: 1.5;
+}
+.bp-nodrop > summary::-webkit-details-marker { display: none; }
+.bp-nodrop > summary::marker { content: ""; }
+.bp-nodrop .nd-more { color: var(--accent-strong); }
+.bp-nodrop[open] .nd-more { display: none; }
+.bp-nodrop .nd-sub {
+  margin-top: 5px; font-size: 11.5px; line-height: 1.55; color: var(--faint);
+  max-width: 78ch;
 }

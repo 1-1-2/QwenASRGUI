@@ -98,6 +98,14 @@
       if (MODE !== "web") return MOCK.modelCatalog || { bundles: [], complete: [], incomplete: [] };
       return apiGet("/api/model-catalog");
     },
+    async verifyBundle(id) {
+      if (MODE !== "web") return { ok: true, message: "(preview)", checked: 0, total: 0 };
+      return apiPost("/api/catalog/verify", { id });
+    },
+    async openBundleDir(id) {
+      if (MODE !== "web") return { ok: true, path: "(preview mode)" };
+      return apiPost("/api/catalog/open", { id });
+    },
     async exportDownloadManifest(bundles) {
       if (MODE !== "web") return { ok: true, path: "(preview mode)", bytes: 0, bundle_count: 0 };
       return apiPost("/api/download-manifest", { bundles: bundles || [] });
