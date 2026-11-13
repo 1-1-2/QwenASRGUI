@@ -8,7 +8,10 @@ name: Build Windows Release
 #
 # Triggers:
 #   - Manual "Run workflow" ONLY. It builds the ZIP and uploads it as an
-#     Actions artifact; tick `create_release` to also publish a GitHub Release.
+#     Actions artifact; tick `create_release` to also create a Release **draft**.
+#   - Publishing still needs a human: open Releases and click "Publish". A draft
+#     is invisible to the public API and to /releases/latest, so nothing reaches
+#     users until that click.
 #   - Pushing a branch or a tag does NOT build and does NOT publish. Release is
 #     a deliberate, confirmed action: a stray `git push --tags` must never make
 #     a new version appear under releases/latest (the in-app "check update"
@@ -38,7 +41,7 @@ on:
         type: boolean
         default: true
       create_release:
-        description: 'Also create a GitHub Release (permanent download link)'
+        description: 'Also create a GitHub Release DRAFT (publish manually afterwards)'
         type: boolean
         default: false
       release_tag:
@@ -291,7 +294,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Create Release (manual opt-in only)
+      - name: Create Release draft (manual opt-in; publish by hand)
         if: ${{ inputs.create_release == true }}
         uses: softprops/action-gh-release@v2
         with:
@@ -313,7 +316,10 @@ jobs:
 
             See `使用说明.txt` and `build_manifest.json` for details and limits.
           files: release_pkg/*.zip
-          draft: false
+          # Draft on purpose: a draft is invisible to the public API and to
+          # /releases/latest, so nothing reaches users until a human opens the
+          # Releases page and clicks Publish.
+          draft: true
           prerelease: false
 
       - name: Write download summary
@@ -326,7 +332,7 @@ jobs:
             echo "- Bundled ffmpeg: \`${{ steps.ff.outputs.has }}\`"
             echo "- Download: Actions -> Artifacts -> QwenASR-WebView-Windows-x64"
             if [ "${{ inputs.create_release == true }}" = "true" ]; then
-              echo "- Permanent link: this repository's Releases page"
+              echo "- **Draft release created** — open Releases and click **Publish** to make it public."
             fi
             echo ""
             echo "> Recognition weights are not bundled; see 使用说明.txt."
