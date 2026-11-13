@@ -101,6 +101,7 @@ jobs:
             tests/test_layout.py batch_queue.py single_instance.py run_log.py \
             subtitle_extras.py release_manifest.py tests/test_batch_queue.py \
             tests/test_batch_api.py tests/test_ui_ops.py tests/test_wave5.py \
+            tests/test_out_naming.py \
             tests/test_release_manifest.py tests/test_docs.py \
             ui_text.py downloader.py tests/test_i18n_contract.py \
             tests/test_punct_contract.py tools/gen_download_doc.py \
@@ -176,6 +177,11 @@ jobs:
 
       - name: Wave 5 regression (punctuation / handout / TLS warning)
         run: python tests/test_wave5.py
+
+      - name: Output naming policy (suffix / overwrite / hash + resume memory)
+        # 「同名檔案」三種策略，以及續跑要靠 checkpoint.out_name 寫回同一份。
+        # 沒有這道閘，suffix 策略每次續跑都會多出一個 (1)、(2)。
+        run: python tests/test_out_naming.py
 
       - name: Wave 6 regression (bilingual docs / generated artefacts)
         run: python tests/test_docs.py

@@ -39,6 +39,9 @@
     "file.dropSub": ["支援 mp3 / wav / m4a / 影片音軌", "支持 mp3 / wav / m4a / 视频音轨", "Supports mp3 / wav / m4a / video audio"],
     "file.run": ["開始轉換", "开始转换", "Start"],
     "file.openDir": ["開啟輸出資料夾", "打开输出文件夹", "Open output folder"],
+    // 按鈕 hover 說明：srt 與同名 .rich.json 的差別。使用者常常不知道
+    // 兩份檔該拿哪一份去給剪輯軟體／播放器，這裡一次講清楚。
+    "file.openDirTip": ["資料夾裡每支音檔會產生兩種檔：.srt 是字幕，播放器、剪映、Premiere 可直接載入；同名的 .rich.json 是詞級時間軸＋說話者明細，供卡拉OK 高亮與說話者標籤使用，不是第二份字幕，刪掉不影響 .srt。", "文件夹里每支音频会产生两种文件：.srt 是字幕，播放器、剪映、Premiere 可直接加载；同名的 .rich.json 是词级时间轴＋说话人明细，供卡拉OK 高亮与说话人标签使用，不是第二份字幕，删掉不影响 .srt。", "Each run writes two files. The .srt is the subtitle track - players, CapCut and Premiere load it directly. The same-named .rich.json holds word-level timings and speaker labels (for karaoke highlighting and speaker tags); it is not a second subtitle file, and deleting it does not affect the .srt."],
     "file.saveSub": ["字幕存檔", "保存字幕", "Save subtitles"],
     "file.verify": ["字幕驗證", "字幕校验", "Verify"],
     "file.diar": ["說話者分離", "说话者分离", "Speaker diarization"],
@@ -204,6 +207,7 @@
     "batch.cfgNone": ["無", "无", "None"],
     "batch.cfgVad": ["VAD 靈敏度", "VAD 灵敏度", "VAD"],
     "batch.cfgChunk": ["每段最長", "每段最长", "Max chunk"],
+    "batch.cfgNaming": ["同名檔案", "同名文件", "Collisions"],
     "batch.cfgSecs": ["{n} 秒", "{n} 秒", "{n} s"],
     "batch.cfgTrial": ["試跑前 5 分鐘", "试跑前 5 分钟", "5-min trial"],
     "batch.cfgNa": ["不適用", "不适用", "N/A"],
@@ -391,6 +395,11 @@
     "dl.importFailed": ["匯入失敗：{err}", "导入失败：{err}", "Import failed: {err}"],
     "set.outputDir": ["輸出資料夾", "输出文件夹", "Output folder"],
     "set.outputDirDesc": ["字幕存到這裡；同名的 .rich.json 是「詞級時間軸＋說話者」明細（卡拉OK 同步與說話者標籤用），不是第二份字幕，刪掉不影響 .srt", "字幕存到这里；同名的 .rich.json 是“词级时间轴＋说话人”明细（卡拉OK 同步与说话人标签用），不是第二份字幕，删掉不影响 .srt", "Subtitles land here. The same-named .rich.json holds word timings and speaker labels (for karaoke sync and speaker tags) — it is not a second subtitle file and can be deleted without harming the .srt."],
+    "set.outNaming": ["同名檔案", "同名文件", "Name collisions"],
+    "set.outNamingDesc": ["輸出目錄已有同名 .srt 時的處理方式。數字後綴→「001 (1).srt」保留舊稿；覆蓋→直接蓋掉舊檔；雜湊後綴→「001-3f9c21.srt」，不同資料夾的同名檔案不會互相覆蓋。", "输出目录已有同名 .srt 时的处理方式。数字后缀→「001 (1).srt」保留旧文件；覆盖→直接覆盖旧文件；哈希后缀→「001-3f9c21.srt」，不同文件夹的同名文件不会相互覆盖。", "How to handle an existing .srt with the same name. Numbered → keep both, as 001 (1).srt; Overwrite → replace the old file; Hash → 001-3f9c21.srt, so the same name in another folder never collides."],
+    "set.nameSuffix": ["數字後綴", "数字后缀", "Numbered"],
+    "set.nameOverwrite": ["覆蓋", "覆盖", "Overwrite"],
+    "set.nameHash": ["雜湊後綴", "哈希后缀", "Hash"],
     "dl.importDirHint": ["用途：從別台電腦／瀏覽器手動下載好模型檔後，把「裝著這些檔案的資料夾」貼進來，按「匯入並驗證」即會核對大小與 SHA256 並複製到正確位置；不會重新下載。", "用途：从别的电脑／浏览器手动下载好模型文件后，把“装着这些文件的文件夹”贴进来，按“导入并校验”会核对大小与 SHA256 并复制到正确位置；不会重新下载。", "Purpose: after downloading model files manually (another machine or a browser), paste the folder that contains them and click Import & verify — sizes and SHA256 are checked, files are copied into place, nothing is re-downloaded."],
 
     "batch.runAll": ["全部開始", "全部开始", "Start all"],
@@ -1082,6 +1091,9 @@
     root.querySelectorAll("[data-i18n-html]").forEach(el => { const v = t(el.dataset.i18nHtml); if (v != null) el.innerHTML = v; });
     root.querySelectorAll("[data-i18n-ph]").forEach(el => { const v = t(el.dataset.i18nPh); if (v != null) el.setAttribute("placeholder", v); });
     root.querySelectorAll("[data-i18n-title]").forEach(el => { const v = t(el.dataset.i18nTitle); if (v != null) el.title = v; });
+    // 按鈕 hover 說明寫在 data-tip（CSS ::after 讀取），與原生 title 分開：
+    // title 有 ~1 秒延遲、無法排版、且多行說明會擠成一行。
+    root.querySelectorAll("[data-i18n-tip]").forEach(el => { const v = t(el.dataset.i18nTip); if (v != null) el.setAttribute("data-tip", v); });
     // 無障礙名稱也要跟著語言走：aria-label 原本硬編碼繁中，切簡中後讀屏仍唸繁中。
     root.querySelectorAll("[data-i18n-aria]").forEach(el => { const v = t(el.dataset.i18nAria); if (v != null) el.setAttribute("aria-label", v); });
     root.querySelectorAll("[data-i18n-lead]").forEach(el => applyLeadText(el, t(el.dataset.i18nLead)));

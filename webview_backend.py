@@ -1265,19 +1265,14 @@ class WebBackend:
 
             # 輸出落點：subtitles/ 下、用「原始上傳檔名」命名（可在「開啟輸出資料夾」找到）。
             # 上傳檔名為使用者可控（含 LAN/外網端點）→ 必須只取基名，杜絕路徑穿越。
+            # 同名衝突怎麼處理由「設定 → 同名檔案」決定，解析在下面（要等
+            # task_id / fingerprint 算出來才能判斷「這是續跑還是新任務」）。
             srt_dir = Path(getattr(core, "SRT_DIR", BASE_DIR / "subtitles"))
             srt_dir.mkdir(parents=True, exist_ok=True)
             raw_name = opts.get("name") or Path(path).name
             out_name = Path(str(raw_name).replace("\\", "/")).name   # 去除任何目錄成分
             if not out_name or out_name.startswith("."):
                 out_name = "transcript"
-            out_ref = srt_dir / out_name
-            # 防呆：確認解析後仍在 subtitles/ 內
-            try:
-                if srt_dir.resolve() not in out_ref.resolve().parents:
-                    out_ref = srt_dir / "transcript"
-            except Exception:
-                out_ref = srt_dir / "transcript"
 
             with self._lock:
                 self._apply_chunk_secs(_st.get("chunk_secs", 0))   # 依設定夾定本次 max_chunk_secs（夾到模型上限）
@@ -1361,12 +1356,6 @@ class WebBackend:
 
                 task_id = hashlib.sha1(
                     str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
-                out_srt = out_ref.with_suffix(".srt")
-                if trial:
-                    # A trial run must never pollute the full run's checkpoint
-                    # or overwrite its SRT.
-                    task_id += "-trial"
-                    out_srt = out_ref.with_name(out_ref.stem + ".trial.srt")
                 # Wave 14／需求 3：讓後續 progress / progress-detail 事件都帶上
                 # taskId，前端才能分辨「同一檔案的續跑」與「換了檔案」。
                 self._current_task_id = task_id
@@ -1393,6 +1382,31 @@ class WebBackend:
                     pass
                 fingerprint = hashlib.sha1(
                     "|".join(_fp_parts).encode("utf-8")).hexdigest()[:16]
+
+                # 同名檔案怎麼處理（設定 → 同名檔案）：
+                #   suffix    保留舊稿，新檔叫「名字 (1)」（預設）
+                #   overwrite 直接蓋掉（舊行為）
+                #   hash      名字帶來源短哈希，跨目錄同名不互相覆蓋
+                # 續跑要寫回同一份檔案的判定（含指紋比對）都在 resolve_out_srt。
+                if trial:
+                    # 試跑永遠另存，絕不碰正式稿與其斷點。
+                    task_id += "-trial"
+                    out_srt = srt_dir / (Path(out_name).stem + ".trial.srt")
+                else:
+                    from longform_runner import resolve_out_srt
+                    out_srt = resolve_out_srt(
+                        srt_dir, out_name,
+                        policy=(_st.get("out_naming") or "suffix"),
+                        work_dir=BASE_DIR / "longform_state",
+                        task_id=task_id, fingerprint=fingerprint,
+                        resume=bool(opts.get("longform_resume", True)))
+                # 防呆：確認解析後仍在 subtitles/ 內（resolve_out_srt 已只取基名，
+                # 這裡是第二道鎖，避免日後改動把路徑拼接放進來）。
+                try:
+                    if srt_dir.resolve() not in out_srt.resolve().parents:
+                        out_srt = srt_dir / "transcript.srt"
+                except Exception:
+                    out_srt = srt_dir / "transcript.srt"
 
                 rich_path = out_srt.with_suffix(".rich.json")
                 # A stale enrichment file must never leak into a new run.
@@ -2443,6 +2457,13 @@ class WebBackend:
             # 開關會顯示「開」但實際永不作用（與 accel 誤報同一類問題）。
             "autoRelease": self._auto_release_enabled(),
             "autoReleaseRequested": bool(s.get("auto_release_model", True)),
+            # 同名檔案策略：suffix（保留舊稿）/ overwrite（覆蓋）/ hash（名字帶哈希）
+            "outNaming": (s.get("out_naming")
+                          if s.get("out_naming") in ("suffix", "overwrite", "hash")
+                          else "suffix"),
+            # 實際輸出目錄（唯讀顯示）。以前設定頁這一列只有標題沒有值，
+            # 使用者無從得知字幕到底落在哪；這裡回真實路徑。
+            "outputDir": str(Path(getattr(core, "SRT_DIR", BASE_DIR / "subtitles"))),
         }
 
     def set_settings(self, patch: dict) -> dict:
@@ -2468,10 +2489,16 @@ class WebBackend:
                    "nSpeakers": "n_speakers", "align": "align", "hint": "hint",
                    "trial": "trial",
                    # Wave 12 (問題 1): model memory lifecycle.
-                   "autoRelease": "auto_release_model"}
+                   "autoRelease": "auto_release_model",
+                   # 同名檔案策略（suffix / overwrite / hash）
+                   "outNaming": "out_naming"}
         for k, v in patch.items():
             if k in key_map:
                 cur[key_map[k]] = v
+        # 只接受三種策略值，避免前端送錯字串被寫進 settings.json
+        # （讀的時候雖然會回退成 suffix，但存一個看不懂的值沒有意義）。
+        if "out_naming" in cur and cur["out_naming"] not in ("suffix", "overwrite", "hash"):
+            cur["out_naming"] = "suffix"
         try:
             f.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:

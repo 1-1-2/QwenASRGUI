@@ -194,6 +194,28 @@ def main() -> int:
     be3.cancel()
     r.check("cancel() 设置取消事件", be3._cancel_event.is_set())
 
+    # ── 4. 同名文件：默认保留旧稿，不静默覆盖（设定→同名文件=数字后缀）──
+    # 换一组参数（hint）→ 指纹不符 → 从头重跑；旧稿必须还在，新结果另存
+    # 「course (1).srt」。这就是 A 策略与「静默覆盖」的区别。
+    be4 = make_backend(tmp)
+    res4 = be4.transcribe({"path": str(wav), "hint": "换一组参数"},
+                          progress_cb=lambda p, s: None)
+    srt4 = Path(res4["srtPath"])
+    r.check("参数变了 → 另存 course (1).srt", srt4.name == "course (1).srt",
+            f"{srt4.name}（sub={srt4.parent.name}）")
+    r.check("旧稿仍在且未被清空", (tmp / "subtitles" / "course.srt").exists() and
+            "--> " in (tmp / "subtitles" / "course.srt").read_text(encoding="utf-8"))
+    r.check("新稿也有字幕", srt4.exists() and "--> " in srt4.read_text(encoding="utf-8"))
+
+    # 续跑（同一组参数）必须写回原来的那份，而不是又开一个 (2)。
+    be5 = make_backend(tmp)
+    res5 = be5.transcribe({"path": str(wav), "hint": "换一组参数"},
+                          progress_cb=lambda p, s: None)
+    r.check("续跑沿用同一份 (1)，不新增副本",
+            Path(res5["srtPath"]).name == "course (1).srt", res5.get("srtPath"))
+    r.check("没有意外的 course (2).srt",
+            not (tmp / "subtitles" / "course (2).srt").exists())
+
     passed = sum(r.items)
     print(f"\n结果：{passed}/{len(r.items)} 项通过")
     print("✅ 全部通过" if r.ok else "❌ 存在失败项")

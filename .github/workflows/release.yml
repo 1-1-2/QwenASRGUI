@@ -157,6 +157,7 @@ jobs:
           run_suite "batch_queue" python tests/test_batch_queue.py
           run_suite "ui_ops" python tests/test_ui_ops.py
           run_suite "wave5" python tests/test_wave5.py
+          run_suite "out_naming" python tests/test_out_naming.py
           run_suite "docs" python tests/test_docs.py
           run_suite "integration" python tests/test_integration.py
           run_suite "longform_runner" python tests/test_longform_runner.py \

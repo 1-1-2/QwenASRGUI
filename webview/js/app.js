@@ -264,6 +264,8 @@
   // 顯示的就是它，而不是使用者此刻可能已經改過的滑桿值。
   let batchRunOpts = {};
   let _lastStatus = null;          // 最近一次 getStatus，供同步渲染的地方取用
+  // 同名檔案策略的目前值（設定頁寫入、批次頁唯讀顯示）。
+  let _outNaming = "suffix";
   // 佇列級耗時（後端從按下「開始」起算，續跑會累加）。與單檔 elapsedSec 不同。
   let batchElapsed = 0;
   let batchDragId = null;          // 正在被拖動的項目 id（null = 沒在拖）
@@ -398,7 +400,8 @@
         logLine(I18N.t("file.previewTruncated").replace("%1", res.previewLimit) + " " + res.srtPath);
       }
       if (res.trial) logLine(T("run.trialNote"));
-      $("#btn-open-dir").disabled = false;
+      // 「開啟輸出資料夾」不需要等有輸出才亮：資料夾本來就在，
+      // 使用者常常是先想確認上次的檔在哪才轉檔。
       $("#btn-save-sub").disabled = false;
     } catch (err) {
       showProgress(0, "");
@@ -1015,7 +1018,12 @@
   }
   $("#btn-karaoke") && $("#btn-karaoke").addEventListener("click", () => setKaraoke(!karaokeOn));
 
-  $("#btn-open-dir").addEventListener("click", () => API.openOutputDir());
+  // 三處「開啟輸出資料夾」共用同一個後端呼叫（單檔頁 / 批次頁 / 設定頁）。
+  // 全部都常亮：目錄是固定的使用者資料夾，與有沒有產出無關。
+  ["#btn-open-dir", "#btn-batch-open-dir", "#btn-open-dir-set"].forEach(sel => {
+    const b = $(sel);
+    if (b) b.addEventListener("click", () => API.openOutputDir());
+  });
 
   // ── 字幕存檔：由記憶體中的 curSegs 在前端組檔，下載到使用者指定位置 ──
   //   （瀏覽器沙箱不暴露來源檔真實路徑，無法寫回來源資料夾，故走下載。
@@ -1387,6 +1395,11 @@
        hintLen ? T("batch.cfgHintOn", null, { n: hintLen }) : T("batch.cfgNone", "無"), false],
       [T("batch.cfgVad", "VAD 靈敏度"), vad, false],
       [T("batch.cfgChunk", "每段最長"), chunk, false],
+      // 批次最容易撞名（多個資料夾都有 001.mp4），所以把策略顯示出來，
+      // 免得使用者以為檔案沒產出、其實是被同名的另一支蓋掉了。
+      [T("batch.cfgNaming", "同名檔案"),
+       T(_outNaming === "overwrite" ? "set.nameOverwrite"
+         : (_outNaming === "hash" ? "set.nameHash" : "set.nameSuffix")), false],
       // 試跑只對單檔有意義，明確標「不適用」而不是默默忽略。
       [T("batch.cfgTrial", "試跑前 5 分鐘"), T("batch.cfgNa", "不適用"), true],
     ];
@@ -2329,6 +2342,12 @@
     $("#set-scale").value = s.scale; $("#set-scale-val").textContent = s.scale + "%";
     applyScale(s.scale);
     segSet("#set-format", s.format); segSet("#set-vocab", s.vocab); segSet("#set-theme", s.theme || "light");
+    // 同名檔案策略：後端只認 suffix / overwrite / hash，未知值一律回 suffix。
+    segSet("#set-outnaming", s.outNaming || "suffix");
+    _outNaming = s.outNaming || "suffix";
+    // 輸出資料夾：顯示真實路徑（唯讀）。以前的這一列只有標題沒有值，
+    // 使用者無從確認字幕到底寫到哪裡。
+    if ($("#set-outputdir-path")) $("#set-outputdir-path").value = s.outputDir || "";
     applyTheme(s.theme || "light");                 // 啟動即套用深/淺色
     $("#set-mirror").value = s.mirror || "";
     $("#set-ffmpeg").value = s.ffmpeg || "";
@@ -2528,12 +2547,16 @@
     }
   });
   // segmented 控制：點擊切換 + 回寫設定
-  [["#set-format", "format"], ["#set-vocab", "vocab"], ["#set-theme", "theme"]].forEach(([sel, key]) => {
+  [["#set-format", "format"], ["#set-vocab", "vocab"], ["#set-theme", "theme"],
+   ["#set-outnaming", "outNaming"]].forEach(([sel, key]) => {
     $(sel).addEventListener("click", e => {
       const b = e.target.closest("button"); if (!b) return;
       $$(sel + " button").forEach(x => x.classList.toggle("on", x === b));
       API.setSettings({ [key]: b.dataset.v });
       if (key === "theme") applyTheme(b.dataset.v);
+      if (key === "outNaming") {      // 批次頁那張表同步更新
+        _outNaming = b.dataset.v; renderBatchConfig();
+      }
     });
   });
   $("#set-mirror").addEventListener("change", e => API.setSettings({ mirror: e.target.value.trim() }));

@@ -142,7 +142,9 @@
               <div class="ctrl">
                 <span class="ctrl-t" data-i18n="file.outputLabel">輸出</span>
                 <div class="ctrl-actions">
-                  <button class="btn btn-ghost" id="btn-open-dir" disabled>
+                  <!-- 常亮：資料夾本來就存在，不該等「有輸出」才能開。
+                       hover 說明 .srt 與 .rich.json 的差別（data-i18n-tip）。 -->
+                  <button class="btn btn-ghost" id="btn-open-dir" data-i18n-tip="file.openDirTip">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span data-i18n="file.openDir">開啟輸出資料夾</span>
                   </button>
                   <button class="btn btn-ghost" id="btn-save-sub" disabled>
@@ -310,6 +312,11 @@
           <button class="btn btn-primary" id="btn-batch-run"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span data-i18n="batch.run">全部開始</span></button>
           <button class="btn btn-ghost" id="btn-batch-clear"><span data-i18n="batch.clear">清除已完成</span></button>
           <div class="sp"></div>
+          <!-- 與單檔頁同一顆：輸出資料夾是全域的，不屬於某一個任務，
+               沒有「必須先有輸出」的前提。hover 說明 srt / rich.json 差別。 -->
+          <button class="btn btn-ghost" id="btn-batch-open-dir" data-i18n-tip="file.openDirTip">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span data-i18n="file.openDir">開啟輸出資料夾</span>
+          </button>
         </div>
 
         <!-- 本次執行設定：把音檔頁的每個控制項與它「現在實際會用的值」並列，
@@ -585,7 +592,15 @@
             <input class="input mono" id="set-mirror" placeholder="hf-mirror.com" style="width:200px"></div>
           <div class="row"><div class="label"><div class="t" data-i18n="set.ffmpeg">FFmpeg 路徑</div><div class="d" data-i18n="set.ffmpegDesc">處理影片音軌所需（留空則需要時自動下載）</div></div>
             <div class="with-browse"><input class="input mono" id="set-ffmpeg" data-i18n-ph="set.ffmpegPh" placeholder="（留空＝自動偵測／需要時下載）" style="width:240px"><span class="chip chip-muted" id="ff-detected" data-i18n="set.ffDetected" hidden>已偵測</span></div></div>
-          <div class="row"><div class="label"><div class="t" data-i18n="set.outputDir">輸出資料夾</div><div class="d" data-i18n="set.outputDirDesc">字幕存到這裡；同名的 .rich.json 是「詞級時間軸＋說話者」明細（卡拉OK 同步與說話者標籤用），不是第二份字幕，刪掉不影響 .srt</div></div></div>
+          <div class="row"><div class="label"><div class="t" data-i18n="set.outputDir">輸出資料夾</div><div class="d" data-i18n="set.outputDirDesc">字幕存到這裡；同名的 .rich.json 是「詞級時間軸＋說話者」明細（卡拉OK 同步與說話者標籤用），不是第二份字幕，刪掉不影響 .srt</div></div>
+            <div class="with-browse">
+              <input class="input mono" id="set-outputdir-path" readonly style="width:230px">
+              <button class="btn btn-ghost btn-sm" id="btn-open-dir-set" data-i18n-tip="file.openDirTip"><span data-i18n="file.openDir">開啟輸出資料夾</span></button>
+            </div></div>
+          <!-- 同名檔案：原本的行為是「靜默覆蓋」，而不同資料夾的 001.mp4
+               會互相蓋掉（輸出只取基名）。這裡讓使用者決定。 -->
+          <div class="row"><div class="label"><div class="t" data-i18n="set.outNaming">同名檔案</div><div class="d" data-i18n="set.outNamingDesc">輸出目錄已有同名 .srt 時的處理方式。數字後綴→「001 (1).srt」保留舊稿；覆蓋→直接蓋掉舊檔；雜湊後綴→「001-3f9c21.srt」，不同資料夾的同名檔案不會互相覆蓋。</div></div>
+            <div class="seg" id="set-outnaming"><button class="on" data-v="suffix" data-i18n="set.nameSuffix">數字後綴</button><button data-v="overwrite" data-i18n="set.nameOverwrite">覆蓋</button><button data-v="hash" data-i18n="set.nameHash">雜湊後綴</button></div></div>
           <div class="row"><div class="label"><div class="t" data-i18n="set.theme">外觀主題</div></div>
             <div class="seg" id="set-theme"><button class="on" data-v="light" data-i18n="set.themeLight">淺色</button><button data-v="dark" data-i18n="set.themeDark">深色</button><button data-v="system" data-i18n="set.themeSystem">跟隨系統</button></div></div>
           <div class="row"><div class="label"><div class="t" data-i18n="set.lang">介面語言</div></div>

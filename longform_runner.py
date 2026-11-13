@@ -35,6 +35,7 @@ from __future__ import annotations
 import base64
 import collections
 import gc
+import hashlib
 import json
 import os
 import re
@@ -145,6 +146,11 @@ class Checkpoint:
 
     The fingerprint prevents resuming a half-old/half-new transcript after the
     model, chunk length, VAD threshold, language or script setting changed.
+
+    `out_name` remembers which file this task actually wrote. Without it the
+    "keep both" naming policy would allocate `(1)`, `(2)`, … on every resume of
+    the same job, and a cancelled run would be stitched onto a fresh empty file
+    instead of the one it was appending to.
     """
 
     def __init__(self, db_path: Path, task_id: str):
@@ -164,7 +170,8 @@ class Checkpoint:
                     status TEXT NOT NULL,
                     updated_at REAL NOT NULL,
                     fingerprint TEXT NOT NULL DEFAULT '',
-                    vad_state TEXT NOT NULL DEFAULT '')""")
+                    vad_state TEXT NOT NULL DEFAULT '',
+                    out_name TEXT NOT NULL DEFAULT '')""")
                 # Migrate databases created by earlier builds (safe to re-run).
                 cols = {row[1] for row in c.execute("PRAGMA table_info(progress)")}
                 if "fingerprint" not in cols:
@@ -173,6 +180,9 @@ class Checkpoint:
                 if "vad_state" not in cols:
                     c.execute("ALTER TABLE progress ADD COLUMN "
                               "vad_state TEXT NOT NULL DEFAULT ''")
+                if "out_name" not in cols:
+                    c.execute("ALTER TABLE progress ADD COLUMN "
+                              "out_name TEXT NOT NULL DEFAULT ''")
                 c.commit()
             finally:
                 c.close()
@@ -194,11 +204,13 @@ class Checkpoint:
         d = self._json_all().get(self.task_id)
         return (int(d["next_frame"]), int(d["next_index"]), d["status"]) if d else (0, 1, "new")
 
-    def _json_save(self, frame, index, status, fingerprint, vad_state):
+    def _json_save(self, frame, index, status, fingerprint, vad_state,
+                   out_name=""):
         d = self._json_all()
         d[self.task_id] = {"next_frame": int(frame), "next_index": int(index),
                            "status": status, "fingerprint": fingerprint or "",
-                           "vad_state": vad_state or ""}
+                           "vad_state": vad_state or "",
+                           "out_name": out_name or ""}
         tmp = self.json_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
         tmp.replace(self.json_path)          # atomic replace: never half-written
@@ -241,36 +253,128 @@ class Checkpoint:
             d = self._json_all().get(self.task_id) or {}
             return (d.get("fingerprint", "") or "", d.get("vad_state", "") or "")
 
+    def load_out_name(self) -> str:
+        """The .srt base name this task last wrote ('' when unknown)."""
+        with self._lock:
+            if self._use_sqlite:
+                try:
+                    c = self._conn()
+                    try:
+                        row = c.execute(
+                            "SELECT out_name FROM progress WHERE task_id=?",
+                            (self.task_id,)).fetchone()
+                        if row:
+                            return row[0] or ""
+                    finally:
+                        c.close()
+                except sqlite3.Error:
+                    self._use_sqlite = False
+            d = self._json_all().get(self.task_id) or {}
+            return d.get("out_name", "") or ""
+
     def save(self, next_frame: int, next_index: int, status: str = "running",
-             fingerprint: str | None = None, vad_state: str | None = None):
-        """Persist progress. None fingerprint/vad_state means "keep the old one"."""
+             fingerprint: str | None = None, vad_state: str | None = None,
+             out_name: str | None = None):
+        """Persist progress. None means "keep the value already stored"."""
         with self._lock:
             prev = self._json_all().get(self.task_id) or {}
             fp = prev.get("fingerprint", "") if fingerprint is None else (fingerprint or "")
             vs = prev.get("vad_state", "") if vad_state is None else (vad_state or "")
+            on = prev.get("out_name", "") if out_name is None else (out_name or "")
             if self._use_sqlite:
                 try:
                     c = self._conn()
                     try:
                         c.execute("""INSERT INTO progress
                                      (task_id,next_frame,next_index,status,updated_at,
-                                      fingerprint,vad_state)
-                                     VALUES(?,?,?,?,?,?,?)
+                                      fingerprint,vad_state,out_name)
+                                     VALUES(?,?,?,?,?,?,?,?)
                                      ON CONFLICT(task_id) DO UPDATE SET
                                        next_frame=excluded.next_frame,
                                        next_index=excluded.next_index,
                                        status=excluded.status,
                                        updated_at=excluded.updated_at,
                                        fingerprint=excluded.fingerprint,
-                                       vad_state=excluded.vad_state""",
+                                       vad_state=excluded.vad_state,
+                                       out_name=excluded.out_name""",
                                   (self.task_id, int(next_frame), int(next_index),
-                                   status, time.time(), fp, vs))
+                                   status, time.time(), fp, vs, on))
                         c.commit()
                     finally:
                         c.close()
                 except sqlite3.Error:
                     self._use_sqlite = False
-            self._json_save(next_frame, next_index, status, fp, vs)
+            self._json_save(next_frame, next_index, status, fp, vs, on)
+
+
+# ───────────────────── 輸出檔名（同名策略）─────────────────────
+#
+# 三種策略，對應設定頁的「同名檔案」：
+#   suffix    → 001.srt / 001 (1).srt / 001 (2).srt …（預設，絕不覆蓋舊稿）
+#   overwrite → 001.srt（舊行為，直接蓋掉）
+#   hash      → 001-3f9c21.srt（由輸入完整路徑推導，跨目錄同名不互相覆蓋）
+#
+# 為什麼不能只靠 rename：斷點續跑必須寫回「同一個檔案」。若每次續跑都重新
+# 找一個空名字，取消後重跑會得到 (1)、(2)… 且每份只有一半。所以 suffix 策略
+# 把實際檔名記進 checkpoint，續跑時優先沿用。
+OUT_NAMING_POLICIES = ("suffix", "overwrite", "hash")
+
+
+def resolve_out_srt(srt_dir, stem: str, *, policy: str = "overwrite",
+                    work_dir=None, task_id: str = "",
+                    fingerprint: str = "", resume: bool = True) -> Path:
+    """Pick the ``.srt`` path for a run, honouring the naming policy.
+
+    Order of precedence:
+
+    1. ``hash`` — the suffix is derived from the source path, so it is stable
+       across runs (resume finds the same file) and different sources with the
+       same base name never collide.
+    2. A genuine resume (same task *and* same fingerprint) — reuse the file the
+       previous attempt wrote, whatever the policy says.
+    3. ``suffix`` — first free ``name (n)``; otherwise ``name`` itself.
+    """
+    srt_dir = Path(srt_dir)
+    # 只取基名並去掉最後一個副檔名：「001.mp4」→「001」，「a.b.mp4」→「a.b」，
+    # 與舊版 out_ref.with_suffix(".srt") 的結果一致（副檔名是替換，不是疊加）。
+    stem = Path(str(stem or "").replace("\\", "/")).name.strip() or "transcript"
+    stem = Path(stem).stem or "transcript"
+    policy = (policy or "overwrite").lower()
+    if policy not in OUT_NAMING_POLICIES:
+        policy = "overwrite"
+
+    def _p(name: str) -> Path:
+        return srt_dir / (name + ".srt")
+
+    if policy == "hash":
+        tag = (task_id or hashlib.sha1(stem.encode("utf-8")).hexdigest())[:6]
+        return _p(f"{stem}-{tag}")
+
+    prev = ""
+    if resume and task_id and work_dir:
+        try:
+            ck = Checkpoint(Path(work_dir) / "checkpoints.db", task_id)
+            prev = ck.load_out_name()
+            if prev:
+                # 參數變了就不是同一個任務：run() 會從頭重跑，此時 suffix
+                # 策略必須保留舊稿、另開一份，而不是把它蓋掉。
+                saved_fp, _vs = ck.load_meta()
+                if saved_fp and saved_fp != fingerprint:
+                    prev = ""
+        except Exception:
+            prev = ""
+    if prev:
+        return _p(prev[:-4] if prev.lower().endswith(".srt") else prev)
+
+    if policy != "suffix":
+        return _p(stem)
+
+    target = _p(stem)
+    n = 1
+    while target.exists() and n < 1000:
+        target = _p(f"{stem} ({n})")
+        n += 1
+    return target
 
 
 # ───────────────────────── PCM 源 ─────────────────────────
@@ -991,8 +1095,11 @@ class LongformRunner:
             stream = limited_pcm_stream(stream, remaining)
             total_sec = min(total_sec or limit_sec, limit_sec)
             self._emit(0, f"试跑模式：只处理前 {limit_sec / 60:.0f} 分钟")
+        # out_name 一併存檔：suffix 策略的續跑要靠它寫回同一份檔案，
+        # 否則每次續跑都會另開一個「名字 (n)」。
         self.ckpt.save(next_frame, next_index, "running",
-                       fingerprint=self.fingerprint, vad_state=saved_vad)
+                       fingerprint=self.fingerprint, vad_state=saved_vad,
+                       out_name=self.out_srt.name)
         peaks = PeakBins()
 
         # ── 滚动状态 ──────────────────────────────────────────────
