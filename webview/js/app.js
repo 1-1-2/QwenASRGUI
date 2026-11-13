@@ -344,8 +344,7 @@
       const res = await API.transcribe({
         path: picked.path, file: picked.file || picked,
         language: $("#sel-lang").value || null,
-        diarize: $("#sw-diar").checked,
-        nSpeakers: $("#sel-spk").value,
+        ...diarOpts($("#sel-diar") ? $("#sel-diar").value : "off"),
         align: $("#sw-align").checked,
         hint: $("#hint-box").value.trim(),
         trial: $("#sw-trial") ? $("#sw-trial").checked : false,
@@ -397,14 +396,15 @@
     // Word timing and speaker labels are optional post-processing, not
     // discarded features. Only grey a switch when its model is genuinely
     // absent; an omitted field leaves the control untouched (no "undefined").
-    [["#sw-align", cap.alignAvailable], ["#sw-diar", cap.diarAvailable]]
+    [["#sw-align", cap.alignAvailable], ["#sel-diar", cap.diarAvailable]]
       .forEach(([sel, available]) => {
         const el = $(sel);
         if (!el || available === undefined) return;
         el.disabled = !available;
-        const lab = el.closest("label");
-        if (lab) lab.style.opacity = available ? "" : "0.45";
-        if (!available) lab.title = I18N.t("file.enrichMissing");
+        // 開關的容器是 label，下拉的容器是 .ctrl —— 兩者都要能降透明度
+        const box = el.closest("label") || el.closest(".ctrl");
+        if (box) box.style.opacity = available ? "" : "0.45";
+        if (!available && box) box.title = I18N.t("file.enrichMissing");
       });
     // Text is a data-i18n node so it follows later language switches; the
     // event only controls visibility (I18N.apply() refreshes the wording).
@@ -1113,8 +1113,7 @@
   function currentBatchOpts() {
     return {
       language: $("#sel-lang") ? $("#sel-lang").value : null,
-      diarize: $("#sw-diar") ? $("#sw-diar").checked : false,
-      nSpeakers: $("#sel-spk") ? $("#sel-spk").value : "auto",
+      ...diarOpts($("#sel-diar") ? $("#sel-diar").value : "off"),
       align: $("#sw-align") ? $("#sw-align").checked : false,
       hint: $("#hint-box") ? $("#hint-box").value.trim() : "",
     };
@@ -2128,8 +2127,7 @@
         [...$("#sel-lang").options].some(o => o.value === s.language)) {
       $("#sel-lang").value = s.language;
     }
-    if ($("#sw-diar")) $("#sw-diar").checked = !!s.diarize;
-    if ($("#sel-spk") && s.nSpeakers != null) $("#sel-spk").value = s.nSpeakers;
+    if ($("#sel-diar")) $("#sel-diar").value = diarValue(s);
     if ($("#sw-align")) $("#sw-align").checked = !!s.align;
     if ($("#hint-box") && s.hint != null) $("#hint-box").value = s.hint;
     if ($("#sw-trial")) $("#sw-trial").checked = !!s.trial;
@@ -2139,6 +2137,19 @@
     syncTrialBadge();
     syncSegSummary();
   }
+  // 說話者分離與人數合併成一個下拉：off / auto / 2..6。
+  // 舊版是「開關 + 人數下拉」兩個控制項並排，使用者不知道人數隸屬哪個開關；
+  // 合併後「開不開」與「幾個人」由同一個控制項表達，語義不再割裂。
+  function diarOpts(v) {
+    if (!v || v === "off") return { diarize: false, nSpeakers: "auto" };
+    return { diarize: true, nSpeakers: v };
+  }
+  function diarValue(s) {
+    if (!s || !s.diarize) return "off";
+    const n = s.nSpeakers == null ? "auto" : String(s.nSpeakers);
+    return n || "auto";
+  }
+
   // Persist control changes as they happen (no need to press a save button).
   function bindPersisted(sel, key, read) {
     const el = $(sel);
@@ -2148,8 +2159,15 @@
     });
   }
   bindPersisted("#sel-lang", "language", el => el.value);
-  bindPersisted("#sw-diar", "diarize", el => !!el.checked);
-  bindPersisted("#sel-spk", "nSpeakers", el => el.value);
+  // 合併後的下拉要同時寫入 diarize 與 nSpeakers 兩個欄位，故不用 bindPersisted
+  {
+    const el = $("#sel-diar");
+    if (el) {
+      el.addEventListener("change", () => {
+        try { API.setSettings(diarOpts(el.value)); } catch (e) {}
+      });
+    }
+  }
   bindPersisted("#sw-align", "align", el => !!el.checked);
   bindPersisted("#sw-trial", "trial", el => !!el.checked);
   bindPersisted("#sw-auto-release", "autoRelease", el => !!el.checked);

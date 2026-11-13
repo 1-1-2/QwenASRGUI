@@ -100,24 +100,53 @@
                所以在「開始轉換」旁邊常駐一個醒目徽章，勾選時立刻出現。 -->
           <span class="trial-badge" id="trial-badge" hidden
                 data-i18n="file.trialBadge">試跑前 5 分鐘 · 不會完整轉檔</span>
-          <button class="btn btn-ghost" id="btn-open-dir" disabled>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span data-i18n="file.openDir">開啟輸出資料夾</span>
-          </button>
-          <button class="btn btn-ghost" id="btn-save-sub" disabled>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg><span data-i18n="file.saveSub">字幕存檔</span>
-          </button>
+          <div class="ctrl-bar">
+            <div class="ctrl-group">
+              <div class="ctrl">
+                <span class="ctrl-t" data-i18n="file.langLabel">辨識語言</span>
+                <select class="select" id="sel-lang" data-i18n-title="file.langHint"><option value="" data-i18n="common.langAuto">語言 自動</option></select>
+              </div>
+              <div class="ctrl">
+                <span class="ctrl-t" data-i18n="file.diar">說話者分離</span>
+                <select class="select" id="sel-diar" data-i18n-title="file.diarHint">
+                  <option value="off" data-i18n="file.diarOff">關閉</option>
+                  <option value="auto" data-i18n="file.diarAuto" selected>自動</option>
+                  <option value="2">2</option><option value="3">3</option>
+                  <option value="4">4</option><option value="5">5</option>
+                  <option value="6">6</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="ctrl-sep"></div>
+
+            <div class="ctrl-group">
+              <div class="ctrl">
+                <span class="ctrl-t" data-i18n="file.align">詞級優化</span>
+                <label class="switch" data-i18n-title="file.alignHint"><input type="checkbox" id="sw-align" checked><span class="track"></span></label>
+              </div>
+            </div>
+
+            <div class="ctrl-spacer"></div>
+
+            <div class="ctrl-group">
+              <div class="ctrl">
+                <span class="ctrl-t" data-i18n="file.outputLabel">輸出</span>
+                <div class="ctrl-actions">
+                  <button class="btn btn-ghost" id="btn-open-dir" disabled>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span data-i18n="file.openDir">開啟輸出資料夾</span>
+                  </button>
+                  <button class="btn btn-ghost" id="btn-save-sub" disabled>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg><span data-i18n="file.saveSub">字幕存檔</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
           <!-- 字幕驗證：對應模組於 WebView 上尚未重新規劃，暫時隱藏 -->
           <button class="btn btn-ghost" id="btn-verify" hidden disabled>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><span data-i18n="file.verify">字幕驗證</span>
           </button>
-          <div class="sp"></div>
-          <select class="select" id="sel-lang" title="辨識語言"><option value="" data-i18n="common.langAuto">語言 自動</option></select>
-          <label class="switch"><input type="checkbox" id="sw-diar" checked><span class="track"></span><span data-i18n="file.diar">說話者分離</span></label>
-          <select class="select" id="sel-spk" title="人數">
-            <option value="auto" data-i18n="common.spkAuto">人數 自動</option>
-            <option>2</option><option>3</option><option>4</option><option>5</option><option>6</option>
-          </select>
-          <label class="switch" data-i18n-title="file.alignHint"><input type="checkbox" id="sw-align" checked><span class="track"></span><span data-i18n="file.align">詞級優化</span></label>
           <span id="cap-note" hidden data-i18n="file.streamingNote" style="font-size:12px;opacity:.75"></span>
         </div>
 
@@ -185,11 +214,16 @@
           <div class="sec-title" data-i18n="file.resultTitle">辨識結果</div>
           <!-- C1 / C2: optional exports from the finished SRT. They write
                separate files and never modify the original subtitle. -->
-          <div class="result-extras" style="display:flex;gap:8px;margin:0 0 10px">
-            <button class="btn btn-ghost btn-sm" id="btn-refine-punct" disabled
-                    data-i18n-title="file.refineHint"><span data-i18n="file.refine">跨段標點修正</span></button>
-            <button class="btn btn-ghost btn-sm" id="btn-export-handout" disabled
-                    data-i18n-title="file.handoutHint"><span data-i18n="file.handout">匯出講義</span></button>
+          <div class="result-extras" style="margin:0 0 10px">
+            <div class="ctrl">
+              <span class="ctrl-t" data-i18n="file.toolsLabel">字幕工具</span>
+              <div class="ctrl-actions">
+                <button class="btn btn-ghost btn-sm" id="btn-refine-punct" disabled
+                        data-i18n-title="file.refineHint"><span data-i18n="file.refine">跨段標點修正</span></button>
+                <button class="btn btn-ghost btn-sm" id="btn-export-handout" disabled
+                        data-i18n-title="file.handoutHint"><span data-i18n="file.handout">匯出講義</span></button>
+              </div>
+            </div>
           </div>
           <div class="wave-panel">
             <div class="wave" id="wave"></div>

@@ -281,7 +281,7 @@ def main() -> int:
             'id="sw-batch-diar"' not in html and 'id="sel-batch-spk"' not in html)
     r.check("batch opts reuse shared controls",
             'hint: $("#hint-box").value.trim()' in app and
-            'diarize: $("#sw-diar").checked' in app)
+            '...diarOpts($("#sel-diar")' in app)
     # The literal moved into the dictionary in Wave 7 (so the summary follows
     # the UI language); assert the key is used and carries the wording.
     r.check("batch summary shows overall percentage",

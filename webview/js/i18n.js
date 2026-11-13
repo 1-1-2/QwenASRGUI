@@ -42,6 +42,20 @@
     "file.saveSub": ["字幕存檔", "保存字幕", "Save subtitles"],
     "file.verify": ["字幕驗證", "字幕校验", "Verify"],
     "file.diar": ["說話者分離", "说话者分离", "Speaker diarization"],
+    // 说话者分离与人数合并成一个下拉：关闭 / 自动 / 2..6。
+    // 原来「开关 + 人数下拉」两个控件并排，用户不知道人数隶属哪个开关；
+    // 合并后「开不开」和「几个人」由同一个控件表达，语义不再割裂。
+    "file.diarOff": ["關閉", "关闭", "Off"],
+    "file.diarAuto": ["自動", "自动", "Auto"],
+    "file.diarHint": ["關閉＝不標註說話者；自動＝由程式判斷人數；指定人數通常更準",
+                      "关闭＝不标注说话者；自动＝由程序判断人数；指定人数通常更准",
+                      "Off = no speaker labels; Auto = detect the count; a fixed count is usually more accurate"],
+    "file.langLabel": ["辨識語言", "识别语言", "Language"],
+    "file.langHint": ["指定語言可提升準確度；留空＝自動偵測",
+                      "指定语言可提升准确度；留空＝自动侦测",
+                      "Naming the language improves accuracy; leave blank to auto-detect"],
+    "file.outputLabel": ["輸出", "输出", "Output"],
+    "file.toolsLabel": ["字幕工具", "字幕工具", "Subtitle tools"],
     "file.align": ["詞級優化", "词级优化", "Word-level refine"],
     // Hover 说明：必须写清「改什么 / 不改什么 / 依赖与失败行为」。
     // 「不改识别文字」这一句尤其重要——否则容易被误读成词级纠错。
