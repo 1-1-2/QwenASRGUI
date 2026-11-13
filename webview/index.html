@@ -101,6 +101,19 @@
           <div class="sub" data-i18n="file.dropSub">支援 mp3 / wav / m4a / 影片音軌</div>
         </div>
 
+        <!-- 拖放與點選的能力不同，且差別會影響「中止後能不能繼續」，
+             所以放在拖放區正下方常駐，而不是折進說明或只寫在 hover 裡：
+               · 點選 → 後端原生對話框拿到絕對路徑 → 直接引用，斷點可接續
+               · 拖放 → 瀏覽器只給 File 物件 → 整份複製到 %TEMP%，結束即刪
+                 → 中止後沒有來源可接，重新拖入等於從頭再跑一次 -->
+        <div class="drop-mode" id="drop-mode">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>
+          <div class="dm-body">
+            <div class="dm-main" data-i18n="file.modeHint">僅點選支援中斷接續，拖放因瀏覽器限制不支援。</div>
+            <div class="dm-why" data-i18n="file.modeHintWhy">點選直接引用本機檔案（不複製、不佔暫存）；拖放會先複製一份到系統暫存資料夾，請求結束即刪除，中止後沒有可接續的來源。</div>
+          </div>
+        </div>
+
         <div class="controls controls--form">
           <button class="btn btn-primary" id="btn-run" disabled>
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span data-i18n="file.run">開始轉換</span>
@@ -617,6 +630,21 @@
             <label class="switch"><input type="checkbox" id="sw-auto-release" checked><span class="track"></span></label>
           </div>
           <div class="hint" id="auto-release-why" hidden></div>
+        </div>
+
+        <!-- 暫存清理：正常路徑（請求結束即刪）之外的三種漏網情況，
+             都在這裡補。啟動時也會自動掃一次。 -->
+        <div class="card" style="margin-top:14px">
+          <div class="row">
+            <div class="label">
+              <div class="t" data-i18n="set.tempTitle">暫存檔清理</div>
+              <div class="d" data-i18n="set.tempDesc">轉檔時上傳的音檔會先複製到系統暫存資料夾，正常結束就刪除；程式崩潰或被強制結束時，整份副本會留在系統碟上。啟動時會自動清一次，也可以在這裡手動清（只清 10 分鐘前、且只清本程式建立的目錄）。已完成的逐段記錄會在啟動時按 30 天清理，未完成的斷點一律保留。</div>
+            </div>
+            <div class="with-browse">
+              <span class="inline-state" id="temp-state"></span>
+              <button class="btn btn-ghost btn-sm" id="btn-clean-temp"><span data-i18n="set.tempClean">立即清理</span></button>
+            </div>
+          </div>
         </div>
 
         <div class="card" style="margin-top:14px;display:flex;align-items:center;gap:12px">

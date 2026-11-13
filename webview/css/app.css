@@ -248,6 +248,13 @@ button { font-family: inherit; }
 .btn-primary:hover { background: var(--accent-strong); }
 .btn-ghost { background: var(--panel); color: var(--ink-2); border-color: var(--line-strong); }
 .btn-ghost:hover { background: var(--panel-2); border-color: var(--muted); }
+/* 執行中同一顆按鈕變「取消」：改成描邊樣式。維持實心綠會讓人以為還是
+   「開始轉換」，而這一下是要中止正在跑的工作。 */
+.btn-primary.is-cancel {
+  background: var(--panel); color: var(--ink-2);
+  border-color: var(--line-strong); box-shadow: none;
+}
+.btn-primary.is-cancel:hover { background: var(--panel-2); border-color: var(--muted); }
 .btn:disabled { opacity: .45; cursor: default; box-shadow: none; transform: none; }
 .btn-sm { padding: 6px 11px; font-size: 12.5px; }
 
@@ -395,6 +402,35 @@ button { font-family: inherit; }
 .drop .big b { color: var(--accent-strong); }
 .drop .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .drop.has-file { border-style: solid; border-color: var(--line); padding: 20px; }
+
+/* 拖放 vs 點選的能力差異：常駐在拖放區正下方。
+   左側 accent 竖线 + 淡底，比一般 hint 顯眼，但不搶主操作的注意力。 */
+.drop-mode {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin-top: 10px; padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel-2, rgba(127, 127, 127, .05));
+}
+.drop-mode > svg {
+  flex: 0 0 auto; width: 15px; height: 15px; margin-top: 1px;
+  color: var(--accent-strong);
+}
+.drop-mode .dm-main { font-size: 12.5px; font-weight: 600; color: var(--ink); line-height: 1.5; }
+.drop-mode .dm-why { font-size: 11.5px; color: var(--muted); line-height: 1.6; margin-top: 3px; }
+/* 已選檔時（拖放區變成一條檔案 chip）就不必再占版面 —— 那時差異已經
+   顯示在 chip 的模式標籤上。 */
+.drop-mode.is-compact .dm-why { display: none; }
+
+/* 已選檔案上的模式標籤：綠＝可接續，灰＝一次性 */
+.chip-mode {
+  font-size: 11px; font-weight: 600; line-height: 1;
+  padding: 3px 6px; border-radius: var(--r-pill);
+  white-space: nowrap;
+}
+.chip-mode.is-ok { color: var(--accent-strong); background: var(--accent-soft); }
+.chip-mode.is-once { color: var(--muted); background: var(--panel-2, rgba(127,127,127,.12)); }
 /* Wave 12: batch page drop zone (same look as the recognition page).
    Wave 14: it now owns a full row by itself; the tool buttons sit below it.
    Wave 16: the drop zone is gone — Chromium never exposes a dropped file's

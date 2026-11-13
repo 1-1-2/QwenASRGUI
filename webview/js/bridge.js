@@ -149,6 +149,11 @@
       if (MODE === "web") { try { await apiPost("/api/open-output", {}); } catch {} return true; }
       return false;
     },
+    // 清掉 %TEMP% 下本程式遺留的上傳副本（崩潰/被強制結束留下來的）。
+    async cleanupTemp() {
+      if (MODE !== "web") return { ok: true, removed: 0, freed: 0, kept: 0, failed: 0 };
+      return apiPost("/api/cleanup-temp", {});
+    },
     async checkUpdate() {
       if (MODE === "web") { try { return await apiPost("/api/check-update", {}); } catch {} }
       window.open("https://github.com/1-1-2/QwenASRGUI/releases/latest", "_blank");
@@ -329,8 +334,27 @@
   };
 
   // ── web 轉錄：POST /api/transcribe（進度走 SSE）──────────
+  //  兩種來源：
+  //   · opts.file → multipart 上傳（拖放。瀏覽器沙箱只給 File 物件，
+  //     服務端必須把整份內容複製到 %TEMP%，請求結束再刪）
+  //   · opts.path → 本機路徑直引（點擊選檔走原生對話框。零複製、零等待，
+  //     也不會有「上傳到一半」這種狀態）
   async function webTranscribe(opts) {
-    if (!opts.file) throw new Error("請先選擇檔案");
+    if (!opts.file && !opts.path) throw new Error("請先選擇檔案");
+    if (!opts.file) {
+      emit("progress", { pct: 1, status: "準備中…" });
+      return apiPost("/api/transcribe-path", {
+        path: opts.path,
+        name: opts.name || null,
+        language: opts.language || null,
+        align: !!opts.align,
+        diarize: !!opts.diarize,
+        nSpeakers: opts.nSpeakers || null,
+        hint: opts.hint || "",
+        trial: !!opts.trial,
+        vadThreshold: opts.vadThreshold || null,
+      });
+    }
     const fd = new FormData();
     fd.append("file", opts.file, opts.file.name);
     if (opts.language) fd.append("language", opts.language);

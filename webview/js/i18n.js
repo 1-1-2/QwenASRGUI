@@ -132,7 +132,16 @@
                  "TLS certificate verification is disabled: downloaded model files cannot be authenticated. Use a trusted network only."],
     "log.title": ["執行紀錄", "运行日志", "Run log"],
     "log.clear": ["清除", "清除", "Clear"],
-    "file.running": ["辨識中…", "识别中…", "Transcribing…"],
+    "file.cancel": ["取消", "取消", "Cancel"],
+    "file.canceling": ["正在取消…", "正在取消…", "Canceling…"],
+    "file.cancelSent": ["已送出取消，正在保存已完成的部分…", "已发出取消，正在保存已完成的部分…", "Cancel requested - saving what is already transcribed…"],
+    // 拖放 vs 點選的能力差異：這句是需求指定的主文案，放在拖放區正下方。
+    "file.modeHint": ["僅點選支援中斷接續，拖放因瀏覽器限制不支援。", "仅点选支持中断接续，拖放因浏览器限制不支持。", "Only click-to-pick can resume after a stop; drag-and-drop cannot (browser limitation)."],
+    "file.modeHintWhy": ["點選直接引用本機檔案（不複製、不佔暫存）；拖放會先複製一份到系統暫存資料夾，請求結束即刪除，中止後沒有可接續的來源。", "点选直接引用本机文件（不复制、不占临时空间）；拖放会先复制一份到系统临时文件夹，请求结束即删除，中止后没有可接续的来源。", "Click-to-pick references your file in place (no copy, no temp space). Drag-and-drop copies the whole file into the system temp folder and deletes it when the run ends, so nothing is left to resume from."],
+    "file.modeLocal": ["本機直引", "本机直引", "In place"],
+    "file.modeLocalNote": ["可中斷接續", "可中断接续", "resumable"],
+    "file.modeDragChip": ["拖放副本", "拖放副本", "Temp copy"],
+    "file.modeDragNote": ["一次性 · 不可接續", "一次性 · 不可接续", "one-shot"],
     "batch.cancel": ["取消佇列", "取消队列", "Cancel queue"],
     "batch.clear": ["清除已完成", "清除已完成", "Clear finished"],
     "batch.resumeHint": ["服務端佇列：重新整理頁面仍會保留進度與斷點",
@@ -400,6 +409,10 @@
     "set.nameSuffix": ["數字後綴", "数字后缀", "Numbered"],
     "set.nameOverwrite": ["覆蓋", "覆盖", "Overwrite"],
     "set.nameHash": ["雜湊後綴", "哈希后缀", "Hash"],
+    "set.tempTitle": ["暫存檔清理", "临时文件清理", "Temp files"],
+    "set.tempDesc": ["轉檔時上傳的音檔會先複製到系統暫存資料夾，正常結束就刪除；程式崩潰或被強制結束時，整份副本會留在系統碟上。啟動時會自動清一次，也可以在這裡手動清（只清 10 分鐘前、且只清本程式建立的目錄）。已完成的逐段記錄會在啟動時按 30 天清理，未完成的斷點一律保留。", "转档时上传的音频会先复制到系统临时文件夹，正常结束就删除；程序崩溃或被强制结束时，整份副本会留在系统盘上。启动时会自动清一次，也可以在这里手动清（只清 10 分钟前、且只清本程序创建的目录）。已完成的逐段记录会在启动时按 30 天清理，未完成的断点一律保留。", "Uploads are copied into the system temp folder and deleted when the run ends. If the app crashes or is force-closed, the full copy stays on your system drive. It is swept once at startup; you can also clean it here (only folders this app created, older than 10 minutes). Finished per-segment records are pruned at startup after 30 days; unfinished breakpoints are never touched."],
+    "set.tempClean": ["立即清理", "立即清理", "Clean now"],
+    "set.tempCleaning": ["清理中…", "清理中…", "Cleaning…"],
     "dl.importDirHint": ["用途：從別台電腦／瀏覽器手動下載好模型檔後，把「裝著這些檔案的資料夾」貼進來，按「匯入並驗證」即會核對大小與 SHA256 並複製到正確位置；不會重新下載。", "用途：从别的电脑／浏览器手动下载好模型文件后，把“装着这些文件的文件夹”贴进来，按“导入并校验”会核对大小与 SHA256 并复制到正确位置；不会重新下载。", "Purpose: after downloading model files manually (another machine or a browser), paste the folder that contains them and click Import & verify — sizes and SHA256 are checked, files are copied into place, nothing is re-downloaded."],
 
     "batch.runAll": ["全部開始", "全部开始", "Start all"],
@@ -670,6 +683,7 @@
     "dl.runtimeFfmpegMissing": ["找不到 ffmpeg，需要時會自動下載", "找不到 ffmpeg，需要时会自动下载", "ffmpeg not found; it will be downloaded on demand"],
     "dl.runtimeVadOk": ["VAD 已就緒（隨套件附帶，或已在模型目錄）", "VAD 已就绪（随套件附带，或已在模型目录）", "VAD ready (bundled, or present in the model directory)"],
     "dl.runtimeVadMissing": ["找不到 silero VAD 模型，需重新安裝或手動放入 ov_models", "找不到 silero VAD 模型，需重新安装或手动放入 ov_models", "silero VAD model not found; reinstall or place it in ov_models"],
+    "set.tempDone": ["已清理 {n} 個暫存目錄，釋放 {mb} MB", "已清理 {n} 个临时目录，释放 {mb} MB", "Cleaned {n} temporary folder(s), freed {mb} MB"],
   };
 
   function renderMsg(key, vars, fallbackText) {

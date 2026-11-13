@@ -216,6 +216,43 @@ def main() -> int:
     r.check("没有意外的 course (2).srt",
             not (tmp / "subtitles" / "course (2).srt").exists())
 
+    # ── 5. 拖放（上传副本）是「一次性」：不支持接续，断点用完即清 ──
+    # 副本落在随机临时目录、请求结束就删，task_id 取自这条随机路径 →
+    # 重新拖入必然是新任务。这也是介面文案「拖放不支持接续」的依据。
+    up1 = tmp / "up1" / "upload.wav"
+    up2 = tmp / "up2" / "upload.wav"
+    for p in (up1, up2):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(wav.read_bytes())
+    be6 = make_backend(tmp)
+    res6 = be6.transcribe({"path": str(up1), "name": "課程.wav",
+                           "uploaded": True}, progress_cb=lambda p, s: None)
+    calls6 = be6.engine.calls
+    r.check("上传来源能正常转写", calls6 > 0 and bool(res6.get("segments")),
+            f"calls={calls6} segments={len(res6.get('segments') or [])}")
+
+    import sqlite3
+    up_id = wb.WebBackend._source_identity(up1)[0]
+    local_id = wb.WebBackend._source_identity(wav)[0]
+    con = sqlite3.connect(str(tmp / "longform_state" / "checkpoints.db"))
+    try:
+        rows = {r[0] for r in con.execute("SELECT task_id FROM progress")}
+    finally:
+        con.close()
+    r.check("拖放任务的断点用完即清（永远接不上）", up_id not in rows, str(sorted(rows)))
+    r.check("拖放任务的逐段记录也删了",
+            not (tmp / "longform_state" / f"{up_id}.segments.jsonl").exists())
+    r.check("本机路径的断点仍然保留（点选可续跑）", local_id in rows, str(sorted(rows)))
+
+    # 换个临时目录再拖一次 ⇒ 新任务、从头跑、另存 (1)：与「不支持接续」一致
+    be7 = make_backend(tmp)
+    res7 = be7.transcribe({"path": str(up2), "name": "課程.wav",
+                           "uploaded": True}, progress_cb=lambda p, s: None)
+    r.check("重新拖入会从头开始（不接续）", be7.engine.calls > 0,
+            f"calls={be7.engine.calls}")
+    r.check("重拖另存为 (1)，不覆盖上一份",
+            Path(res7["srtPath"]).name == "課程 (1).srt", res7.get("srtPath"))
+
     passed = sum(r.items)
     print(f"\n结果：{passed}/{len(r.items)} 项通过")
     print("✅ 全部通过" if r.ok else "❌ 存在失败项")

@@ -272,6 +272,37 @@ class Checkpoint:
             d = self._json_all().get(self.task_id) or {}
             return d.get("out_name", "") or ""
 
+    def delete(self) -> None:
+        """Drop this task's progress row (both stores).
+
+        Used for one-shot sources: a drag-and-drop upload lives in a random
+        temp directory that is deleted when the request ends, so its task_id
+        can never be hit again. Keeping the row would only make
+        ``checkpoints.db`` grow forever.
+        """
+        with self._lock:
+            if self._use_sqlite:
+                try:
+                    c = self._conn()
+                    try:
+                        c.execute("DELETE FROM progress WHERE task_id=?",
+                                  (self.task_id,))
+                        c.commit()
+                    finally:
+                        c.close()
+                except sqlite3.Error:
+                    self._use_sqlite = False
+            d = self._json_all()
+            if self.task_id in d:
+                d.pop(self.task_id, None)
+                try:
+                    tmp = self.json_path.with_suffix(".json.tmp")
+                    tmp.write_text(json.dumps(d, ensure_ascii=False),
+                                   encoding="utf-8")
+                    tmp.replace(self.json_path)
+                except OSError:
+                    pass
+
     def save(self, next_frame: int, next_index: int, status: str = "running",
              fingerprint: str | None = None, vad_state: str | None = None,
              out_name: str | None = None):
@@ -988,6 +1019,25 @@ class LongformRunner:
         if gained <= 0 or span <= 0:
             return None
         return gained / span
+
+    def discard_state(self) -> None:
+        """清掉本任務的斷點與逐段記錄（一次性來源用完即丟）。
+
+        拖放上傳的來源是隨機臨時目錄裡的副本，請求結束就刪；下一支檔案
+        必然拿到新的 task_id，這份斷點永遠不會被再次命中。留著只是讓
+        ``longform_state`` 慢慢長大。試跑同理（每次都從頭跑 5 分鐘）。
+
+        只在跑完／取消之後呼叫：那時 JSONL 已經用來重建過 rich.json，
+        再刪不影響任何已交付的產物。
+        """
+        try:
+            self.ckpt.delete()
+        except Exception:
+            pass
+        try:
+            self.jsonl.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _init_outputs(self, next_index: int):
         if next_index <= 1:

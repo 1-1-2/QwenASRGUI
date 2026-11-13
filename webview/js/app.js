@@ -205,6 +205,13 @@
   async function refreshStatus() {
     const s = await API.getStatus();
     _lastStatus = s;
+    // 沒有原生選檔能力時（非 Windows／精簡環境），「點選」其實也走 <input
+    // type=file>，兩種來源就都是暫存副本、都不支援接續。這時候不能留一句
+    // 「僅點選支援中斷接續」在那裡 —— 宣稱的能力必須與實際相符。
+    if (s.pickerSupported === false) {
+      const note = $("#drop-mode");
+      if (note) note.hidden = true;
+    }
     // 批次頁的「本次執行設定」要顯示模型與推理方式，兩者只在 status 裡；
     // 這裡補一次重繪，值沒變時 renderBatchConfig 自己會跳過重建。
     try { renderBatchConfig(); } catch (e) {}
@@ -299,10 +306,15 @@
     const busy = UI_BUSY.size > 0;
     const run = $("#btn-run");
     if (run) {
-      run.disabled = busy || !picked;
+      // 執行中：同一顆按鈕變「取消」且保持可按 —— 單檔轉錄動輒數十分鐘，
+      // 沒有中止入口時使用者只能結束程式（斷點雖然會存，但當下等於卡死）。
+      const canceling = UI_BUSY.has("transcribe");
+      run.disabled = canceling ? false : (busy || !picked);
+      run.dataset.mode = canceling ? "cancel" : "run";
+      run.classList.toggle("is-cancel", canceling);
       const span = run.querySelector("[data-i18n]");
       if (span && window.I18N) {
-        span.dataset.i18n = UI_BUSY.has("transcribe") ? "file.running" : "file.run";
+        span.dataset.i18n = canceling ? "file.cancel" : "file.run";
         I18N.apply(run);
       }
     }
@@ -331,12 +343,22 @@
 
   function setFile(f) {
     picked = f;
+    const modeNote = $("#drop-mode");
+    if (modeNote) modeNote.classList.toggle("is-compact", !!f);
     if (!f) { drop.classList.remove("has-file"); renderDropEmpty(); syncActionButtons(); return; }
     drop.classList.add("has-file");
     const meta = f.sizeSec ? T("batch.seconds", null, { n: f.sizeSec })
       : (f.size ? (f.size / 1048576).toFixed(1) + " MB" : "");
+    // 模式標籤：使用者必須一眼看出「這一份能不能在取消後接著跑」。
+    // 有 path（原生選檔）＝直接引用本機檔案，可接續；
+    // 只有 File 物件（拖放／瀏覽器選檔）＝暫存副本，一次性。
+    const byPath = !f.file && !!f.path;
+    const tag = byPath ? T("file.modeLocal", "本機直引") : T("file.modeDragChip", "拖放副本");
+    const tagNote = byPath ? T("file.modeLocalNote", "可中斷接續")
+                           : T("file.modeDragNote", "一次性 · 不可接續");
     drop.innerHTML = `<span class="file-chip">${escapeHtml(f.name)}
       ${meta ? `<span class="meta">${meta}</span>` : ""}
+      <span class="chip-mode ${byPath ? "is-ok" : "is-once"}">${escapeHtml(tag)} · ${escapeHtml(tagNote)}</span>
       <button class="x" title="${T("batch.remove", "移除")}">✕</button></span>`;
     drop.querySelector(".x").addEventListener("click", ev => { ev.stopPropagation(); setFile(null); });
     syncActionButtons();
@@ -347,12 +369,21 @@
       <div class="sub">${T("file.dropSubHtml", "支援 mp3 / wav / m4a / 影片音軌")}</div>`;
   }
 
-  // 桌面：原生對話框；web/mock：fallback 到 <input type=file>
+  // 桌面：原生對話框（零複製）；非 Windows / 預覽模式：fallback 到 <input type=file>
+  //   這條路徑的差別值得說清楚：
+  //     · 點擊 → 原生對話框回傳絕對路徑 → /api/transcribe-path 直接引用，
+  //       不複製、不上傳、不會在 %TEMP% 留下整份音檔副本。
+  //     · 拖放 → 瀏覽器只給 File 物件（Chromium 不交出真實路徑），只能整份
+  //       上傳到 %TEMP%\asr_web_*，請求結束再刪。
   drop.addEventListener("click", async () => {
     if (drop.classList.contains("has-file")) return;
-    const native = await API.pickFile();
-    if (native) setFile(native);
-    else hiddenFile.click();
+    if (API.mode !== "web") { hiddenFile.click(); return; }
+    let r = null;
+    try { r = await API.pickFiles(); } catch (e) { r = null; }
+    if (!r || !r.supported) { hiddenFile.click(); return; }  // 非 Windows 才回退
+    if (!r.paths || !r.paths.length) return;                 // 使用者取消，不要再彈一次
+    const p = r.paths[0];
+    setFile({ name: p.split(/[\\/]/).pop() || p, path: p, native: true });
   });
   hiddenFile.addEventListener("change", e => { if (e.target.files[0]) setFile(e.target.files[0]); });
   ["dragover", "dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("hot"); }));
@@ -374,17 +405,36 @@
 
   // 轉錄
   let running = false;
+  // 使用者是否按了「取消」：用來把「已取消」講成正常結束，而不是紅字錯誤。
+  let cancelRequested = false;
   $("#btn-run").addEventListener("click", async () => {
+    // 執行中同一顆按鈕變「取消」——與批次頁「全部開始 → 取消佇列」一致，
+    // 不新增第二顆按鈕。取消會讓 Runner 在語音組邊界停下來並保存斷點。
+    if ($("#btn-run").dataset.mode === "cancel") {
+      if (cancelRequested) return;
+      cancelRequested = true;
+      const span = $("#btn-run").querySelector("[data-i18n]");
+      if (span) { span.dataset.i18n = "file.canceling"; I18N.apply($("#btn-run")); }
+      logLine(T("file.cancelSent", "已送出取消，正在保存已完成的部分…"));
+      try { await API.cancel(); } catch (e) { logLine("✕ " + (e.message || e)); }
+      return;
+    }
     if (!picked || running) return;
     running = true;
+    cancelRequested = false;
     markBusy("transcribe", true);
     $("#result").hidden = true;
     showProgress(0, T("run.preparing", "準備中…"));
     resetLive();
     logLine(T("run.started", null, { name: picked.name }));
     try {
+      // 原生選檔（有 path、沒有 File）→ 本機路徑直引，不複製；
+      // 拖放（File 物件）→ multipart 上傳到 %TEMP%，請求結束即刪。
+      const byPath = !picked.file && !!picked.path;
       const res = await API.transcribe({
-        path: picked.path, file: picked.file || picked,
+        path: byPath ? picked.path : null,
+        name: picked.name,
+        file: byPath ? null : (picked.file || picked),
         language: $("#sel-lang").value || null,
         ...diarOpts($("#sel-diar") ? $("#sel-diar").value : "off"),
         align: $("#sw-align").checked,
@@ -406,9 +456,16 @@
     } catch (err) {
       showProgress(0, "");
       $("#progress").hidden = true;
-      logLine("✕ " + (err.message || err));
+      if (cancelRequested) {
+        // 取消不是失敗。能不能接續由後端依來源回話（點選＝可接續；
+        // 拖放＝副本已刪、重拖從頭），前端不再自行加一句以免兩邊說法不一。
+        logLine("⏹ " + (err.message || err));
+      } else {
+        logLine("✕ " + (err.message || err));
+      }
     } finally {
       running = false;
+      cancelRequested = false;
       markBusy("transcribe", false);
     }
   });
@@ -2596,6 +2653,33 @@
     btn.disabled = true; btn.textContent = T("set.opening", "開啟中…");
     try { await API.checkUpdate(); } catch (e) {}
     setTimeout(() => { btn.disabled = false; btn.textContent = o; }, 1500);
+  });
+
+  // 暫存清理：只清本程式在 %TEMP% 建的目錄（asr_web_* / asr_api_*），
+  // 且只清 10 分鐘前的，不會動到正在跑的那一份。
+  $("#btn-clean-temp") && $("#btn-clean-temp").addEventListener("click", async () => {
+    const btn = $("#btn-clean-temp");
+    const span = btn.querySelector("[data-i18n]");
+    const state = $("#temp-state");
+    btn.disabled = true;
+    if (span) { span.dataset.i18n = "set.tempCleaning"; I18N.apply(btn); }
+    try {
+      const r = await API.cleanupTemp();
+      const mb = Math.round((r.freed || 0) / 1048576);
+      if (state) {
+        // set.tempDone 是後端 message key（ui_text.TEMPLATES），走 renderMsg
+        // 而不是 T()：T() 只查靜態字典 D。
+        state.textContent = (r.ok === false)
+          ? (r.message || "")
+          : ((window.I18N && I18N.renderMsg("set.tempDone",
+               { n: r.removed || 0, mb }, "")) || "");
+      }
+    } catch (e) {
+      if (state) state.textContent = String(e.message || e);
+    } finally {
+      btn.disabled = false;
+      if (span) { span.dataset.i18n = "set.tempClean"; I18N.apply(btn); }
+    }
   });
 
   // ── 共用工具 ────────────────────────────────────────────

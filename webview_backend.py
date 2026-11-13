@@ -1038,6 +1038,9 @@ class WebBackend:
             "modelReady": bool(getattr(self.engine, "ready", False)),
             "loading": self._loading,
             "error": self._load_err,
+            # 原生選檔（絕對路徑直引）只有 Windows 有。前端據此決定要不要
+            # 宣稱「點選支援中斷接續」——沒有這能力時點選也是上傳副本。
+            "pickerSupported": sys.platform == "win32",
             "backend": self._backend_label(active, _t.render("status.backendCpu")),
             "backendKey": self._persisted_backend(),       # 已記住的核心選擇
             "activeBackend": active,                        # 實際載入中的核心
@@ -1354,8 +1357,10 @@ class WebBackend:
                                 except OSError:
                                     pass
 
-                task_id = hashlib.sha1(
-                    str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
+                # 身分來源：本機路徑（點選／批次）→ 抽出的 audio_path；拖放上傳
+                # → 原始上傳檔（隨機臨時路徑，天然一任務一次，不支援接續）。
+                _ident_path = path if opts.get("uploaded") else audio_path
+                task_id, _src_part = self._source_identity(_ident_path)
                 # Wave 14／需求 3：讓後續 progress / progress-detail 事件都帶上
                 # taskId，前端才能分辨「同一檔案的續跑」與「換了檔案」。
                 self._current_task_id = task_id
@@ -1374,12 +1379,8 @@ class WebBackend:
                     f"/{_st.get('vocab_convert', True)}",
                     f"hint={hashlib.sha1(_hint.encode('utf-8')).hexdigest()[:8]}",
                     f"trial={trial}",
+                    _src_part,
                 ]
-                try:
-                    _src = Path(audio_path).stat()
-                    _fp_parts.append(f"src={_src.st_size}/{int(_src.st_mtime)}")
-                except OSError:
-                    pass
                 fingerprint = hashlib.sha1(
                     "|".join(_fp_parts).encode("utf-8")).hexdigest()[:16]
 
@@ -1462,6 +1463,22 @@ class WebBackend:
                     audio_path, total_sec=_duration,
                     resume=not trial and bool(opts.get("longform_resume", True)),
                     limit_sec=limit_sec)
+
+                def _discard_if_one_shot():
+                    """一次性來源（拖放副本／試跑）的斷點永遠接不上，用完即清。
+
+                    拖放的副本在請求結束就被刪、task_id 取自隨機臨時路徑，
+                    下一支檔案必然是新任務；試跑每次也只跑前 5 分鐘。留著
+                    只會讓 longform_state 越長越大。必須在 finalize 之後呼叫
+                    —— 那時 JSONL 已經用來重建過 rich.json。
+                    """
+                    if not (opts.get("uploaded") or trial):
+                        return
+                    try:
+                        runner.discard_state()
+                    except Exception:
+                        pass
+
                 if result["status"] == "paused":
                     # 取消／中斷也要產出 rich.json。
                     #   它是由 runner 的 JSONL **全量重建**的派生檔，不是增量資料源：
@@ -1474,8 +1491,12 @@ class WebBackend:
                         enhancer.finalize(jsonl_path=runner.jsonl)
                     except Exception:
                         pass
+                    _discard_if_one_shot()
                     raise RuntimeError(
-                        "已取消；已完成字幕已保存，再次启动同一文件可从断点续跑。")
+                        "已取消；已完成字幕已保存。"
+                        + ("拖放方式不支持接续（临时副本已删除），重新拖入会从头开始。"
+                           if opts.get("uploaded")
+                           else "重新选择同一文件可从断点继续。"))
                 srt = runner.out_srt
                 runner_result = result
                 # Enrichment is strictly best-effort: finalize() never raises
@@ -1484,6 +1505,7 @@ class WebBackend:
                     enhancer.finalize(jsonl_path=runner.jsonl)
                 except Exception:
                     pass
+                _discard_if_one_shot()
         finally:
             if tmp_extra:
                 try:
@@ -1710,6 +1732,51 @@ class WebBackend:
         self._cancel = True
         self._cancel_event.set()   # 同步通知长音频流式 Runner，使其保存断点后退出
         return True
+
+    # ── 輸入身分（task_id / 指紋的 src 分量）───────────────────────────
+    @staticmethod
+    def _source_identity(path):
+        """回傳 ``(task_id, 指紋的 src 分量)``。
+
+        **以「解析後的路徑 + 大小/修改時間」為身分**，這是原本的算法，刻意
+        保留：
+
+        * 點選／批次引用的是使用者真正的檔案，路徑穩定 → 斷點能接續；
+        * 拖放是「上傳一份副本」，副本落在隨機臨時目錄（``asr_web_xxxx``），
+          請求結束就刪除。路徑每次不同 → 每次都是獨立任務 → **不支援接續**，
+          與介面文案一致（見 file.modeHint）。
+
+        曾經考慮改用「內容哈希」讓拖放也能接續，但那樣使用者必須把整份檔案
+        重新上傳一次才能接上，對多 GB 的素材等於沒有續傳；不如把能力差異講
+        清楚，把接續留給點選。
+        """
+        p = Path(path)
+        try:
+            st = p.stat()
+            size, mtime = int(st.st_size), int(st.st_mtime)
+        except OSError:
+            size, mtime = 0, 0
+        return (hashlib.sha1(str(p.resolve()).encode("utf-8")).hexdigest()[:12],
+                f"src={size}/{mtime}")
+
+    # ── 暫存檔清理 ──────────────────────────────────────────────────
+    def cleanup_temp(self, min_age_sec: float = 600) -> dict:
+        """清掉本程式遺留在 %TEMP% 的上傳副本（手動觸發用）。
+
+        正常路徑是「請求結束就刪」（``_cleanup_upload``）；但崩潰、被強制
+        結束、或 rmtree 撞上檔案佔用時，整份音檔會留在系統碟上。預設只清
+        10 分鐘前的，避免刪到正在寫入的那一份。
+        """
+        from webview_server import sweep_stale_uploads
+        res = sweep_stale_uploads(min_age=min_age_sec)
+        msg = _t.msg("set.tempDone", n=res["removed"],
+                     mb=f"{res['freed'] / (1024 * 1024):.0f}")
+        self._emit("status", {"message": _t.plain(msg)})
+        try:
+            self.run_log.add(_t.plain(msg), level="info", source="temp")
+        except Exception:
+            pass
+        return res
 
     def work_in_flight(self) -> bool:
         """是否有正在进行的识别（单文件转写或批量队列）。

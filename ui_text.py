@@ -180,6 +180,9 @@ TEMPLATES: dict[str, str] = {
     "dl.runtimeFfmpegMissing": "找不到 ffmpeg，需要時會自動下載",
     "dl.runtimeVadOk": "VAD 已就緒（隨套件附帶，或已在模型目錄）",
     "dl.runtimeVadMissing": "找不到 silero VAD 模型，需重新安裝或手動放入 ov_models",
+
+    # 暫存清理（啟動時自動掃一次 + 設定頁手動按鈕）
+    "set.tempDone": "已清理 {n} 個暫存目錄，釋放 {mb} MB",
 }
 
 
