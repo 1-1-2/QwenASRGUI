@@ -27,6 +27,8 @@
     $("#view-ctx").textContent = "";
     if (name === "batch") renderBatch();
     if (name === "model") { renderModel(); renderDownloadCenter(); }
+    // 設定頁的斷點條數會隨任務變化，每次進來重讀一次，避免顯示開機當下的舊值。
+    if (name === "settings") refreshCheckpoints();
     if (name === "record") { enumerateMics(); refreshMicPerm(); }   // 列舉裝置 + 麥克風權限狀態
   }
 
@@ -49,53 +51,51 @@
   async function renderDownloadCenter() {
     const host = $("#catalog-list");
     if (!host) return;
-    const msg = $("#catalog-msg");
     try {
       const st = await API.getModelCatalog();
       const bundles = st.bundles || [];
-      const incomplete = st.incomplete || [];
+      const doneN = st.complete ? st.complete.length : 0;
+
+      // 摘要只留兩項「真的會拿來判斷」的資訊：完成度、磁碟佔用。
+      //  · 「待補 m 組」= total − done，與「已完整」是同一件事的兩面 → 刪
+      //  · 「根目錄」太長又不可操作 → 移到 title（hover 才看）
+      //  · 「鏡像」是狀態且需要能改 → 做成右上角可點 chip，點了跳設定頁
       const summary = $("#catalog-summary");
       if (summary) {
-        const mirrorTxt = st.mirror
-          ? T("dl.mirror", null, { name: st.mirror })
-          : T("dl.mirrorOfficial", "目前鏡像：官方（未設定）");
-        summary.textContent = T("dl.summary", null, {
-          mirror: mirrorTxt,
-          done: st.complete ? st.complete.length : 0,
-          total: bundles.length,
-          missing: incomplete.length,
-          used: fmtBytes(st.total_bytes_on_disk),
-          root: st.model_root || "",
-        });
+        summary.textContent = T("dl.summaryShort", null,
+          { done: doneN, total: bundles.length, used: fmtBytes(st.total_bytes_on_disk) });
+        summary.title = st.model_root || "";
       }
+      const mirrorChip = $("#catalog-mirror");
+      if (mirrorChip) {
+        if (st.mirror) {
+          mirrorChip.hidden = false;
+          mirrorChip.textContent = T("dl.mirror", null, { name: st.mirror });
+          mirrorChip.title = T("dl.mirrorJump", "前往設定修改鏡像");
+          mirrorChip.style.cursor = "pointer";
+        } else mirrorChip.hidden = true;
+      }
+
       const sel = $("#catalog-import-bundle");
       if (sel) {
         sel.innerHTML = bundles.map(b =>
           `<option value="${esc(b.id)}">${esc(window.I18N ? I18N.L(b.label) : b.label)}</option>`).join("");
       }
       host.innerHTML = bundles.map(b => {
-        // Wave 14／需求 11：後端若給了 runtimeReady（與「系統自檢」同一份判斷），
-        // 一律以它為準 —— 綠則綠。crispasr 核心只需一個加速版本、ffmpeg 只需
-        // ffmpeg.exe，都不該因為清單裡其他 zip 沒下載而顯示「缺 N/M」。
         const rt = b.runtimeReady;
-        const badge = (rt === true)
+        const missN = b.total_count - b.present_count;
+        const badge = (rt === true || (rt == null && b.complete))
           ? `<span class="chip" style="color:var(--ok,#1a7f45)">${T("dl.badgeComplete", "完整")}</span>`
-          : (rt === false)
+          : (rt === false || b.complete === false)
             ? `<span class="chip chip-muted">${T("dl.badgeMissing", null,
-                { missing: b.total_count - b.present_count, total: b.total_count })}</span>`
-            : b.complete
-              ? `<span class="chip" style="color:var(--ok,#1a7f45)">${T("dl.badgeComplete", "完整")}</span>`
-              : `<span class="chip chip-muted">${T("dl.badgeMissing", null,
-                  { missing: b.total_count - b.present_count, total: b.total_count })}</span>`;
+                { missing: missN, total: b.total_count })}</span>`
+            : "";
         const rtNote = (rt != null && b.runtimeNote)
           ? `<div class="hint" style="margin-top:4px;color:var(--ink-2)">${esc(I18N.L(b.runtimeNote))}</div>`
           : "";
-        // models.json already writes size_hint as "约 1.2 GB". Wrapping that
-        // in another "約 …（估計）" produced "約 约 1.2 GB（估計）", so strip a
-        // leading 约/約 before formatting.
         const hint = v => {
-          const s = String(v || "").trim().replace(/^[约約]\s*/, "");
-          return s ? T("dl.estimated", null, { size: esc(s) }) : "";
+          const t = String(v || "").trim().replace(/^[约約]\s*/, "");
+          return t ? T("dl.estimated", null, { size: esc(t) }) : "";
         };
         const approx = b.size_hint ? ` <span class="chip chip-muted">${hint(b.size_hint)}</span>` : "";
         const files = b.files.map(f => {
@@ -106,29 +106,35 @@
             ? (f.sha256_ok === true ? T("dl.shaOk", null)
                : (f.sha256_ok === false ? T("dl.shaBad", null) : T("dl.shaUnverified", null)))
             : T("dl.shaUnknown", null);
-          const state = f.present ? "✓" : ("✗ " + esc(f.problem || T("dl.missing", "缺失")));
+          const state = f.present ? "" : ("✗ " + esc(f.problem || T("dl.missing", "缺失")));
           return `<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:12px;font-family:var(--font-mono)">
             <span style="width:14px;color:${f.present ? "var(--ok,#1a7f45)" : "var(--warn,#b26a00)"}">${f.present ? "✓" : "✗"}</span>
             <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</span>
             <span style="color:var(--ink-2)">${size}</span>
             <span style="color:var(--ink-2);min-width:96px;text-align:right">${sha}</span>
-            <span style="color:var(--ink-2);min-width:150px;text-align:right">${f.present ? "" : state}</span>
+            <span style="color:var(--ink-2);min-width:150px;text-align:right">${state}</span>
           </div>`;
         }).join("");
-        // Wave 14／需求 13：明細收進可折疊區塊（summary 只留標題＋結論），
-        // 需要時可一鍵跳到「系統自檢」核對同一份結論。
-        return `<details style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:6px"${rt === false ? " open" : ""}>
-          <summary style="cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center">
-            <span style="flex:1">${esc(window.I18N ? I18N.L(b.label) : b.label)}</span>${approx}${badge}
+        // 缺失時直接說「還差幾個、怎麼補」，取代原本的「同自檢判斷」標籤。
+        const missLine = missN > 0
+          ? `<div class="hint" style="margin:6px 0 0">${T("dl.needFiles", null,
+              { n: missN, size: b.size_hint ? hint(b.size_hint) : "" })}</div>`
+          : "";
+        return `<details class="dl-group"${rt === false ? " open" : ""}>
+          <summary>
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(window.I18N ? I18N.L(b.label) : b.label)}</span>
+            ${approx}${badge}<span class="chev" aria-hidden="true">›</span>
           </summary>
           ${rtNote}
           <div style="margin-top:6px;color:var(--ink-2);font-size:12px">${T("dl.target", null, {
             dir: esc(b.target_dir), provider: esc(b.provider || ""),
             optional: b.optional ? T("dl.optional", " · 選用") : "" })}</div>
-          <div style="margin-top:4px;display:flex;gap:8px;align-items:center">
-            <span class="chip chip-muted" style="font-size:10px">${T("dl.selfCheck")}</span>
-            <button class="btn btn-ghost btn-sm" data-goto-health="1">${T("dl.gotoSelfCheck")}</button>
+          <div class="dl-actions">
+            <button class="btn btn-ghost btn-sm" data-dl-open="${esc(b.id)}">${T("dl.openDir", "開啟目錄")}</button>
+            <button class="btn btn-ghost btn-sm" data-dl-verify="${esc(b.id)}">${T("dl.verify", "校驗檔案")}</button>
+            <span class="hint" data-dl-msg="${esc(b.id)}"></span>
           </div>
+          ${missLine}
           ${files}
         </details>`;
       }).join("") || `<div style="color:var(--ink-2)">${T("dl.empty", "無資料")}</div>`;
@@ -136,14 +142,40 @@
       host.innerHTML = `<div style="color:var(--warn,#b26a00)">${T("dl.readFailed", null, { err: esc(e.message || e) })}</div>`;
     }
   }
-  // 「查看系統自檢」：切到模型頁並捲到自檢面板（同頁內跳轉，不重載）。
-  document.addEventListener("click", e => {
-    const b = e.target && e.target.closest && e.target.closest("[data-goto-health]");
-    if (!b) return;
-    e.preventDefault();
-    const panel = $("#health-panel");
-    if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  // 下載組的兩個實用入口：開目錄、真正校驗（SHA256）。
+  // 校驗是顯式動作——它要讀完整個檔案，不能塞進每次刷新。
+  $("#catalog-list") && $("#catalog-list").addEventListener("click", async e => {
+    const o = e.target.closest("[data-dl-open]");
+    if (o) {
+      const r = await API.openBundleDir(o.dataset.dlOpen);
+      if (r && r.ok === false) logLine("✕ " + (r.message || "open failed"));
+      return;
+    }
+    const v = e.target.closest("[data-dl-verify]");
+    if (!v) return;
+    const id = v.dataset.dlVerify;
+    const tip = document.querySelector(`[data-dl-msg="${id}"]`);
+    v.disabled = true;
+    if (tip) tip.textContent = T("dl.verifying", "校驗中…");
+    try {
+      const r = await API.verifyBundle(id);
+      if (tip) {
+        tip.textContent = r.ok
+          ? T("dl.verifyOk", null, { n: r.checked })
+          : T("dl.verifyBad", null,
+              { n: (r.bad || []).length, m: (r.missing || []).length });
+      }
+      if (r.ok) await renderDownloadCenter();
+    } catch (err) {
+      if (tip) tip.textContent = String(err.message || err);
+    } finally {
+      v.disabled = false;
+    }
   });
+
+  // 原本的「查看系統自檢」跳轉已移除：兩塊都在同一頁，跳過去還要再展開一次，
+  // 實際幫助有限；改為每組各自的「開啟目錄 / 校驗檔案」。
   $("#btn-catalog-refresh") && $("#btn-catalog-refresh").addEventListener("click", renderDownloadCenter);
   $("#btn-catalog-manifest") && $("#btn-catalog-manifest").addEventListener("click", async () => {
     const msg = $("#catalog-msg");
@@ -174,6 +206,10 @@
   // ── 狀態列 ──────────────────────────────────────────────
   async function refreshStatus() {
     const s = await API.getStatus();
+    _lastStatus = s;
+    // 批次頁的「本次執行設定」要顯示模型與推理方式，兩者只在 status 裡；
+    // 這裡補一次重繪，值沒變時 renderBatchConfig 自己會跳過重建。
+    try { renderBatchConfig(); } catch (e) {}
     const el = $("#model-status");
     el.classList.toggle("loading", !s.modelReady);
     $(".t", el).textContent = s.modelReady ? T("status.ready", "模型已就緒")
@@ -229,6 +265,9 @@
   // 本輪佇列在「開始」時鎖定的執行參數（由後端 snapshot 帶回）。執行中要
   // 顯示的就是它，而不是使用者此刻可能已經改過的滑桿值。
   let batchRunOpts = {};
+  let _lastStatus = null;          // 最近一次 getStatus，供同步渲染的地方取用
+  // 同名檔案策略的目前值（設定頁寫入、批次頁唯讀顯示）。
+  let _outNaming = "suffix";
   // 佇列級耗時（後端從按下「開始」起算，續跑會累加）。與單檔 elapsedSec 不同。
   let batchElapsed = 0;
   let batchDragId = null;          // 正在被拖動的項目 id（null = 沒在拖）
@@ -262,10 +301,15 @@
     const busy = UI_BUSY.size > 0;
     const run = $("#btn-run");
     if (run) {
-      run.disabled = busy || !picked;
+      // 執行中：同一顆按鈕變「取消」且保持可按 —— 單檔轉錄動輒數十分鐘，
+      // 沒有中止入口時使用者只能結束程式（斷點雖然會存，但當下等於卡死）。
+      const canceling = UI_BUSY.has("transcribe");
+      run.disabled = canceling ? false : (busy || !picked);
+      run.dataset.mode = canceling ? "cancel" : "run";
+      run.classList.toggle("is-cancel", canceling);
       const span = run.querySelector("[data-i18n]");
       if (span && window.I18N) {
-        span.dataset.i18n = UI_BUSY.has("transcribe") ? "file.running" : "file.run";
+        span.dataset.i18n = canceling ? "file.cancel" : "file.run";
         I18N.apply(run);
       }
     }
@@ -298,8 +342,17 @@
     drop.classList.add("has-file");
     const meta = f.sizeSec ? T("batch.seconds", null, { n: f.sizeSec })
       : (f.size ? (f.size / 1048576).toFixed(1) + " MB" : "");
+    // 模式標籤：兩種來源都能接續，差別在「要不要重傳」。
+    //   有 path（原生選檔）＝直接引用本機檔案，重新選同一個檔案即可接續；
+    //   只有 File 物件（拖放／瀏覽器選檔）＝暫存副本，靠內容哈希認得同一個
+    //   檔案，但重新拖入時整份要再上傳一次。
+    const byPath = !f.file && !!f.path;
+    const tag = byPath ? T("file.modeLocal", "本機直引") : T("file.modeDragChip", "拖放副本");
+    const tagNote = byPath ? T("file.modeLocalNote", "可中斷接續")
+                           : T("file.modeDragNote", "可接續 · 需重新上傳");
     drop.innerHTML = `<span class="file-chip">${escapeHtml(f.name)}
       ${meta ? `<span class="meta">${meta}</span>` : ""}
+      <span class="chip-mode ${byPath ? "is-ok" : "is-warn"}">${escapeHtml(tag)} · ${escapeHtml(tagNote)}</span>
       <button class="x" title="${T("batch.remove", "移除")}">✕</button></span>`;
     drop.querySelector(".x").addEventListener("click", ev => { ev.stopPropagation(); setFile(null); });
     syncActionButtons();
@@ -307,15 +360,25 @@
   function renderDropEmpty() {
     drop.innerHTML = `<div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></div>
       <div class="big">${T("file.dropBigHtml", "拖曳音訊到此，或<b>點擊選擇檔案</b>")}</div>
-      <div class="sub">${T("file.dropSubHtml", "支援 mp3 / wav / m4a / 影片音軌")}</div>`;
+      <div class="sub">${T("file.dropSubHtml", "支援 mp3 / wav / m4a / 影片音軌")}</div>
+      <div class="drop-note">${T("file.modeHint", "中斷後可接續 · 拖放需重新拖入（會重新上傳）")}</div>`;
   }
 
-  // 桌面：原生對話框；web/mock：fallback 到 <input type=file>
+  // 桌面：原生對話框（零複製）；非 Windows / 預覽模式：fallback 到 <input type=file>
+  //   這條路徑的差別值得說清楚：
+  //     · 點擊 → 原生對話框回傳絕對路徑 → /api/transcribe-path 直接引用，
+  //       不複製、不上傳、不會在 %TEMP% 留下整份音檔副本。
+  //     · 拖放 → 瀏覽器只給 File 物件（Chromium 不交出真實路徑），只能整份
+  //       上傳到 %TEMP%\asr_web_*，請求結束再刪。
   drop.addEventListener("click", async () => {
     if (drop.classList.contains("has-file")) return;
-    const native = await API.pickFile();
-    if (native) setFile(native);
-    else hiddenFile.click();
+    if (API.mode !== "web") { hiddenFile.click(); return; }
+    let r = null;
+    try { r = await API.pickFiles(); } catch (e) { r = null; }
+    if (!r || !r.supported) { hiddenFile.click(); return; }  // 非 Windows 才回退
+    if (!r.paths || !r.paths.length) return;                 // 使用者取消，不要再彈一次
+    const p = r.paths[0];
+    setFile({ name: p.split(/[\\/]/).pop() || p, path: p, native: true });
   });
   hiddenFile.addEventListener("change", e => { if (e.target.files[0]) setFile(e.target.files[0]); });
   ["dragover", "dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("hot"); }));
@@ -337,17 +400,36 @@
 
   // 轉錄
   let running = false;
+  // 使用者是否按了「取消」：用來把「已取消」講成正常結束，而不是紅字錯誤。
+  let cancelRequested = false;
   $("#btn-run").addEventListener("click", async () => {
+    // 執行中同一顆按鈕變「取消」——與批次頁「全部開始 → 取消佇列」一致，
+    // 不新增第二顆按鈕。取消會讓 Runner 在語音組邊界停下來並保存斷點。
+    if ($("#btn-run").dataset.mode === "cancel") {
+      if (cancelRequested) return;
+      cancelRequested = true;
+      const span = $("#btn-run").querySelector("[data-i18n]");
+      if (span) { span.dataset.i18n = "file.canceling"; I18N.apply($("#btn-run")); }
+      logLine(T("file.cancelSent", "已送出取消，正在保存已完成的部分…"));
+      try { await API.cancel(); } catch (e) { logLine("✕ " + (e.message || e)); }
+      return;
+    }
     if (!picked || running) return;
     running = true;
+    cancelRequested = false;
     markBusy("transcribe", true);
     $("#result").hidden = true;
     showProgress(0, T("run.preparing", "準備中…"));
     resetLive();
     logLine(T("run.started", null, { name: picked.name }));
     try {
+      // 原生選檔（有 path、沒有 File）→ 本機路徑直引，不複製；
+      // 拖放（File 物件）→ multipart 上傳到 %TEMP%，請求結束即刪。
+      const byPath = !picked.file && !!picked.path;
       const res = await API.transcribe({
-        path: picked.path, file: picked.file || picked,
+        path: byPath ? picked.path : null,
+        name: picked.name,
+        file: byPath ? null : (picked.file || picked),
         language: $("#sel-lang").value || null,
         ...diarOpts($("#sel-diar") ? $("#sel-diar").value : "off"),
         align: $("#sw-align").checked,
@@ -363,14 +445,22 @@
         logLine(I18N.t("file.previewTruncated").replace("%1", res.previewLimit) + " " + res.srtPath);
       }
       if (res.trial) logLine(T("run.trialNote"));
-      $("#btn-open-dir").disabled = false;
+      // 「開啟輸出資料夾」不需要等有輸出才亮：資料夾本來就在，
+      // 使用者常常是先想確認上次的檔在哪才轉檔。
       $("#btn-save-sub").disabled = false;
     } catch (err) {
       showProgress(0, "");
       $("#progress").hidden = true;
-      logLine("✕ " + (err.message || err));
+      if (cancelRequested) {
+        // 取消不是失敗。能不能接續由後端依來源回話（點選＝可接續；
+        // 拖放＝副本已刪、重拖從頭），前端不再自行加一句以免兩邊說法不一。
+        logLine("⏹ " + (err.message || err));
+      } else {
+        logLine("✕ " + (err.message || err));
+      }
     } finally {
       running = false;
+      cancelRequested = false;
       markBusy("transcribe", false);
     }
   });
@@ -980,7 +1070,12 @@
   }
   $("#btn-karaoke") && $("#btn-karaoke").addEventListener("click", () => setKaraoke(!karaokeOn));
 
-  $("#btn-open-dir").addEventListener("click", () => API.openOutputDir());
+  // 三處「開啟輸出資料夾」共用同一個後端呼叫（單檔頁 / 批次頁 / 設定頁）。
+  // 全部都常亮：目錄是固定的使用者資料夾，與有沒有產出無關。
+  ["#btn-open-dir", "#btn-batch-open-dir", "#btn-open-dir-set"].forEach(sel => {
+    const b = $(sel);
+    if (b) b.addEventListener("click", () => API.openOutputDir());
+  });
 
   // ── 字幕存檔：由記憶體中的 curSegs 在前端組檔，下載到使用者指定位置 ──
   //   （瀏覽器沙箱不暴露來源檔真實路徑，無法寫回來源資料夾，故走下載。
@@ -1316,6 +1411,11 @@
       note.classList.toggle("is-locked", locked);
     }
     const auto = T("batch.cfgAuto", "自動");
+    // 模型 / 推理方式不在 runOpts 裡（它們是核心設定，不是每次任務參數），
+    // 但要影響執行結果，所以在這裡一併列出，值取自最近一次 status。
+    const stt = _lastStatus || {};
+    const modelLabel = stt.selectedModel || auto;
+    const backendLabel = stt.backend || auto;
     const diar = src.diarize
       ? (String(src.nSpeakers || "auto") === "auto"
          ? auto : T("batch.cfgSpeakers", null, { n: src.nSpeakers }))
@@ -1324,9 +1424,21 @@
     const vad = (src.vadThreshold === null || src.vadThreshold === undefined ||
                  src.vadThreshold === "")
       ? "—" : Number(src.vadThreshold).toFixed(2);
+    // 每段最長：顯示**實際生效值**。填 30 而模型上限 20 時，真正跑的是 20；
+    // 只顯示使用者填的值等於給出一個不存在的承諾。
     const chunkN = Number(src.chunkSecs);
-    const chunk = chunkN > 0 ? T("batch.cfgSecs", null, { n: chunkN }) : auto;
+    const effN = Number(stt.chunkSecsEffective) || 0;
+    let chunk;
+    if (chunkN > 0 && effN > 0 && effN !== chunkN) {
+      chunk = T("batch.cfgSecsClamped", null, { eff: effN, want: chunkN });
+    } else if (chunkN > 0) {
+      chunk = T("batch.cfgSecs", null, { n: chunkN });
+    } else {
+      chunk = effN > 0 ? T("batch.cfgSecs", null, { n: effN }) : auto;
+    }
     const rows = [
+      [T("batch.cfgModel", "模型"), modelLabel, false],
+      [T("batch.cfgBackend", "推理方式"), backendLabel, false],
       [T("batch.cfgLang", "辨識語言"), src.language || auto, false],
       [T("batch.cfgDiar", "說話者分離"), diar, false],
       [T("batch.cfgAlign", "詞級優化"),
@@ -1335,6 +1447,11 @@
        hintLen ? T("batch.cfgHintOn", null, { n: hintLen }) : T("batch.cfgNone", "無"), false],
       [T("batch.cfgVad", "VAD 靈敏度"), vad, false],
       [T("batch.cfgChunk", "每段最長"), chunk, false],
+      // 批次最容易撞名（多個資料夾都有 001.mp4），所以把策略顯示出來，
+      // 免得使用者以為檔案沒產出、其實是被同名的另一支蓋掉了。
+      [T("batch.cfgNaming", "同名檔案"),
+       T(_outNaming === "overwrite" ? "set.nameOverwrite"
+         : (_outNaming === "hash" ? "set.nameHash" : "set.nameSuffix")), false],
       // 試跑只對單檔有意義，明確標「不適用」而不是默默忽略。
       [T("batch.cfgTrial", "試跑前 5 分鐘"), T("batch.cfgNa", "不適用"), true],
     ];
@@ -1756,36 +1873,108 @@
   let _curCore = null;      // 目前選中的核心標籤
 
   // ── 系統自檢：每核心 × 每能力，顯示 Green/Yellow/Red ──────────────
+  // 自檢一列：名稱 + 圓形感嘆號（hover 才出長說明）+ 短值。
+  // 舊版把 detail 直接排在右側，一行常常要塞 40+ 字，窄窗就換行、把行距撐開；
+  // 而絕大多數情況下那句話對「現在這個後端」根本不相關。
+  function healthRow(it, dot) {
+    const row = document.createElement("div"); row.className = "hc-item";
+    const tip = it.hint ? I18N.L(it.hint) : "";
+    const val = it.value ? I18N.L(it.value)
+      : T(it.status === "red" ? "health.missing" : "health.notReady");
+    row.innerHTML = dot(it.status) +
+      `<span class="hi-label">${escapeHtml(I18N.L(it.label))}</span>` +
+      (tip ? `<button class="hi-info" type="button" aria-label="${escapeHtml(tip)}" data-tip="${escapeHtml(tip)}">i</button>` : "") +
+      `<span class="hi-value">${escapeHtml(val)}</span>`;
+    return row;
+  }
+
+  // 觸屏沒有 hover：點感嘆號切換浮層，點別處關閉。
+  document.addEventListener("click", e => {
+    const b = e.target.closest(".hi-info");
+    document.querySelectorAll(".hi-info.tip-on").forEach(x => { if (x !== b) x.classList.remove("tip-on"); });
+    if (b) b.classList.toggle("tip-on");
+  });
+
   async function renderHealth() {
     let h;
     try { h = await API.getHealthCheck(); } catch (e) { return; }
     const sum = $("#health-sum");
-    if (h.summary) {
+    if (sum && h.summary) {
       if (h.summary.red > 0) { sum.className = "chip chip-live"; sum.textContent = T("catalog.itemsToFix", null, { n: h.summary.red }); }
       else if (h.summary.yellow > 0) { sum.className = "chip chip-accent"; sum.textContent = T("catalog.coreReady", null, { n: h.summary.yellow }); }
       else { sum.className = "chip chip-ok"; sum.textContent = T("catalog.allReady", "全部就緒"); }
     }
+    // 預設收起；只有紅燈（缺且不能自動補）才主動展開，其餘尊重使用者手動收起。
+    const fold = $("#health-fold");
+    if (fold && h.summary && h.summary.red > 0) fold.open = true;
+
     const host = $("#health-panel"); host.innerHTML = "";
-    // 自檢預設展開（<details open> 寫在 HTML 裡）。這裡**不再**依紅燈數量
-    // 強制 open：使用者手動收起來之後，重新檢查不該又把面板彈開。
     const dot = s => `<span class="hdot hdot-${s}"></span>`;
-    const groups = [...(h.cores || [])];
-    if (h.shared && h.shared.length) groups.push({ label: T("catalog.shared", "共用元件"), items: h.shared });
-    groups.forEach(g => {
+    const mkGroup = g => {
       const card = document.createElement("div"); card.className = "health-core";
       const active = g.backend && g.backend === h.activeBackend;
       card.innerHTML = `<div class="hc-title">${escapeHtml(I18N.L(g.label))}` +
         (active ? ` <span class="chip chip-ok" style="font-size:10px">${T("catalog.inUse", "使用中")}</span>` : ``) + `</div>`;
-      (g.items || []).forEach(it => {
-        const row = document.createElement("div"); row.className = "hc-item";
-        row.innerHTML = `${dot(it.status)}<span class="hi-label">${escapeHtml(I18N.L(it.label))}</span>` +
-          `<span class="hi-detail">${escapeHtml(I18N.L(it.detail || ""))}</span>`;
-        card.appendChild(row);
+      (g.items || []).forEach(it => card.appendChild(healthRow(it, dot)));
+      return card;
+    };
+
+    const groups = [...(h.cores || [])];
+    const live = groups.filter(g => !g.inactive);
+    const other = groups.filter(g => g.inactive);
+    live.forEach(g => host.appendChild(mkGroup(g)));
+    if (h.shared && h.shared.length) {
+      host.appendChild(mkGroup({ label: T("catalog.shared", "共用元件"), items: h.shared }));
+    }
+
+    // 沒在用的後端折成一行：既不佔版面，也不把它們的缺失算進摘要。
+    if (other.length) {
+      const missing = other.reduce(
+        (n, g) => n + (g.items || []).filter(i => i.status !== "green").length, 0);
+      const btn = document.createElement("button");
+      btn.type = "button"; btn.className = "hc-inactive";
+      btn.setAttribute("aria-expanded", "false");
+      btn.innerHTML = `<span>${T("health.otherBackends", "其他後端（未啟用）")}</span>` +
+        `<span class="chip chip-muted" style="font-size:10px">${T("health.otherMissing", null, { n: missing })}</span>` +
+        `<span class="chev" aria-hidden="true">›</span>`;
+      const box = document.createElement("div");
+      box.hidden = true;
+      box.style.gridColumn = "1 / -1";
+      box.style.display = "grid"; box.style.gap = "12px";
+      other.forEach(g => box.appendChild(mkGroup(g)));
+      btn.addEventListener("click", () => {
+        const open = box.hidden;
+        box.hidden = !open;
+        btn.setAttribute("aria-expanded", open ? "true" : "false");
       });
-      host.appendChild(card);
-    });
+      host.appendChild(btn); host.appendChild(box);
+    }
   }
   $("#btn-health-recheck") && $("#btn-health-recheck").addEventListener("click", renderHealth);
+
+  // ① 當前狀態列：回答「現在到底用哪個模型、載入了沒」。
+  //    舊版要滾到頁尾下載中心才知道在用哪個；模型頁反而沒有這條總結。
+  function paintModelStatus(s) {
+    const cur = (_modelOpt && _modelOpt.current) || {};
+    const name = $("#ms-model"), be = $("#ms-backend"), st = $("#ms-state");
+    if (name) name.textContent = cur.model || "—";
+    if (be) be.textContent = (s && s.backend) || "—";
+    if (st) {
+      const ready = !!(s && s.modelReady);
+      st.textContent = ready ? T("model.loaded", "已載入") : T("model.notLoaded", "未載入");
+      st.style.color = ready ? "var(--ok,#1a7f45)" : "var(--muted)";
+    }
+    // 自動釋放已移到設定頁（全域偏好）；這裡只做「目前實際行為」的唯讀展示。
+    // abs 值是後端算好的生效值，不是 settings 的原始勾選狀態。
+    const ar = $("#auto-release-state");
+    if (ar) {
+      const eff = !!(s && s.autoReleaseModel);
+      ar.textContent = eff
+        ? T("model.autoReleaseOn", "轉檔後自動釋放：開")
+        : T("model.autoReleaseOff", "轉檔後自動釋放：關（此核心常駐）");
+      ar.title = T("model.autoReleaseWhere", "可在「設定 → 效能與記憶體」修改");
+    }
+  }
 
   async function renderModel() {
     renderHealth();
@@ -1803,6 +1992,7 @@
           arch: curArch, active: _modelOpt.activeArch}), "info");
       } else modelMsg("", null);
       updateLoadBtn();              // 設定「下載並載入／前往轉錄」按鈕初始狀態
+      try { paintModelStatus(await API.getStatus()); } catch (e) {}
     } catch (e) {}
     // 偵測裝置 + 診斷
     const d = await API.listDevices();
@@ -1871,7 +2061,8 @@
   function applyModelMode(mode, persist) {
     _modelMode = (mode === "advanced") ? "advanced" : "basic";
     const adv = _modelMode === "advanced";
-    const bp = $("#basic-pane"), ap = $("#advanced-pane"), ax = $("#advanced-extra");
+    const bp = $("#basic-pane"), ap = $("#advanced-pane"),
+          ax = $("#advanced-extra") || $("#accel-card");
     if (bp) bp.hidden = adv;
     if (ap) ap.hidden = !adv;
     if (ax) ax.hidden = !adv;          // 裝置／加速版本／診斷屬進階
@@ -2019,8 +2210,9 @@
       btn.disabled = true; btn.textContent = T("model.loading", "下載／載入中…"); return;
     }
     if (st.modelReady && !(res && res.restartRequired)) {
-      // 已就緒且未要求重啟 → 引導前往轉錄
-      btn.disabled = false; btn.textContent = T("model.goto", "前往語音轉文字"); btn.dataset.act = "goto"; return;
+      // 已就緒：主按鈕不再兼任導航——「前往語音轉文字」已移到頁首狀態列，
+      // 一顆按鈕同時扮演「載入」與「跳頁」會讓使用者猜不出按下去會發生什麼。
+      btn.disabled = true; btn.textContent = T("model.loaded2", "已載入"); btn.dataset.act = ""; return;
     }
     if (res && res.restartRequired) {
       // 已載入其他核心、切換需重啟 → 按鈕反白（不可就地載入）
@@ -2029,6 +2221,12 @@
     // 尚未載入 → 可就地下載並載入
     btn.disabled = false; btn.textContent = T("model.load", "下載並載入模型"); btn.dataset.act = "load";
   }
+  $("#btn-goto-transcribe") && $("#btn-goto-transcribe").addEventListener("click", () => switchView("file"));
+  $("#catalog-mirror") && $("#catalog-mirror").addEventListener("click", () => {
+    switchView("settings");
+    const el = $("#set-mirror");
+    if (el) { try { el.focus(); el.scrollIntoView({ block: "center" }); } catch (e) {} }
+  });
   $("#btn-model-load") && $("#btn-model-load").addEventListener("click", async () => {
     const btn = $("#btn-model-load");
     if (btn.dataset.act === "goto") { switchView("file"); return; }
@@ -2196,6 +2394,15 @@
     $("#set-scale").value = s.scale; $("#set-scale-val").textContent = s.scale + "%";
     applyScale(s.scale);
     segSet("#set-format", s.format); segSet("#set-vocab", s.vocab); segSet("#set-theme", s.theme || "light");
+    // 同名檔案策略：後端只認 suffix / overwrite / hash，未知值一律回 suffix。
+    segSet("#set-outnaming", s.outNaming || "suffix");
+    _outNaming = s.outNaming || "suffix";
+    // 輸出資料夾：顯示真實路徑（唯讀）。以前的這一列只有標題沒有值，
+    // 使用者無從確認字幕到底寫到哪裡。
+    if ($("#set-outputdir-path")) $("#set-outputdir-path").value = s.outputDir || "";
+    // 斷點保留天數 + 目前留存的記錄（條數／占用／明細）
+    if ($("#set-ckpt-days")) $("#set-ckpt-days").value = (s.checkpointDays ?? 30);
+    refreshCheckpoints();
     applyTheme(s.theme || "light");                 // 啟動即套用深/淺色
     $("#set-mirror").value = s.mirror || "";
     $("#set-ffmpeg").value = s.ffmpeg || "";
@@ -2222,7 +2429,22 @@
     if ($("#sw-align")) $("#sw-align").checked = !!s.align;
     if ($("#hint-box") && s.hint != null) $("#hint-box").value = s.hint;
     if ($("#sw-trial")) $("#sw-trial").checked = !!s.trial;
-    if ($("#sw-auto-release")) $("#sw-auto-release").checked = s.autoRelease !== false;
+    // 自動釋放已移到設定頁。顯示的是「生效值」：GPU 核心會強制關閉自動釋放
+    // （Vulkan context 刻意常駐），此時開關置灰並說明原因，而不是讓它顯示
+    // 「開」卻永遠不作用。
+    if ($("#sw-auto-release")) {
+      const sw = $("#sw-auto-release");
+      const na = (s.autoReleaseRequested === true && s.autoRelease === false);
+      sw.checked = s.autoRelease !== false;
+      sw.disabled = na;
+      const why = $("#auto-release-why");
+      if (why) {
+        why.hidden = !na;
+        why.textContent = na
+          ? T("set.autoReleaseNa", "目前使用 GPU 核心（常駐設計），不支援自動釋放；改用 CPU 核心時生效。")
+          : "";
+      }
+    }
     // Wave 11：設定回填後同步試跑徽章與摺疊摘要 —— 否則重啟後明明勾著
     // 試跑，徽章卻是隱藏的，又回到「以為會完整轉檔」的老問題。
     syncTrialBadge();
@@ -2380,12 +2602,16 @@
     }
   });
   // segmented 控制：點擊切換 + 回寫設定
-  [["#set-format", "format"], ["#set-vocab", "vocab"], ["#set-theme", "theme"]].forEach(([sel, key]) => {
+  [["#set-format", "format"], ["#set-vocab", "vocab"], ["#set-theme", "theme"],
+   ["#set-outnaming", "outNaming"]].forEach(([sel, key]) => {
     $(sel).addEventListener("click", e => {
       const b = e.target.closest("button"); if (!b) return;
       $$(sel + " button").forEach(x => x.classList.toggle("on", x === b));
       API.setSettings({ [key]: b.dataset.v });
       if (key === "theme") applyTheme(b.dataset.v);
+      if (key === "outNaming") {      // 批次頁那張表同步更新
+        _outNaming = b.dataset.v; renderBatchConfig();
+      }
     });
   });
   $("#set-mirror").addEventListener("change", e => API.setSettings({ mirror: e.target.value.trim() }));
@@ -2426,6 +2652,113 @@
     try { await API.checkUpdate(); } catch (e) {}
     setTimeout(() => { btn.disabled = false; btn.textContent = o; }, 1500);
   });
+
+  // 暫存清理：只清本程式在 %TEMP% 建的目錄（asr_web_* / asr_api_*），
+  // 且只清 10 分鐘前的，不會動到正在跑的那一份。
+  $("#btn-clean-temp") && $("#btn-clean-temp").addEventListener("click", async () => {
+    const btn = $("#btn-clean-temp");
+    const span = btn.querySelector("[data-i18n]");
+    const state = $("#temp-state");
+    btn.disabled = true;
+    if (span) { span.dataset.i18n = "set.tempCleaning"; I18N.apply(btn); }
+    try {
+      const r = await API.cleanupTemp();
+      const mb = Math.round((r.freed || 0) / 1048576);
+      if (state) {
+        // set.tempDone 是後端 message key（ui_text.TEMPLATES），走 renderMsg
+        // 而不是 T()：T() 只查靜態字典 D。
+        state.textContent = (r.ok === false)
+          ? (r.message || "")
+          : ((window.I18N && I18N.renderMsg("set.tempDone",
+               { n: r.removed || 0, mb }, "")) || "");
+      }
+    } catch (e) {
+      if (state) state.textContent = String(e.message || e);
+    } finally {
+      btn.disabled = false;
+      if (span) { span.dataset.i18n = "set.tempClean"; I18N.apply(btn); }
+    }
+  });
+
+  // 斷點記錄：摘要一行（條數 + 占用）可展開明細，右側一鍵清除。
+  // 摘要與明細都是動態文字，不能掛 data-i18n（會被 I18N.apply 覆蓋成 key），
+  // 所以改在語言切換後重繪一次。
+  function ckStateLabel(s) {
+    const map = {
+      done: "batch.stDone", running: "batch.stRunning", new: "batch.stPending",
+      paused: "set.ckptStPaused", orphan: "set.ckptStOrphan",
+    };
+    return map[s] ? T(map[s], s) : (s || "—");
+  }
+  function ckWhen(ts) {
+    if (!ts) return "—";
+    try {
+      const d = new Date(ts * 1000);
+      const p = n => String(n).padStart(2, "0");
+      const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+      // 今年只顯示月/日 + 時分，省下 4 個字元；跨年才帶完整年份，
+      // 否則「最後活動」欄永遠被省略號截斷。
+      return d.getFullYear() === new Date().getFullYear()
+        ? `${p(d.getMonth() + 1)}/${p(d.getDate())} ${hm}`
+        : `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())}`;
+    } catch (e) { return "—"; }
+  }
+  async function refreshCheckpoints() {
+    const sum = $("#ckpt-summary"), list = $("#ckpt-list"), clr = $("#btn-clear-ckpt");
+    if (!sum || !list) return;
+    let r;
+    try { r = await API.getCheckpoints(); } catch (e) { return; }
+    if (r.retentionDays != null && $("#set-ckpt-days") &&
+        document.activeElement !== $("#set-ckpt-days")) {
+      $("#set-ckpt-days").value = r.retentionDays;
+    }
+    const n = r.count || 0;
+    sum.textContent = n
+      ? T("set.ckptSummary", null, { n, mb: fmtBytes(r.bytes || 0) })
+      : T("set.ckptEmpty", "目前沒有斷點記錄");
+    if (clr) clr.disabled = !n;
+    if (!n) { list.innerHTML = ""; return; }
+    const head = `<div class="ck-row head">`
+      + `<span>${esc(T("set.ckptColTask", "任務／輸出檔"))}</span>`
+      + `<span>${esc(T("set.ckptColState", "狀態"))}</span>`
+      + `<span>${esc(T("set.ckptColTime", "最後活動"))}</span>`
+      + `<span class="ck-num">${esc(T("set.ckptColSize", "占用"))}</span></div>`;
+    const rows = (r.items || []).map(it => {
+      const name = it.name || it.task;
+      return `<div class="ck-row">`
+        + `<span class="ck-name" title="${esc(name)}">${esc(name)}</span>`
+        + `<span>${esc(ckStateLabel(it.status))}</span>`
+        + `<span>${esc(ckWhen(it.updatedAt))}</span>`
+        + `<span class="ck-num">${esc(it.bytes ? fmtBytes(it.bytes) : "—")}</span></div>`;
+    }).join("");
+    const extra = (r.total || 0) - (r.items || []).length;
+    list.innerHTML = head + rows + (extra > 0
+      ? `<div class="ck-more">${esc(T("set.ckptMore", null, { n: extra }))}</div>` : "");
+  }
+  $("#set-ckpt-days") && $("#set-ckpt-days").addEventListener("change", async e => {
+    let v = parseInt(e.target.value, 10);
+    if (!isFinite(v) || v < 0) v = 0;
+    v = Math.min(3650, v);
+    e.target.value = v;
+    await API.setSettings({ checkpointDays: v });
+    refreshCheckpoints();
+  });
+  $("#btn-clear-ckpt") && $("#btn-clear-ckpt").addEventListener("click", async () => {
+    const btn = $("#btn-clear-ckpt");
+    const span = btn.querySelector("[data-i18n]");
+    btn.disabled = true;
+    if (span) { span.dataset.i18n = "set.ckptClearing"; I18N.apply(btn); }
+    try {
+      await API.clearCheckpoints();
+      await refreshCheckpoints();
+    } catch (e) {
+      logLine("✕ " + (e.message || e));
+    } finally {
+      if (span) { span.dataset.i18n = "set.ckptClear"; I18N.apply(btn); }
+      refreshCheckpoints();      // 清除失敗時把按鈕狀態還原成實際條數
+    }
+  });
+  if (window.I18N && I18N.onAfterLang) I18N.onAfterLang(() => refreshCheckpoints());
 
   // ── 共用工具 ────────────────────────────────────────────
   function fmtClock(sec) {

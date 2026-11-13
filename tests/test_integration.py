@@ -194,6 +194,67 @@ def main() -> int:
     be3.cancel()
     r.check("cancel() 设置取消事件", be3._cancel_event.is_set())
 
+    # ── 4. 同名文件：默认保留旧稿，不静默覆盖（设定→同名文件=数字后缀）──
+    # 换一组参数（hint）→ 指纹不符 → 从头重跑；旧稿必须还在，新结果另存
+    # 「course (1).srt」。这就是 A 策略与「静默覆盖」的区别。
+    be4 = make_backend(tmp)
+    res4 = be4.transcribe({"path": str(wav), "hint": "换一组参数"},
+                          progress_cb=lambda p, s: None)
+    srt4 = Path(res4["srtPath"])
+    r.check("参数变了 → 另存 course (1).srt", srt4.name == "course (1).srt",
+            f"{srt4.name}（sub={srt4.parent.name}）")
+    r.check("旧稿仍在且未被清空", (tmp / "subtitles" / "course.srt").exists() and
+            "--> " in (tmp / "subtitles" / "course.srt").read_text(encoding="utf-8"))
+    r.check("新稿也有字幕", srt4.exists() and "--> " in srt4.read_text(encoding="utf-8"))
+
+    # 续跑（同一组参数）必须写回原来的那份，而不是又开一个 (2)。
+    be5 = make_backend(tmp)
+    res5 = be5.transcribe({"path": str(wav), "hint": "换一组参数"},
+                          progress_cb=lambda p, s: None)
+    r.check("续跑沿用同一份 (1)，不新增副本",
+            Path(res5["srtPath"]).name == "course (1).srt", res5.get("srtPath"))
+    r.check("没有意外的 course (2).srt",
+            not (tmp / "subtitles" / "course (2).srt").exists())
+
+    # ── 5. 拖放（上传副本）：靠内容哈希认出同一个档案，所以也能接续 ──
+    # 副本落在随机临时目录、请求结束就删，路径每次都不同；但 task_id 取自
+    # 内容（档名+大小+首尾抽样），重复拖入同一支档案仍认作同一个任务。
+    up1 = tmp / "up1" / "upload.wav"
+    up2 = tmp / "up2" / "upload.wav"
+    for p in (up1, up2):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(wav.read_bytes())
+    be6 = make_backend(tmp)
+    res6 = be6.transcribe({"path": str(up1), "name": "課程.wav",
+                           "uploaded": True}, progress_cb=lambda p, s: None)
+    calls6 = be6.engine.calls
+    r.check("上传来源能正常转写", calls6 > 0 and bool(res6.get("segments")),
+            f"calls={calls6} segments={len(res6.get('segments') or [])}")
+
+    import sqlite3
+    up_id = wb.WebBackend._source_identity(up1, "課程.wav", upload=True)[0]
+    local_id = wb.WebBackend._source_identity(wav)[0]
+    con = sqlite3.connect(str(tmp / "longform_state" / "checkpoints.db"))
+    try:
+        rows = {r[0] for r in con.execute("SELECT task_id FROM progress")}
+    finally:
+        con.close()
+    r.check("拖放任务的断点保留（要能接续）", up_id in rows, str(sorted(rows)))
+    r.check("拖放任务的逐段记录保留",
+            (tmp / "longform_state" / f"{up_id}.segments.jsonl").is_file())
+    r.check("本机路径的断点也在", local_id in rows, str(sorted(rows)))
+
+    # 换个临时目录再拖一次（内容相同）⇒ 同一个任务 ⇒ 命中 done 断点，不重跑
+    be7 = make_backend(tmp)
+    res7 = be7.transcribe({"path": str(up2), "name": "課程.wav",
+                           "uploaded": True}, progress_cb=lambda p, s: None)
+    r.check("重新拖入同一檔案 → 认出同一任务（不重跑引擎）", be7.engine.calls == 0,
+            f"calls={be7.engine.calls}")
+    r.check("接续指向同一份字幕", res7.get("srtPath") == res6.get("srtPath"),
+            f"{res7.get('srtPath')} vs {res6.get('srtPath')}")
+    r.check("没有多出 (1) 副本",
+            not (tmp / "subtitles" / "課程 (1).srt").exists())
+
     passed = sum(r.items)
     print(f"\n结果：{passed}/{len(r.items)} 项通过")
     print("✅ 全部通过" if r.ok else "❌ 存在失败项")

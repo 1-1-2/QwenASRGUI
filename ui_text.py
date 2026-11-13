@@ -74,6 +74,7 @@ TEMPLATES: dict[str, str] = {
     "health.ov.diar": "說話者分離（外部 ONNX）",
     "health.crisp.core": "CrispASR {version} 核心（{variant}）",
     "health.crisp.coreMissing": "未下載或版本不符（約 {size}MB，啟用時下載）",
+    "health.shared.fa": "詞級優化模型（ForcedAligner .bin）",
     "health.crisp.coreNotNeeded": "目前使用 OpenVINO（CPU），此核心不需要；改用 GPU 核心時會自動下載",
     "health.crisp.coreVariantMismatch": "版本相符但加速版本不同，啟用時會自動換成目前選擇的版本",
     "health.crisp.breeze": "Whisper/Breeze 模型（{quant}）",
@@ -104,6 +105,8 @@ TEMPLATES: dict[str, str] = {
     "device.diag.exception": "GPU 偵測例外：{error}",
 
     # ── 選擇核心／加速版本／模型的回饋訊息 ────────────────────────────
+    "msg.modelReleased": "模型記憶體已釋放；下次轉檔會自動重新載入。",
+    "msg.endpointNotStarted": "請先啟動端點服務",
     "msg.accel.unknown": "未知的加速版本：{variant}",
     "msg.accel.ready": "已選用「{label}」（核心已就緒）。",
     "msg.accel.remembered": "已記住「{label}」。下次載入模型時會下載該版本核心（約 {size} MB），請重新啟動程式以套用。",
@@ -177,6 +180,11 @@ TEMPLATES: dict[str, str] = {
     "dl.runtimeFfmpegMissing": "找不到 ffmpeg，需要時會自動下載",
     "dl.runtimeVadOk": "VAD 已就緒（隨套件附帶，或已在模型目錄）",
     "dl.runtimeVadMissing": "找不到 silero VAD 模型，需重新安裝或手動放入 ov_models",
+
+    # 暫存清理（啟動時自動掃一次 + 設定頁手動按鈕）
+    "set.tempDone": "已清理 {n} 個暫存目錄，釋放 {mb} MB",
+    # 斷點記錄（設定頁清除按鈕）
+    "set.ckptCleared": "已清除 {n} 條斷點記錄",
 }
 
 

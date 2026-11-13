@@ -39,6 +39,9 @@
     "file.dropSub": ["支援 mp3 / wav / m4a / 影片音軌", "支持 mp3 / wav / m4a / 视频音轨", "Supports mp3 / wav / m4a / video audio"],
     "file.run": ["開始轉換", "开始转换", "Start"],
     "file.openDir": ["開啟輸出資料夾", "打开输出文件夹", "Open output folder"],
+    // 按鈕 hover 說明：srt 與同名 .rich.json 的差別。使用者常常不知道
+    // 兩份檔該拿哪一份去給剪輯軟體／播放器，這裡一次講清楚。
+    "file.openDirTip": ["資料夾裡每支音檔會產生兩種檔：.srt 是字幕，播放器、剪映、Premiere 可直接載入；同名的 .rich.json 是詞級時間軸＋說話者明細，供卡拉OK 高亮與說話者標籤使用，不是第二份字幕，刪掉不影響 .srt。", "文件夹里每支音频会产生两种文件：.srt 是字幕，播放器、剪映、Premiere 可直接加载；同名的 .rich.json 是词级时间轴＋说话人明细，供卡拉OK 高亮与说话人标签使用，不是第二份字幕，删掉不影响 .srt。", "Each run writes two files. The .srt is the subtitle track - players, CapCut and Premiere load it directly. The same-named .rich.json holds word-level timings and speaker labels (for karaoke highlighting and speaker tags); it is not a second subtitle file, and deleting it does not affect the .srt."],
     "file.saveSub": ["字幕存檔", "保存字幕", "Save subtitles"],
     "file.verify": ["字幕驗證", "字幕校验", "Verify"],
     "file.diar": ["說話者分離", "说话者分离", "Speaker diarization"],
@@ -94,6 +97,7 @@
     "batch.add": ["加入檔案", "添加文件", "Add files"],
     "batch.dropBig": ["拖曳多個音訊到此，或<b>點擊選取檔案</b>", "拖拽多个音频到此，或<b>点击选取文件</b>", "Drop audio files here, or <b>click to choose files</b>"],
     "batch.dropSub": ["選取的檔案直接引用本機路徑：不複製、不上傳、不產生暫存副本", "选取的文件直接引用本机路径：不复制、不上传、不产生暂存副本", "Files are referenced by local path: no copy, no upload, no temp files"],
+    "batch.noDropMore": ["查看原因", "查看原因", "Why?"],
     "batch.noDropTitle": ["此頁不支援拖放", "此页不支持拖放", "Drag & drop is not supported on this page"],
     "batch.noDropWhy": [
       "瀏覽器不會把拖入檔案的真實路徑交給網頁（Chromium 的安全限制，無法繞過），而批次處理只引用本機路徑、不複製檔案，所以拖放無法使用。請改用下方「加入檔案」按鈕，可一次選取多個檔案。",
@@ -128,7 +132,15 @@
                  "TLS certificate verification is disabled: downloaded model files cannot be authenticated. Use a trusted network only."],
     "log.title": ["執行紀錄", "运行日志", "Run log"],
     "log.clear": ["清除", "清除", "Clear"],
-    "file.running": ["辨識中…", "识别中…", "Transcribing…"],
+    "file.cancel": ["取消", "取消", "Cancel"],
+    "file.canceling": ["正在取消…", "正在取消…", "Canceling…"],
+    "file.cancelSent": ["已送出取消，正在保存已完成的部分…", "已发出取消，正在保存已完成的部分…", "Cancel requested - saving what is already transcribed…"],
+    // 拖放框内的一句能力说明：拖放要重传，点选不用（默认路径不解释）
+    "file.modeHint": ["中斷後可接續 · 拖放需重新拖入（會重新上傳）", "中断后可接续 · 拖放需重新拖入（会重新上传）", "Resumable after a stop · drag-and-drop must re-upload"],
+    "file.modeLocal": ["本機直引", "本机直引", "In place"],
+    "file.modeLocalNote": ["可中斷接續", "可中断接续", "resumable"],
+    "file.modeDragChip": ["拖放副本", "拖放副本", "Temp copy"],
+    "file.modeDragNote": ["可接續 · 需重新上傳", "可接续 · 需重新上传", "resumable · re-uploads"],
     "batch.cancel": ["取消佇列", "取消队列", "Cancel queue"],
     "batch.clear": ["清除已完成", "清除已完成", "Clear finished"],
     "batch.resumeHint": ["服務端佇列：重新整理頁面仍會保留進度與斷點",
@@ -138,6 +150,13 @@
                          "语言、提示词与切分参数共用「音频转字幕」页；试跑只对单文件生效",
                          "Language, hint and chunking come from the Audio page; the 5-min trial applies to single files only"],
     "common.close": ["關閉", "关闭", "Close"],
+    "common.loading": ["讀取中…", "读取中…", "Loading…"],
+    "common.preparing": ["準備中…", "准备中…", "Preparing…"],
+    "audio.playPause": ["播放／暫停", "播放／暂停", "Play / pause"],
+    "audio.stop": ["停止", "停止", "Stop"],
+    "kara.mode": ["卡拉OK模式", "卡拉OK模式", "Karaoke mode"],
+    "kara.modeHint": ["卡拉OK模式（逐字高亮）", "卡拉OK模式（逐字高亮）", "Karaoke mode (word-level highlight)"],
+    "log.expandHint": ["展開／收合執行紀錄", "展开／收起执行记录", "Expand or collapse the run log"],
 
     // Wave 11：本機路徑直引（問題 3）與批次頁獨立進度（問題 8）
     "batch.pathAdd": ["加入路徑", "加入路径", "Add paths"],
@@ -185,6 +204,9 @@
     "batch.cfgTitle": ["本次執行設定", "本次执行设置", "Settings for this run"],
     "batch.cfgLive": ["與「音檔轉字幕」頁同步", "与「音频转字幕」页同步", "Mirrors the Audio → Subtitle page"],
     "batch.cfgLocked": ["本次執行已鎖定，改動下次生效", "本次执行已锁定，改动下次生效", "Locked for this run; changes apply next time"],
+    "batch.cfgModel": ["模型", "模型", "Model"],
+    "batch.cfgBackend": ["推理方式", "推理方式", "Engine"],
+    "batch.cfgSecsClamped": ["{eff} 秒（上限，原填 {want}）", "{eff} 秒（上限，原填 {want}）", "{eff}s (capped from {want}s)"],
     "batch.cfgLang": ["辨識語言", "识别语言", "Language"],
     "batch.cfgDiar": ["說話者分離", "说话者分离", "Speakers"],
     "batch.cfgAlign": ["詞級優化", "词级优化", "Word refine"],
@@ -193,6 +215,7 @@
     "batch.cfgNone": ["無", "无", "None"],
     "batch.cfgVad": ["VAD 靈敏度", "VAD 灵敏度", "VAD"],
     "batch.cfgChunk": ["每段最長", "每段最长", "Max chunk"],
+    "batch.cfgNaming": ["同名檔案", "同名文件", "Collisions"],
     "batch.cfgSecs": ["{n} 秒", "{n} 秒", "{n} s"],
     "batch.cfgTrial": ["試跑前 5 分鐘", "试跑前 5 分钟", "5-min trial"],
     "batch.cfgNa": ["不適用", "不适用", "N/A"],
@@ -279,6 +302,14 @@
     "status.needModel": ["未載入模型", "未加载模型", "No model"],
     "status.appName": ["聲音辨識小工具", "声音识别小工具", "Speech to Text"],
     "model.accel": ["推理加速版本", "推理加速版本", "Acceleration build"],
+    "model.gotoTranscribe": ["前往語音轉文字", "前往语音转文字", "Go to transcription"],
+    "model.accelScope": ["僅 CrispASR 核心使用", "仅 CrispASR 核心使用", "CrispASR engines only"],
+    "model.loaded": ["已載入", "已载入", "Loaded"],
+    "model.notLoaded": ["未載入", "未载入", "Not loaded"],
+    "model.loaded2": ["已載入", "已载入", "Loaded"],
+    "model.autoReleaseOn": ["轉檔後自動釋放：開", "转档后自动释放：开", "Auto-release after run: on"],
+    "model.autoReleaseOff": ["轉檔後自動釋放：關（此核心常駐）", "转档后自动释放：关（此核心常驻）", "Auto-release: off (resident engine)"],
+    "model.autoReleaseWhere": ["可在「設定 → 效能與記憶體」修改", "可在“设置 → 性能与内存”修改", "Change it in Settings → Performance & memory"],
     "model.diag": ["診斷", "诊断", "Diagnostics"],
     "model.restartPending": ["已記住「{core} · {model}」（{arch}），將於重新啟動後套用（目前以 {active} 運行）。", "已记住「{core} · {model}」（{arch}），将在重启后生效（当前以 {active} 运行）。", "Saved {core} · {model} ({arch}); it will apply after a restart (currently running on {active})."],
     "model.hwSummary": ["{hardware}　加速方式：{accel}", "{hardware}　加速方式：{accel}", "{hardware} · Acceleration: {accel}"],
@@ -307,6 +338,9 @@
     "set.vocabTW": ["台灣用語", "台湾用语", "Taiwan"],
     "set.vocabStd": ["標準", "标准", "Standard"],
     "set.mirror": ["HuggingFace 鏡像站", "HuggingFace 镜像站", "HuggingFace mirror"],
+    "set.autoRelease": ["轉檔後自動釋放模型", "转档后自动释放模型", "Auto-release model after run"],
+    "set.autoReleaseDesc": ["每次轉檔結束後釋放模型記憶體，下次轉檔會重新載入（約需數秒）。GPU 核心常駐，不適用。", "每次转档结束后释放模型内存，下次转档会重新加载（约需数秒）。GPU 核心常驻，不适用。", "Frees the model after each run; the next run reloads it (a few seconds). Not applicable to GPU engines, which stay resident."],
+    "set.autoReleaseNa": ["目前使用 GPU 核心（常駐設計），不支援自動釋放；改用 CPU 核心時生效。", "目前使用 GPU 核心（常驻设计），不支持自动释放；改用 CPU 核心时生效。", "The current GPU engine stays resident, so auto-release is unavailable. It applies when you switch to a CPU engine."],
     "set.mirrorDesc": ["下載模型較慢時可改用鏡像", "下载模型较慢时可改用镜像", "Use a mirror if downloads are slow"],
     "set.ffmpeg": ["FFmpeg 路徑", "FFmpeg 路径", "FFmpeg path"],
     "set.ffmpegDesc": ["處理影片音軌所需（留空則需要時自動下載）", "处理视频音轨所需（留空则需要时自动下载）", "Needed for video audio (auto-downloads if blank)"],
@@ -325,6 +359,16 @@
     "model.detectingHw": ["偵測硬體中…", "检测硬件中…", "Detecting hardware…"],
     "model.gpuDiag": ["GPU 偵測由 <code style=\"font-family:var(--font-mono)\">crispasr.exe --diagnostics</code> 進行；若未列出獨立顯示卡，請更新顯卡 / Vulkan 驅動後重試。", "GPU 检测由 <code style=\"font-family:var(--font-mono)\">crispasr.exe --diagnostics</code> 进行；若未列出独立显卡，请更新显卡 / Vulkan 驱动后重试。", "GPU detection runs <code style=\"font-family:var(--font-mono)\">crispasr.exe --diagnostics</code>. If no discrete GPU is listed, update your graphics / Vulkan driver and retry."],
     "dl.center": ["下載中心", "下载中心", "Download center"],
+    "dl.summaryShort": ["已完整 {done}/{total} 組 · 本機已佔用 {used}", "已完整 {done}/{total} 组 · 本机已占用 {used}", "{done}/{total} bundles complete · {used} on disk"],
+    "dl.mirrorJump": ["前往設定修改鏡像", "前往设置修改镜像", "Change mirror in settings"],
+    "dl.noteTitle": ["關於檔案大小與校驗", "关于文件大小与校验", "About file size and checksums"],
+    "dl.openDir": ["開啟目錄", "打开目录", "Open folder"],
+    "dl.verify": ["校驗檔案", "校验文件", "Verify files"],
+    "dl.verifying": ["校驗中…", "校验中…", "Verifying…"],
+    "dl.verifyOk": ["校驗通過（{n} 個檔案）", "校验通过（{n} 个文件）", "Verified ({n} files)"],
+    "dl.verifyBad": ["校驗未通過：{n} 個雜湊不符、{m} 個缺失", "校验未通过：{n} 个哈希不符、{m} 个缺失", "Failed: {n} checksum mismatch, {m} missing"],
+    "dl.verifyUnknown": ["找不到這一組：{id}", "找不到这一组：{id}", "Unknown bundle: {id}"],
+    "dl.needFiles": ["還差 {n} 個檔案 {size}", "还差 {n} 个文件 {size}", "{n} files missing {size}"],
     "dl.honesty": ["檔案大小與 SHA256 若顯示「未知」，代表尚未對遠端檔案實測驗證，不會用估計值冒充。括號中的約略值僅供參考，不用於進度計算。", "文件大小与 SHA256 若显示「未知」，代表尚未对远程文件实测验证，不会用估计值冒充。括号中的约略值仅供参考，不用于进度计算。", "When size or SHA256 says \"unknown\", it has not been measured against the remote file — estimates are never passed off as fact. Approximate values are for reference only and are not used for progress."],
     "dl.refresh": ["重新整理", "重新整理", "Refresh"],
     "dl.manifest": ["輸出下載清單 (.txt)", "导出下载清单 (.txt)", "Export download list (.txt)"],
@@ -359,8 +403,30 @@
     "dl.importFailed": ["匯入失敗：{err}", "导入失败：{err}", "Import failed: {err}"],
     "set.outputDir": ["輸出資料夾", "输出文件夹", "Output folder"],
     "set.outputDirDesc": ["字幕存到這裡；同名的 .rich.json 是「詞級時間軸＋說話者」明細（卡拉OK 同步與說話者標籤用），不是第二份字幕，刪掉不影響 .srt", "字幕存到这里；同名的 .rich.json 是“词级时间轴＋说话人”明细（卡拉OK 同步与说话人标签用），不是第二份字幕，删掉不影响 .srt", "Subtitles land here. The same-named .rich.json holds word timings and speaker labels (for karaoke sync and speaker tags) — it is not a second subtitle file and can be deleted without harming the .srt."],
-    "dl.selfCheck": ["同「系統自檢」判斷", "同“系统自检”判断", "Same verdict as System check"],
-    "dl.gotoSelfCheck": ["查看系統自檢", "查看系统自检", "Open system check"],
+    "set.outNaming": ["同名檔案", "同名文件", "Name collisions"],
+    "set.outNamingDesc": ["輸出目錄已有同名 .srt 時的處理方式。數字後綴→「001 (1).srt」保留舊稿；覆蓋→直接蓋掉舊檔；雜湊後綴→「001-3f9c21.srt」，不同資料夾的同名檔案不會互相覆蓋。", "输出目录已有同名 .srt 时的处理方式。数字后缀→「001 (1).srt」保留旧文件；覆盖→直接覆盖旧文件；哈希后缀→「001-3f9c21.srt」，不同文件夹的同名文件不会相互覆盖。", "How to handle an existing .srt with the same name. Numbered → keep both, as 001 (1).srt; Overwrite → replace the old file; Hash → 001-3f9c21.srt, so the same name in another folder never collides."],
+    "set.nameSuffix": ["數字後綴", "数字后缀", "Numbered"],
+    "set.nameOverwrite": ["覆蓋", "覆盖", "Overwrite"],
+    "set.nameHash": ["雜湊後綴", "哈希后缀", "Hash"],
+    "set.tempTitle": ["暫存檔清理", "临时文件清理", "Temp files"],
+    "set.tempDesc": ["轉檔時上傳的音檔會先複製到系統暫存資料夾，正常結束就刪除；程式崩潰或被強制結束時，整份副本會留在系統碟上。啟動時會自動清一次，也可以在這裡手動清（只清 10 分鐘前、且只清本程式建立的目錄）。", "转档时上传的音频会先复制到系统临时文件夹，正常结束就删除；程序崩溃或被强制结束时，整份副本会留在系统盘上。启动时会自动清一次，也可以在这里手动清（只清 10 分钟前、且只清本程序创建的目录）。", "Uploads are copied into the system temp folder and deleted when the run ends. If the app crashes or is force-closed, the full copy stays on your system drive. It is swept once at startup; you can also clean it here (only folders this app created, older than 10 minutes)."],
+    "set.tempClean": ["立即清理", "立即清理", "Clean now"],
+    "set.tempCleaning": ["清理中…", "清理中…", "Cleaning…"],
+    "set.ckptTitle": ["斷點記錄", "断点记录", "Breakpoints"],
+    "set.ckptDesc": ["取消或中斷的任務會留下斷點與逐段記錄，用來接續。超過保留天數沒有續跑，會在啟動時自動清理；設 0 表示永久保留。清除只刪狀態，不影響 subtitles 裡已產生的字幕。", "取消或中断的任务会留下断点与逐段记录，用来接续。超过保留天数没有续跑，会在启动时自动清理；设 0 表示永久保留。清除只删状态，不影响 subtitles 里已产生的字幕。", "Stopped or cancelled runs leave a breakpoint plus per-segment records so they can continue. Breakpoints untouched for longer than the retention period are pruned at startup; 0 keeps them forever. Clearing removes state only - subtitles already in the output folder are untouched."],
+    "set.ckptKeep": ["保留天數", "保留天数", "Keep for"],
+    "set.ckptDayUnit": ["天（0 = 永久保留）", "天（0 = 永久保留）", "days (0 = keep forever)"],
+    "set.ckptSummary": ["已留存 {n} 條斷點記錄（點擊查看詳情），占用 {mb}", "已留存 {n} 条断点记录（点击查看详情），占用 {mb}", "{n} breakpoint record(s) kept (click for details), using {mb}"],
+    "set.ckptEmpty": ["目前沒有斷點記錄", "目前没有断点记录", "No breakpoint records"],
+    "set.ckptClear": ["清除", "清除", "Clear"],
+    "set.ckptClearing": ["清除中…", "清除中…", "Clearing…"],
+    "set.ckptMore": ["另有 {n} 條未列出", "另有 {n} 条未列出", "{n} more not listed"],
+    "set.ckptColTask": ["任務／輸出檔", "任务／输出文件", "Task / output"],
+    "set.ckptColState": ["狀態", "状态", "State"],
+    "set.ckptColTime": ["最後活動", "最后活动", "Last activity"],
+    "set.ckptColSize": ["占用", "占用", "Size"],
+    "set.ckptStPaused": ["已中止", "已中止", "Stopped"],
+    "set.ckptStOrphan": ["無斷點列", "无断点列", "No record"],
     "dl.importDirHint": ["用途：從別台電腦／瀏覽器手動下載好模型檔後，把「裝著這些檔案的資料夾」貼進來，按「匯入並驗證」即會核對大小與 SHA256 並複製到正確位置；不會重新下載。", "用途：从别的电脑／浏览器手动下载好模型文件后，把“装着这些文件的文件夹”贴进来，按“导入并校验”会核对大小与 SHA256 并复制到正确位置；不会重新下载。", "Purpose: after downloading model files manually (another machine or a browser), paste the folder that contains them and click Import & verify — sizes and SHA256 are checked, files are copied into place, nothing is re-downloaded."],
 
     "batch.runAll": ["全部開始", "全部开始", "Start all"],
@@ -457,6 +523,8 @@
     // Recording page (browser MediaRecorder path) -----------------------
     "record.unsupported": ["不支援錄音", "不支持录音", "Recording unsupported"],
     "record.defaultMic": ["預設麥克風", "默认麦克风", "Default microphone"],
+    "record.micDevice": ["錄音輸入裝置", "录音输入设备", "Recording input device"],
+    "record.start": ["開始錄音", "开始录音", "Start recording"],
     "record.micN": ["麥克風 {n}", "麦克风 {n}", "Microphone {n}"],
     "record.noApi": ["此環境不支援錄音 API。", "此环境不支持录音 API。",
                      "This environment does not expose the recording API."],
@@ -473,6 +541,11 @@
     "record.subtitleFile": ["字幕檔", "字幕文件", "Subtitle file"],
     "record.autosaveFailed": ["即時存檔寫入失敗：{err}", "实时保存写入失败：{err}",
                               "Live save failed: {err}"],
+    "health.shared.fa": ["詞級優化模型（ForcedAligner .bin）", "词级优化模型（ForcedAligner .bin）", "Word-level refine model (ForcedAligner .bin)"],
+    "health.missing": ["缺失", "缺失", "Missing"],
+    "health.notReady": ["未就緒", "未就绪", "Not ready"],
+    "health.otherBackends": ["其他後端（未啟用）", "其他后端（未启用）", "Other engines (not in use)"],
+    "health.otherMissing": ["{n} 項未就緒", "{n} 项未就绪", "{n} not ready"],
   };
 
   function idx() { return LOCALE === "hans" ? 1 : (LOCALE === "en" ? 2 : 0); }
@@ -526,6 +599,7 @@
     "health.ov.diar": ["說話者分離（外部 ONNX）", "说话人分离（外部 ONNX）", "Speaker diarization (external ONNX)"],
     "health.crisp.core": ["CrispASR {version} 核心（{variant}）", "CrispASR {version} 核心（{variant}）", "CrispASR {version} engine ({variant})"],
     "health.crisp.coreMissing": ["未下載或版本不符（約 {size}MB，啟用時下載）", "未下载或版本不符（约 {size}MB，启用时下载）", "Not downloaded or version mismatch (~{size}MB; downloads when enabled)"],
+    "health.shared.fa": ["詞級優化模型（ForcedAligner .bin）", "词级优化模型（ForcedAligner .bin）", "Word-level refine model (ForcedAligner .bin)"],
     "health.crisp.coreNotNeeded": ["目前使用 OpenVINO（CPU），此核心不需要；改用 GPU 核心時會自動下載", "当前使用 OpenVINO（CPU），此核心不需要；改用 GPU 核心时会自动下载", "Using OpenVINO (CPU) — this engine is not needed; it downloads automatically if you switch to a GPU core"],
     "health.crisp.coreVariantMismatch": ["版本相符但加速版本不同，啟用時會自動換成目前選擇的版本", "版本相符但加速版本不同，启用时会自动换成当前选择的版本", "Version matches but the accelerator build differs; it will be swapped when enabled"],
     "health.crisp.breeze": ["Whisper/Breeze 模型（{quant}）", "Whisper/Breeze 模型（{quant}）", "Whisper/Breeze model ({quant})"],
@@ -554,6 +628,8 @@
     "device.diag.noGpu": ["未偵測到可用的獨立 GPU，僅 CPU 推理可用。", "未检测到可用的独立 GPU，仅 CPU 推理可用。", "No usable discrete GPU detected; only CPU inference is available."],
     "device.diag.exception": ["GPU 偵測例外：{error}", "GPU 检测异常：{error}", "GPU detection error: {error}"],
 
+    "msg.modelReleased": ["模型記憶體已釋放；下次轉檔會自動重新載入。", "模型内存已释放；下次转档会自动重新加载。", "Model memory released. It reloads automatically on the next run."],
+    "msg.endpointNotStarted": ["請先啟動端點服務", "请先启动端点服务", "Start the endpoint service first"],
     "msg.accel.unknown": ["未知的加速版本：{variant}", "未知的加速版本：{variant}", "Unknown acceleration build: {variant}"],
     "msg.accel.ready": ["已選用「{label}」（核心已就緒）。", "已选用「{label}」（核心已就绪）。", "Selected {label} (engine is ready)."],
     "msg.accel.remembered": ["已記住「{label}」。下次載入模型時會下載該版本核心（約 {size} MB），請重新啟動程式以套用。", "已记住「{label}」。下次加载模型时会下载该版本核心（约 {size} MB），请重新启动程序以生效。", "Saved {label}. That engine build (~{size} MB) will be downloaded the next time a model loads. Restart the app to apply it."],
@@ -621,6 +697,8 @@
     "dl.runtimeFfmpegMissing": ["找不到 ffmpeg，需要時會自動下載", "找不到 ffmpeg，需要时会自动下载", "ffmpeg not found; it will be downloaded on demand"],
     "dl.runtimeVadOk": ["VAD 已就緒（隨套件附帶，或已在模型目錄）", "VAD 已就绪（随套件附带，或已在模型目录）", "VAD ready (bundled, or present in the model directory)"],
     "dl.runtimeVadMissing": ["找不到 silero VAD 模型，需重新安裝或手動放入 ov_models", "找不到 silero VAD 模型，需重新安装或手动放入 ov_models", "silero VAD model not found; reinstall or place it in ov_models"],
+    "set.tempDone": ["已清理 {n} 個暫存目錄，釋放 {mb} MB", "已清理 {n} 个临时目录，释放 {mb} MB", "Cleaned {n} temporary folder(s), freed {mb} MB"],
+    "set.ckptCleared": ["已清除 {n} 條斷點記錄", "已清除 {n} 条断点记录", "Cleared {n} breakpoint record(s)"],
   };
 
   function renderMsg(key, vars, fallbackText) {
@@ -1042,6 +1120,11 @@
     root.querySelectorAll("[data-i18n-html]").forEach(el => { const v = t(el.dataset.i18nHtml); if (v != null) el.innerHTML = v; });
     root.querySelectorAll("[data-i18n-ph]").forEach(el => { const v = t(el.dataset.i18nPh); if (v != null) el.setAttribute("placeholder", v); });
     root.querySelectorAll("[data-i18n-title]").forEach(el => { const v = t(el.dataset.i18nTitle); if (v != null) el.title = v; });
+    // 按鈕 hover 說明寫在 data-tip（CSS ::after 讀取），與原生 title 分開：
+    // title 有 ~1 秒延遲、無法排版、且多行說明會擠成一行。
+    root.querySelectorAll("[data-i18n-tip]").forEach(el => { const v = t(el.dataset.i18nTip); if (v != null) el.setAttribute("data-tip", v); });
+    // 無障礙名稱也要跟著語言走：aria-label 原本硬編碼繁中，切簡中後讀屏仍唸繁中。
+    root.querySelectorAll("[data-i18n-aria]").forEach(el => { const v = t(el.dataset.i18nAria); if (v != null) el.setAttribute("aria-label", v); });
     root.querySelectorAll("[data-i18n-lead]").forEach(el => applyLeadText(el, t(el.dataset.i18nLead)));
   }
 

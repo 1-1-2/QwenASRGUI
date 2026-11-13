@@ -309,8 +309,15 @@ def bundle_dir(model_root: Path, bundle: dict,
 
 
 def bundle_status(model_root: Path, bundle: dict, doc: dict | None = None,
-                  model_dir: Path | None = None) -> dict:
-    """Inspect local files. `size_bytes` comes from disk, not from guesses."""
+                  model_dir: Path | None = None,
+                  verify_sha: bool = False) -> dict:
+    """Inspect local files. `size_bytes` comes from disk, not from guesses.
+
+    ``verify_sha`` 默认关闭：旧版每次刷新都对每个已存在的文件全量算
+    SHA256，1.7B 一套模型就是数 GB 的读盘，进入模型页要等十几秒。
+    常态只需要「在不在、大小对不对」，SHA 校验改为用户主动点「校验文件」
+    时才做（见 verify_bundle）。
+    """
     root = bundle_dir(model_root, bundle, model_dir)
     files = []
     for f in bundle["files"]:
@@ -319,7 +326,7 @@ def bundle_status(model_root: Path, bundle: dict, doc: dict | None = None,
         actual = p.stat().st_size if p.exists() and not problem else 0
         expected_sha = f.get("sha256")
         sha_ok = None
-        if expected_sha and actual and not problem:
+        if verify_sha and expected_sha and actual and not problem:
             sha_ok = sha256_file(p) == expected_sha
         files.append({
             "name": f["name"],
@@ -352,9 +359,10 @@ def bundle_status(model_root: Path, bundle: dict, doc: dict | None = None,
 
 
 def catalog_status(model_root: Path, doc: dict | None = None,
-                   model_dir: Path | None = None) -> dict:
+                   model_dir: Path | None = None,
+                   verify_sha: bool = False) -> dict:
     doc = doc or load_catalog()
-    items = [bundle_status(model_root, b, doc, model_dir)
+    items = [bundle_status(model_root, b, doc, model_dir, verify_sha=verify_sha)
              for b in doc["bundles"]]
     return {
         "schema": doc["schema"],
@@ -371,7 +379,7 @@ def catalog_status(model_root: Path, doc: dict | None = None,
 
 def verify_bundle(model_root: Path, bundle: dict,
                   model_dir: Path | None = None) -> tuple[bool, str]:
-    st = bundle_status(model_root, bundle, None, model_dir)
+    st = bundle_status(model_root, bundle, None, model_dir, verify_sha=True)
     for x in st["files"]:
         if x["problem"]:
             return False, f"{x['name']}: {x['problem']}"

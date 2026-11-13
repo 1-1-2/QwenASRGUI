@@ -98,6 +98,14 @@
       if (MODE !== "web") return MOCK.modelCatalog || { bundles: [], complete: [], incomplete: [] };
       return apiGet("/api/model-catalog");
     },
+    async verifyBundle(id) {
+      if (MODE !== "web") return { ok: true, message: "(preview)", checked: 0, total: 0 };
+      return apiPost("/api/catalog/verify", { id });
+    },
+    async openBundleDir(id) {
+      if (MODE !== "web") return { ok: true, path: "(preview mode)" };
+      return apiPost("/api/catalog/open", { id });
+    },
     async exportDownloadManifest(bundles) {
       if (MODE !== "web") return { ok: true, path: "(preview mode)", bytes: 0, bundle_count: 0 };
       return apiPost("/api/download-manifest", { bundles: bundles || [] });
@@ -140,6 +148,22 @@
     async openOutputDir() {
       if (MODE === "web") { try { await apiPost("/api/open-output", {}); } catch {} return true; }
       return false;
+    },
+    // 清掉 %TEMP% 下本程式遺留的上傳副本（崩潰/被強制結束留下來的）。
+    async cleanupTemp() {
+      if (MODE !== "web") return { ok: true, removed: 0, freed: 0, kept: 0, failed: 0 };
+      return apiPost("/api/cleanup-temp", {});
+    },
+    // 斷點記錄（設定頁）：唯讀概況 + 一鍵清除
+    async getCheckpoints() {
+      if (MODE !== "web") {
+        return { count: 0, bytes: 0, total: 0, items: [], retentionDays: 30, mock: true };
+      }
+      return apiGet("/api/checkpoints");
+    },
+    async clearCheckpoints() {
+      if (MODE !== "web") return { removed: 0, freed: 0, failed: 0, mock: true };
+      return apiPost("/api/checkpoints/clear", {});
     },
     async checkUpdate() {
       if (MODE === "web") { try { return await apiPost("/api/check-update", {}); } catch {} }
@@ -321,8 +345,27 @@
   };
 
   // ── web 轉錄：POST /api/transcribe（進度走 SSE）──────────
+  //  兩種來源：
+  //   · opts.file → multipart 上傳（拖放。瀏覽器沙箱只給 File 物件，
+  //     服務端必須把整份內容複製到 %TEMP%，請求結束再刪）
+  //   · opts.path → 本機路徑直引（點擊選檔走原生對話框。零複製、零等待，
+  //     也不會有「上傳到一半」這種狀態）
   async function webTranscribe(opts) {
-    if (!opts.file) throw new Error("請先選擇檔案");
+    if (!opts.file && !opts.path) throw new Error("請先選擇檔案");
+    if (!opts.file) {
+      emit("progress", { pct: 1, status: "準備中…" });
+      return apiPost("/api/transcribe-path", {
+        path: opts.path,
+        name: opts.name || null,
+        language: opts.language || null,
+        align: !!opts.align,
+        diarize: !!opts.diarize,
+        nSpeakers: opts.nSpeakers || null,
+        hint: opts.hint || "",
+        trial: !!opts.trial,
+        vadThreshold: opts.vadThreshold || null,
+      });
+    }
     const fd = new FormData();
     fd.append("file", opts.file, opts.file.name);
     if (opts.language) fd.append("language", opts.language);

@@ -213,7 +213,9 @@ def main() -> int:
     # Fill with dummy bytes; sha256 will mismatch for the 3 hashed files.
     for f in bundle["files"]:
         (dst / f["name"]).write_bytes(b"dummy")
-    st2 = mc.bundle_status(root, bundle, doc)
+    # 快速模式（默认）不再全量算 SHA——那是数 GB 的读盘；要判内容必须显式
+    # 要求 verify_sha=True（产品里对应「校验文件」按钮）。
+    st2 = mc.bundle_status(root, bundle, doc, verify_sha=True)
     r.check("all files present but hashes fail",
             st2["present_count"] == st2["total_count"] and not st2["complete"])
     ok2, why2 = mc.verify_bundle(root, bundle)

@@ -70,6 +70,10 @@ def test_graceful_cancel(r: Result):
     print("\n[3] 关窗优雅取消：空闲不打扰 / 忙时等落盘 / 超时不死等")
     import app_webview as aw
 
+    # 隔離真實桌面：本機若正好開著程式視窗，_find_app_hwnd() 會一直回報
+    # 「視窗還活著」，這個純行為用例就會無限等待（不是產品 bug）。
+    aw._find_app_hwnd = lambda: 0
+
     class FakeBE:
         def __init__(self, busy=True, stop_after=1.0):
             self.busy = busy

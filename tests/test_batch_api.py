@@ -47,11 +47,25 @@ class FakeBackend:
 
     def transcribe(self, opts, progress_cb=None):
         self.calls.append(Path(opts["name"]).name)
+        self.last_opts = dict(opts)
         if progress_cb:
             progress_cb(50, "half")
             progress_cb(100, "done")
         return {"srtPath": f"/subtitles/{Path(opts['name']).stem}.srt",
                 "totalSegments": 3}
+
+    def cleanup_temp(self, min_age_sec=600):
+        self.cleaned_at = min_age_sec
+        return {"removed": 2, "freed": 2048, "kept": 0, "failed": 0}
+
+    def checkpoints_info(self, limit=100):
+        return {"count": 2, "total": 2, "bytes": 4096, "retentionDays": 30,
+                "items": [{"task": "t1", "name": "a.srt", "status": "paused",
+                           "updatedAt": 1700000000, "bytes": 2048}]}
+
+    def clear_checkpoints(self):
+        self.ckpt_cleared = True
+        return {"removed": 2, "freed": 4096, "failed": 0}
 
 
 def multipart(name: str, data: bytes = b"RIFF-fake"):
@@ -187,6 +201,46 @@ def main() -> int:
                                     "application/json")
             r.check("POST /api/batch/remove is wired", code == 200 and
                     removed.get("ok") is False)
+
+            # ── 單檔頁「點選」＝本機路徑直引（不複製、不上傳）──
+            # 這一條路徑若不成立，「僅點選支援中斷接續」的文案就是假的：
+            # 斷點靠的是穩定的本機路徑，上傳副本每次都不同。
+            code, tr = request(base, "/api/transcribe-path", "POST",
+                               json.dumps({"path": str(src1), "name": "lecture01.wav",
+                                           "align": True, "hint": "hi"}).encode(),
+                               "application/json")
+            r.check("POST /api/transcribe-path 走本機路徑", code == 200 and
+                    tr.get("totalSegments") == 3, str(tr)[:100])
+            r.check("路徑直引不帶 uploaded 標記（可續跑）",
+                    srv.backend.last_opts.get("path") == str(src1) and
+                    not srv.backend.last_opts.get("uploaded"),
+                    str(srv.backend.last_opts)[:120])
+            r.check("對齊與提示詞有轉發",
+                    srv.backend.last_opts.get("align") is True and
+                    srv.backend.last_opts.get("hint") == "hi")
+
+            # ── 設定頁「立即清理」──
+            code, cleaned = request(base, "/api/cleanup-temp", "POST", b"{}",
+                                    "application/json")
+            r.check("POST /api/cleanup-temp 回傳清理結果",
+                    code == 200 and cleaned.get("removed") == 2, str(cleaned))
+            r.check("手動清理只清 10 分鐘前的",
+                    getattr(srv.backend, "cleaned_at", None) == 600,
+                    str(getattr(srv.backend, "cleaned_at", None)))
+
+            # ── 設定頁「斷點記錄」：概況（含明細）+ 清除 ──
+            code, info = request(base, "/api/checkpoints")
+            r.check("GET /api/checkpoints 回傳條數與占用",
+                    code == 200 and info.get("count") == 2 and
+                    info.get("bytes") == 4096, str(info)[:120])
+            r.check("明細帶狀態與時間（前端要畫列表）",
+                    info["items"][0]["status"] == "paused" and
+                    info["items"][0]["updatedAt"] > 0)
+            code, cleared = request(base, "/api/checkpoints/clear", "POST", b"{}",
+                                    "application/json")
+            r.check("POST /api/checkpoints/clear 已接通",
+                    code == 200 and cleared.get("removed") == 2 and
+                    srv.backend.ckpt_cleared, str(cleared))
 
             # Wave 11／問題 4 的真正根因：HTTP/1.1 keep-alive 下，/api/batch/start
             # 這類「不讀 body」的 POST 會把前端送的 `{}` 留在連線裡，

@@ -96,6 +96,133 @@ def _inject_locale(data: bytes, server) -> bytes:
     return html.encode("utf-8")
 
 
+# ── %TEMP% 殘留清理 ──────────────────────────────────────────────────
+# 上傳轉檔會把整份音檔複製到 %TEMP%\asr_web_xxxx\，正常路徑由
+# _cleanup_upload() 在請求結束時刪掉。但「崩潰 / 被工作管理員結束 / rmtree 撞上
+# 檔案佔用」三種情況都會留下完整副本，而且沒有痕跡 —— 實測一台機器累積
+# 5 個目錄、1.0 GB。所以啟動時補一次掃描，設定頁也給一個手動按鈕。
+# 只認得自己的前綴，絕不碰其他程式的暫存目錄。
+TMP_OWNED_PREFIXES = ("asr_web_", "asr_api_")
+TMP_SWEEP_AGE_SEC = 6 * 3600          # 只清「上一次執行」留下的，不動正在寫的
+
+
+def sweep_stale_uploads(min_age: float = TMP_SWEEP_AGE_SEC,
+                        root: Path | None = None) -> dict:
+    """刪掉 %TEMP% 下本程式遺留的上傳副本。
+
+    回傳 ``{"removed","freed","kept","failed"}``。**永不拋例外**：這是開機流程
+    與設定頁按鈕共用的清理，不能因為某個目錄被鎖住就讓程式起不來。
+    """
+    import shutil
+    import time as _t
+    res = {"removed": 0, "freed": 0, "kept": 0, "failed": 0}
+    base = Path(root) if root else Path(tempfile.gettempdir())
+    now = _t.time()
+    for prefix in TMP_OWNED_PREFIXES:
+        try:
+            cands = list(base.glob(prefix + "*"))
+        except OSError:
+            continue
+        for d in cands:
+            try:
+                if not d.is_dir():
+                    continue
+                if now - d.stat().st_mtime < min_age:
+                    res["kept"] += 1
+                    continue
+                size = 0
+                for f in d.rglob("*"):
+                    try:
+                        if f.is_file():
+                            size += f.stat().st_size
+                    except OSError:
+                        pass
+                shutil.rmtree(d)
+                res["removed"] += 1
+                res["freed"] += size
+            except FileNotFoundError:
+                continue
+            except OSError:
+                res["failed"] += 1
+    return res
+
+
+def prune_checkpoints(days: int, state_dir: Path | None = None) -> dict:
+    """按「保留天數」清掉久未續跑的斷點記錄（longform_state）。
+
+    與上一版的分工不同：**任何狀態都適用**。一個 paused 的任務放了 90 天
+    沒人續跑，留著也只是佔空間；``days <= 0`` 表示使用者選了永久保留，
+    直接不動。
+
+    判斷依據是 checkpoint 的 ``updated_at``（沒有這一列時退回 jsonl 的 mtime）。
+    只刪狀態（DB 列 + ``*.segments.jsonl``），**絕不動 ``subtitles/`` 的成品**。
+
+    永不拋例外：這是開機流程的一部分，不能被一個壞掉的 DB 卡住。
+    """
+    import sqlite3
+    import time as _t
+    res = {"removed": 0, "freed": 0, "days": int(days or 0)}
+    d = Path(state_dir) if state_dir else app_paths.user_path("longform_state")
+    if not d.is_dir() or int(days or 0) <= 0:
+        return res
+    cutoff = _t.time() - int(days) * 86400
+    db = d / "checkpoints.db"
+    rows = []
+    if db.is_file():
+        try:
+            con = sqlite3.connect(str(db), timeout=10)
+            try:
+                rows = list(con.execute(
+                    "SELECT task_id, updated_at FROM progress"))
+            finally:
+                con.close()
+        except sqlite3.Error:
+            rows = []                 # 讀不到就只處理「沒有斷點列」的孤兒檔
+    known = set()
+    suffix = ".segments.jsonl"
+    for tid, updated in rows:
+        tid = str(tid); known.add(tid)
+        try:
+            if float(updated or 0) >= cutoff:
+                continue
+        except (TypeError, ValueError):
+            continue
+        freed = 0
+        jf = d / f"{tid}{suffix}"
+        try:
+            if jf.is_file():
+                freed = jf.stat().st_size
+                jf.unlink()
+        except OSError:
+            continue                  # 檔案被佔用：整條記錄留著，下次再試
+        try:
+            con = sqlite3.connect(str(db), timeout=10)
+            try:
+                con.execute("DELETE FROM progress WHERE task_id=?", (tid,))
+                con.commit()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            pass
+        res["removed"] += 1
+        res["freed"] += freed
+    # 沒有斷點列的孤兒 jsonl（舊版殘留 / 清過 DB 但沒清檔）
+    for f in d.glob("*" + suffix):
+        tid = f.name[:-len(suffix)]
+        if tid in known:
+            continue
+        try:
+            if f.stat().st_mtime >= cutoff:
+                continue
+            size = f.stat().st_size
+            f.unlink()
+            res["removed"] += 1
+            res["freed"] += size
+        except OSError:
+            continue
+    return res
+
+
 def pick_local_files() -> list[str]:
     """Open a native Windows multi-select dialog and return absolute paths.
 
@@ -286,6 +413,33 @@ class WebViewServer:
             return
         server = self
 
+        # 開機先掃一次上次執行的暫存殘留（崩潰／被強制結束留下的整份音檔）。
+        # 失敗只記錄，不影響啟動。
+        try:
+            swept = sweep_stale_uploads()
+            if swept["removed"] or swept["failed"]:
+                import ui_text as _u
+                note = _u.render("set.tempDone", {
+                    "n": swept["removed"],
+                    "mb": f"{swept['freed'] / (1024 * 1024):.0f}"})
+                if swept["failed"]:
+                    note += f"（{swept['failed']} 個仍被占用）"
+                self.backend.run_log.add(note, level="info", source="temp")
+        except Exception:
+            pass
+        # 依「保留天數」清理久未續跑的斷點記錄（設定頁可調，0 = 永久保留）。
+        try:
+            pruned = prune_checkpoints(self.backend._ckpt_days(),
+                                       state_dir=self.backend.state_dir())
+            if pruned["removed"]:
+                self.backend.run_log.add(
+                    f"longform_state：清理 {pruned['removed']} 份斷點記錄、"
+                    f"釋放 {pruned['freed'] / (1024 * 1024):.0f} MB"
+                    f"（保留 {pruned['days']} 天）",
+                    level="info", source="temp")
+        except Exception:
+            pass
+
         class _Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
@@ -373,6 +527,9 @@ class WebViewServer:
                     return self._qr(urlparse(self.path).query)
                 if path == "/api/batch":
                     return self._json(server.batch_queue.snapshot())
+                if path == "/api/checkpoints":
+                    # 唯讀：條數 / 占用 / 明細（設定頁「斷點記錄」）
+                    return self._json(server.backend.checkpoints_info())
                 if path == "/api/logs":
                     limit = None
                     try:
@@ -472,6 +629,18 @@ class WebViewServer:
                             return self._json({"ok": True, "item": item})
                         except ValueError as e:
                             return self._err(400, str(e))
+                    if path == "/api/catalog/verify":
+                        body = self._read_json_body()
+                        bid = (body or {}).get("id") if isinstance(body, dict) else None
+                        if not bid:
+                            return self._err(400, "missing id")
+                        return self._json(server.backend.verify_catalog_bundle(bid))
+                    if path == "/api/catalog/open":
+                        body = self._read_json_body()
+                        bid = (body or {}).get("id") if isinstance(body, dict) else None
+                        if not bid:
+                            return self._err(400, "missing id")
+                        return self._json(server.backend.open_catalog_dir(bid))
                     if path == "/api/batch/start":
                         # 開始當下的音檔頁設定（語言／分離／詞級優化／提示詞／
                         # VAD／每段秒數）隨請求帶入，整條佇列鎖定同一組值。
@@ -505,6 +674,38 @@ class WebViewServer:
                                            "summary": server.batch_queue.snapshot()})
                     if path == "/api/logs/clear":
                         return self._json(server.backend.clear_logs())
+                    if path == "/api/cleanup-temp":
+                        # 設定頁「立即清理」：清 %TEMP% 下本程式遺留的副本。
+                        # 只清 10 分鐘前的，避免刪掉此刻正在寫入的那一份。
+                        return self._json(server.backend.cleanup_temp())
+                    if path == "/api/checkpoints/clear":
+                        # 只清斷點狀態，不動 subtitles/ 的成品
+                        return self._json(server.backend.clear_checkpoints())
+                    if path == "/api/transcribe-path":
+                        # 單檔頁「點擊選檔」走原生對話框 → 直接引用本機路徑，
+                        # 不複製、不上傳、不產生 %TEMP% 副本（與批次頁同一套）。
+                        body = self._read_json_body() or {}
+                        opts = {
+                            "path": str(body.get("path", "")),
+                            "name": body.get("name") or None,
+                            "language": (body.get("language") or "").strip() or None,
+                            "diarize": bool(body.get("diarize")),
+                            "nSpeakers": body.get("nSpeakers") or "",
+                            "align": bool(body.get("align", True)),
+                            "hint": body.get("hint") or "",
+                            "trial": bool(body.get("trial")),
+                            "vadThreshold": body.get("vadThreshold") or "",
+                        }
+                        try:
+                            result = server.backend.transcribe(
+                                opts, progress_cb=lambda pct, status:
+                                server.hub.publish("progress",
+                                                   {"pct": pct, "status": status}))
+                            return self._json(result)
+                        except PermissionError as e:
+                            return self._err(403, f"沒有讀取權限：{e}")
+                        except FileNotFoundError as e:
+                            return self._err(404, f"找不到檔案：{e}")
                     if path == "/api/release-model":
                         # Wave 12／問題 1：手動釋放模型記憶體。
                         return self._json(server.backend.release_model())
@@ -676,6 +877,10 @@ class WebViewServer:
                 opts = {
                     "path": str(in_path),
                     "name": filename,
+                    # 標記「這是上傳的副本」：它的路徑每次都不一樣（隨機臨時
+                    # 目錄），不能拿來當任務身分，否則取消後重選同一支檔案
+                    # 會變成另一個任務、斷點永遠接不上。後端改用內容身分。
+                    "uploaded": True,
                     "language": (fields.get("language") or "").strip() or None,
                     "diarize": (fields.get("diarize", "") or "").lower() in ("1", "true", "on", "yes"),
                     "nSpeakers": fields.get("n_speakers", ""),

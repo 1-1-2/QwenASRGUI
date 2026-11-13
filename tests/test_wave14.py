@@ -53,10 +53,13 @@ def test_batch_page_layout(r: Result):
     # Wave 16 推翻了 Wave 14 的 [1][2]：拖放框无法拿到本机路径，已整体取消。
     # 这里改为守住「取消得干净 + 原因写明 + 有等效入口」三件事。
     print("\n[1] 批量页：拖放框已取消，改由说明 + 加入文件按钮")
-    head = HTML.split('class="batch-head"', 1)[1].split("</div>\n\n        <!-- Wave 16", 1)[0]
-    note_at = head.find('id="batch-nodrop"')
-    tools_at = head.find('class="batch-tools"')
-    r.check("取消原因说明在按钮列之前（独占一行）", 0 < note_at < tools_at)
+    # 後續調整：路徑輸入區置頂，拖放說明不再是獨立卡片，改成該卡內的一行
+    # 可展開提示（背景解釋不該和主操作搶視覺重量）。
+    paths_at = HTML.find('id="batch-paths"')
+    note_at = HTML.find('id="batch-nodrop"')
+    tools_at = HTML.find('class="batch-tools"')
+    r.check("粘贴路径区置顶（在工具按钮之前）", 0 < paths_at < tools_at)
+    r.check("拖放说明并入路径卡（位于该卡区间内）", paths_at < note_at < tools_at)
     r.check("拖放框 DOM 与代码均已移除",
             'id="batch-drop"' not in HTML and "batchDrop" not in APP)
     r.check("「加入檔案」按钮已恢复", 'id="btn-batch-add"' in HTML)
@@ -200,10 +203,16 @@ def test_download_center(r: Result):
     r.check("重算 complete/incomplete 汇总",
             'st["complete"] = [x["id"]' in BACKEND)
 
-    print("\n[10] 明細可折疊 + 跳轉自檢")
+    print("\n[10] 明細可折疊 + 實用入口（取代「同自檢判斷」+ 跳轉）")
     r.check("bundle 仍是 <details> 可折叠", "<details" in APP and "open" in APP)
-    r.check("有「查看系統自檢」按鈕", "data-goto-health" in APP and 'T("dl.gotoSelfCheck")' in APP)
-    r.check("跳转按钮滚动到自检面板", 'panel.scrollIntoView' in APP)
+    # 「同自檢判斷」是純標籤、「查看系統自檢」跳過去還要再展開一次，兩者都無實質
+    # 幫助；改為「開啟目錄」「校驗檔案」兩個直接可用的動作。
+    r.check("已移除純標籤與跳轉按鈕",
+            "data-goto-health" not in APP and "dl.gotoSelfCheck" not in APP)
+    r.check("改為開啟目錄 / 校驗檔案",
+            "data-dl-open" in APP and "data-dl-verify" in APP)
+    r.check("校驗走獨立 API（不塞進每次刷新）",
+            '"/api/catalog/verify"' in BRIDGE and "def verify_catalog_bundle" in BACKEND)
 
     print("\n[11] 手动下载文件夹用途说明")
     r.check("下载中心有用途说明", 'data-i18n="dl.importDirHint"' in HTML)
@@ -222,21 +231,22 @@ def test_model_page(r: Result):
     r.check("core-cards 横向排列", "#core-cards { flex-direction: row" in CSS)
     r.check("窄屏可换行", "#core-cards .radio-card { flex: 1 1 240px" in CSS)
 
-    print("\n[14] 设置页顺序：设备 → 选模型 → 加速版本 → 诊断")
-    body = HTML.split('data-view="model"', 1)[1].split("<!-- ── Download center", 1)[0]
-    i_dev = body.find('id="dev-list"')
-    i_pick = body.find('id="model-mode"')
-    i_accel = body.find("accel-cards")
-    i_diag = body.find('id="gpu-diag"')
+    print("\n[14] 模型页顺序：当前状态 → 自检 → 模型 → 加速 → 下载")
+    body = HTML.split('data-view="model"', 1)[1]
+    i_status = body.find('id="model-status-card"')
     i_health = body.find('id="health-fold"')
-    r.check("顺序正确", 0 < i_dev < i_pick < i_accel < i_diag < i_health,
-            f"{i_dev},{i_pick},{i_accel},{i_diag},{i_health}")
-    r.check("自检并入诊断段落（可折叠）", 'class="diag-fold" id="health-fold"' in HTML)
-    # Wave 15 需求变更：自检改为**默认展开**（信息应直接可见），并且不再依红/黄灯
-    # 数量强制 open —— 否则用户刚手动收起来，点「重新检查」又会被弹开。
-    r.check("自检默认展开", re.search(r'id="health-fold"\s+open', HTML) is not None)
-    r.check("不再按红绿灯强制展开",
-            "h.summary.red > 0) fold.open = true" not in APP)
+    i_pick = body.find('id="model-mode"')
+    i_accel = body.find('id="accel-card"')
+    i_diag = body.find('id="gpu-diag"')
+    r.check("顺序正确",
+            0 < i_status < i_health < i_pick < i_accel < i_diag,
+            f"{i_status},{i_health},{i_pick},{i_accel},{i_diag}")
+    r.check("自检是独立折叠区（不再挂在诊断段内）",
+            'class="card diag-fold" id="health-fold"' in HTML)
+    # 信息量大，默认收起；只有红燈（缺且不能自动补）才主动展开。
+    r.check("自检默认收起", re.search(r'id="health-fold"\s+open', HTML) is None)
+    r.check("红灯时自动展开",
+            "h.summary.red > 0) fold.open = true" in APP)
 
     print("\n[15] 修正「Qwen 1.7B + CPU 却报核心未下载/版本不符」")
     r.check("OpenVINO 路径下核心标为「不需要」", "health.crisp.coreNotNeeded" in BACKEND)

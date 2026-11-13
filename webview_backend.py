@@ -15,6 +15,8 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import os
+import sys
 import threading
 import time
 import traceback
@@ -361,6 +363,58 @@ class WebBackend:
         self._decorate_catalog_runtime(st)
         return st
 
+    def _catalog_bundle(self, bundle_id: str):
+        """bundle_id → (doc, bundle)；找不到回 (doc, None)。只認 id，不認路徑。"""
+        import model_catalog as mc
+        doc = mc.load_catalog()
+        b = next((x for x in doc.get("bundles", []) if x.get("id") == bundle_id), None)
+        return doc, b
+
+    def verify_catalog_bundle(self, bundle_id: str) -> dict:
+        """對一組做真實校驗（含 SHA256）。
+
+        只有使用者主動點「校驗檔案」才走這裡：全量 SHA 要讀完整個檔案，
+        1.7B 一套就是數 GB，不能放在每次刷新裡做（見 model_catalog.bundle_status）。
+        """
+        import model_catalog as mc
+        app_root, model_dir = self._catalog_paths()
+        doc, b = self._catalog_bundle(bundle_id)
+        if b is None:
+            return {"ok": False, "message": _t.msg("dl.verifyUnknown", id=bundle_id)}
+        try:
+            ok, msg = mc.verify_bundle(app_root, b, model_dir)
+            st = mc.bundle_status(app_root, b, doc, model_dir, verify_sha=True)
+        except Exception as e:
+            return {"ok": False, "message": str(e)}
+        bad = [f["name"] for f in st["files"] if f.get("sha256_ok") is False]
+        missing = [f["name"] for f in st["files"] if not f.get("present")]
+        return {"ok": bool(ok), "message": msg, "bad": bad, "missing": missing,
+                "checked": st["present_count"], "total": st["total_count"],
+                "unverified": sum(1 for f in st["files"]
+                                  if f.get("present") and f.get("sha256_ok") is None)}
+
+    def open_catalog_dir(self, bundle_id: str) -> dict:
+        """在檔案總管裡定位某一組的目標目錄。
+
+        只接受 bundle id —— 不從前端接收任意路徑，避免變成「開任意目錄」的入口。
+        """
+        import model_catalog as mc
+        app_root, model_dir = self._catalog_paths()
+        _doc, b = self._catalog_bundle(bundle_id)
+        if b is None:
+            return {"ok": False, "message": _t.msg("dl.verifyUnknown", id=bundle_id)}
+        d = mc.bundle_dir(app_root, b, model_dir)
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            if sys.platform == "win32":
+                os.startfile(str(d))            # type: ignore[attr-defined]
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", str(d)])
+            return {"ok": True, "path": str(d)}
+        except Exception as e:
+            return {"ok": False, "message": str(e), "path": str(d)}
+
     # ── 下載中心 × 系統自檢：同一份判斷（Wave 14／需求 11）──────────────
     #   下載中心原本只看「models.json 列的每個檔案在不在」。但 crispasr_core
     #   這個 bundle 列了 5 個加速版本 zip，使用者只會裝其中一個 → 永遠「缺 4 個」，
@@ -580,19 +634,41 @@ class WebBackend:
         "kv_cache", "past_key_values",
     )
 
+    _BACKEND_KEYS = ("openvino", "crispasr", "chatllm")
+
+    def _current_backend(self) -> str:
+        """目前「將要使用」的後端。
+
+        模型尚未載入時 ``_active_backend`` 是 None，但使用者已在前端選好
+        核心；此時必須以 settings.backend 為準，否則所有「這項需不需要」
+        的判斷都會退回 openvino，做出與使用者選擇相反的結論。
+        """
+        b = getattr(self, "_active_backend", None)
+        if b in self._BACKEND_KEYS:
+            return b
+        try:
+            b = self._settings_raw().get("backend")
+        except Exception:
+            b = None
+        return b if b in self._BACKEND_KEYS else "openvino"
+
     def _auto_release_enabled(self) -> bool:
         """自動釋放開關；GPU 後端不自動釋放（Vulkan context 刻意常駐）。
 
         chatllm / crispasr 的執行期核心讓 Vulkan context 常駐（見
         vulkan-dual-context-crash），在每次轉寫後主動 GC 掉 DLL runner 有
         風險，因此只提供手動釋放，不做自動卸載。
+
+        這就是「設定值」與「生效值」的差別：使用者勾著開關，但在 GPU 後端
+        下實際永遠不會自動釋放。前端必須讀 ``get_settings()["autoRelease"]``
+        （= 本函式結果），而不是 settings.json 的原始欄位。
         """
         try:
             if self._settings_raw().get("auto_release_model", True) is False:
                 return False
         except Exception:
             pass
-        return getattr(self, "_active_backend", "openvino") not in ("chatllm", "crispasr")
+        return self._current_backend() not in ("chatllm", "crispasr")
 
     @staticmethod
     def _drop_engine_refs(eng) -> int:
@@ -629,7 +705,7 @@ class WebBackend:
         gc.collect()
         self._emit("status", {
             "modelReady": False, "released": True,
-            "message": "模型記憶體已釋放；下次轉檔會自動重新載入。",
+            "message": _t.msg("msg.modelReleased"),
         })
         return {"ok": True, "released": True, "dropped": dropped,
                 "reason": reason}
@@ -800,11 +876,16 @@ class WebBackend:
     # of a 3-5 h lecture (thousands of DOM nodes) crashed the WebView2
     # renderer with "Out of memory" right after a successful run.
     _MAX_PREVIEW_SEGMENTS = 200
-    def _apply_chunk_secs(self, chunk_secs=None) -> None:
+    def _chunk_plan(self, chunk_secs=None) -> tuple[int | None, int | None]:
+        """(生效值, 天花板)。不以 max_chunk_secs 分段的後端回 (None, None)。
+
+        前端要顯示「實際生效」而不是「使用者填的值」：填 30 而模型上限 20 時，
+        真正跑的是 20。這個函式是同一個換算的唯一來源。
+        """
         eng = getattr(self, "engine", None)
         ceiling = getattr(type(eng), "max_chunk_secs", None) if eng is not None else None
         if not isinstance(ceiling, int):
-            return                                  # crispasr 等：不以 max_chunk_secs 分段
+            return None, None
         raw = self._settings_raw().get("chunk_secs", 0)
         if chunk_secs is not None:
             raw = chunk_secs                        # 本次執行顯式指定（批次佇列帶入）
@@ -813,8 +894,14 @@ class WebBackend:
         except Exception:
             want = 0
         eff = ceiling if want <= 0 else max(self._CHUNK_FLOOR, min(want, ceiling))
+        return eff, ceiling
+
+    def _apply_chunk_secs(self, chunk_secs=None) -> None:
+        eff, _ceiling = self._chunk_plan(chunk_secs)
+        if eff is None:
+            return                                  # crispasr 等：不以 max_chunk_secs 分段
         try:
-            eng.max_chunk_secs = eff                # 實例屬性遮蓋類別預設，僅影響本實例
+            self.engine.max_chunk_secs = eff        # 實例屬性遮蓋類別預設，僅影響本實例
         except Exception:
             pass
 
@@ -946,6 +1033,7 @@ class WebBackend:
     # ── 狀態 ────────────────────────────────────────────────
     def get_status(self) -> dict:
         active = getattr(self, "_active_backend", "openvino")
+        eff_chunk, ceil_chunk = self._chunk_plan()
         return {
             "modelReady": bool(getattr(self.engine, "ready", False)),
             "loading": self._loading,
@@ -965,6 +1053,11 @@ class WebBackend:
             "firstRun": bool(getattr(self, "_first_run", False)),
             # Wave 12：前端「轉檔後自動釋放」開關的目前值。
             "autoReleaseModel": self._auto_release_enabled(),
+            # 批次頁「本次執行設定」要顯示真正會跑的東西：
+            # 模型名、每段最長的生效值（可能被模型天花板夾小）。
+            "selectedModel": (self._current_selection() or ("", ""))[1],
+            "chunkSecsEffective": eff_chunk or 0,
+            "chunkSecsCeiling": ceil_chunk or 0,
         }
 
     @staticmethod
@@ -1172,19 +1265,14 @@ class WebBackend:
 
             # 輸出落點：subtitles/ 下、用「原始上傳檔名」命名（可在「開啟輸出資料夾」找到）。
             # 上傳檔名為使用者可控（含 LAN/外網端點）→ 必須只取基名，杜絕路徑穿越。
+            # 同名衝突怎麼處理由「設定 → 同名檔案」決定，解析在下面（要等
+            # task_id / fingerprint 算出來才能判斷「這是續跑還是新任務」）。
             srt_dir = Path(getattr(core, "SRT_DIR", BASE_DIR / "subtitles"))
             srt_dir.mkdir(parents=True, exist_ok=True)
             raw_name = opts.get("name") or Path(path).name
             out_name = Path(str(raw_name).replace("\\", "/")).name   # 去除任何目錄成分
             if not out_name or out_name.startswith("."):
                 out_name = "transcript"
-            out_ref = srt_dir / out_name
-            # 防呆：確認解析後仍在 subtitles/ 內
-            try:
-                if srt_dir.resolve() not in out_ref.resolve().parents:
-                    out_ref = srt_dir / "transcript"
-            except Exception:
-                out_ref = srt_dir / "transcript"
 
             with self._lock:
                 self._apply_chunk_secs(_st.get("chunk_secs", 0))   # 依設定夾定本次 max_chunk_secs（夾到模型上限）
@@ -1266,14 +1354,12 @@ class WebBackend:
                                 except OSError:
                                     pass
 
-                task_id = hashlib.sha1(
-                    str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
-                out_srt = out_ref.with_suffix(".srt")
-                if trial:
-                    # A trial run must never pollute the full run's checkpoint
-                    # or overwrite its SRT.
-                    task_id += "-trial"
-                    out_srt = out_ref.with_name(out_ref.stem + ".trial.srt")
+                # 身分來源：本機路徑（點選／批次）沿用 audio_path（影片會是抽出的
+                # wav）；拖放上傳用原本那個檔的內容身分 —— 臨時路徑每次不同，
+                # 但內容相同，所以重拖同一支檔案仍認得是同一個任務、能接續。
+                _ident_path = path if opts.get("uploaded") else audio_path
+                task_id, _src_part = self._source_identity(
+                    _ident_path, opts.get("name") or "", bool(opts.get("uploaded")))
                 # Wave 14／需求 3：讓後續 progress / progress-detail 事件都帶上
                 # taskId，前端才能分辨「同一檔案的續跑」與「換了檔案」。
                 self._current_task_id = task_id
@@ -1292,14 +1378,35 @@ class WebBackend:
                     f"/{_st.get('vocab_convert', True)}",
                     f"hint={hashlib.sha1(_hint.encode('utf-8')).hexdigest()[:8]}",
                     f"trial={trial}",
+                    _src_part,
                 ]
-                try:
-                    _src = Path(audio_path).stat()
-                    _fp_parts.append(f"src={_src.st_size}/{int(_src.st_mtime)}")
-                except OSError:
-                    pass
                 fingerprint = hashlib.sha1(
                     "|".join(_fp_parts).encode("utf-8")).hexdigest()[:16]
+
+                # 同名檔案怎麼處理（設定 → 同名檔案）：
+                #   suffix    保留舊稿，新檔叫「名字 (1)」（預設）
+                #   overwrite 直接蓋掉（舊行為）
+                #   hash      名字帶來源短哈希，跨目錄同名不互相覆蓋
+                # 續跑要寫回同一份檔案的判定（含指紋比對）都在 resolve_out_srt。
+                if trial:
+                    # 試跑永遠另存，絕不碰正式稿與其斷點。
+                    task_id += "-trial"
+                    out_srt = srt_dir / (Path(out_name).stem + ".trial.srt")
+                else:
+                    from longform_runner import resolve_out_srt
+                    out_srt = resolve_out_srt(
+                        srt_dir, out_name,
+                        policy=(_st.get("out_naming") or "suffix"),
+                        work_dir=BASE_DIR / "longform_state",
+                        task_id=task_id, fingerprint=fingerprint,
+                        resume=bool(opts.get("longform_resume", True)))
+                # 防呆：確認解析後仍在 subtitles/ 內（resolve_out_srt 已只取基名，
+                # 這裡是第二道鎖，避免日後改動把路徑拼接放進來）。
+                try:
+                    if srt_dir.resolve() not in out_srt.resolve().parents:
+                        out_srt = srt_dir / "transcript.srt"
+                except Exception:
+                    out_srt = srt_dir / "transcript.srt"
 
                 rich_path = out_srt.with_suffix(".rich.json")
                 # A stale enrichment file must never leak into a new run.
@@ -1355,6 +1462,20 @@ class WebBackend:
                     audio_path, total_sec=_duration,
                     resume=not trial and bool(opts.get("longform_resume", True)),
                     limit_sec=limit_sec)
+
+                def _discard_if_one_shot():
+                    """試跑用完即清：每次都只跑前 5 分鐘，斷點永遠不會被續用。
+
+                    拖放上傳**不在此列** —— 它用內容身分，重拖同一支檔案會
+                    接上同一個 task_id，斷點必須保留。
+                    """
+                    if not trial:
+                        return
+                    try:
+                        runner.discard_state()
+                    except Exception:
+                        pass
+
                 if result["status"] == "paused":
                     # 取消／中斷也要產出 rich.json。
                     #   它是由 runner 的 JSONL **全量重建**的派生檔，不是增量資料源：
@@ -1367,8 +1488,12 @@ class WebBackend:
                         enhancer.finalize(jsonl_path=runner.jsonl)
                     except Exception:
                         pass
+                    _discard_if_one_shot()
                     raise RuntimeError(
-                        "已取消；已完成字幕已保存，再次启动同一文件可从断点续跑。")
+                        "已取消；已完成字幕已保存。"
+                        + ("重新拖入同一檔案即可接續（會重新上傳一次）。"
+                           if opts.get("uploaded")
+                           else "重新选择同一文件可从断点继续。"))
                 srt = runner.out_srt
                 runner_result = result
                 # Enrichment is strictly best-effort: finalize() never raises
@@ -1377,6 +1502,7 @@ class WebBackend:
                     enhancer.finalize(jsonl_path=runner.jsonl)
                 except Exception:
                     pass
+                _discard_if_one_shot()
         finally:
             if tmp_extra:
                 try:
@@ -1604,6 +1730,173 @@ class WebBackend:
         self._cancel_event.set()   # 同步通知长音频流式 Runner，使其保存断点后退出
         return True
 
+    # ── 輸入身分（task_id / 指紋的 src 分量）───────────────────────────
+    _ID_SAMPLE_BYTES = 1 << 20        # 首尾各抽 1MB
+
+    @classmethod
+    def _source_identity(cls, path, name: str = "", upload: bool = False):
+        """回傳 ``(task_id, 指紋的 src 分量)``。
+
+        本機來源（點選／批次）用「解析後路徑 + 大小/修改時間」，這是原本的
+        算法，既有斷點不受影響。
+
+        **上傳來源（拖放）改用內容身分**：檔名＋大小＋首尾各 1MB 抽樣。
+        拖放的副本每次落在不同的隨機臨時目錄（``asr_web_xxxx``），若拿臨時
+        路徑當身分，同一支錄音「取消後重拖一次」就變成另一個任務，斷點永遠
+        接不上 —— 續跑等於不存在。用內容身分則同一個檔案無論上傳幾次，都
+        認得是同一個任務，斷點、同名輸出檔都接得上（代价是重拖時要再上傳
+        一次整份檔案，介面已如實說明）。
+        """
+        p = Path(path)
+        try:
+            st = p.stat()
+            size, mtime = int(st.st_size), int(st.st_mtime)
+        except OSError:
+            size, mtime = 0, 0
+        if not upload:
+            return (hashlib.sha1(str(p.resolve()).encode("utf-8")).hexdigest()[:12],
+                    f"src={size}/{mtime}")
+        h = hashlib.sha1()
+        h.update(str(name or p.name).encode("utf-8"))
+        h.update(f"|{size}|".encode("ascii"))
+        try:
+            with open(p, "rb") as f:
+                h.update(f.read(cls._ID_SAMPLE_BYTES))
+                if size > cls._ID_SAMPLE_BYTES * 2:
+                    f.seek(-cls._ID_SAMPLE_BYTES, os.SEEK_END)
+                    h.update(f.read(cls._ID_SAMPLE_BYTES))
+        except OSError:
+            pass
+        digest = h.hexdigest()
+        return digest[:12], f"src={size}/{digest[:16]}"
+
+    # ── 暫存檔清理 ──────────────────────────────────────────────────
+    def cleanup_temp(self, min_age_sec: float = 600) -> dict:
+        """清掉本程式遺留在 %TEMP% 的上傳副本（手動觸發用）。
+
+        正常路徑是「請求結束就刪」（``_cleanup_upload``）；但崩潰、被強制
+        結束、或 rmtree 撞上檔案佔用時，整份音檔會留在系統碟上。預設只清
+        10 分鐘前的，避免刪到正在寫入的那一份。
+        """
+        from webview_server import sweep_stale_uploads
+        res = sweep_stale_uploads(min_age=min_age_sec)
+        msg = _t.msg("set.tempDone", n=res["removed"],
+                     mb=f"{res['freed'] / (1024 * 1024):.0f}")
+        self._emit("status", {"message": _t.plain(msg)})
+        try:
+            self.run_log.add(_t.plain(msg), level="info", source="temp")
+        except Exception:
+            pass
+        return res
+
+    # ── 斷點記錄（longform_state）──────────────────────────────────
+    def state_dir(self) -> Path:
+        """斷點與逐段記錄的目錄（BASE_DIR 可被測試替換，故不直接用 app_paths）。"""
+        return Path(BASE_DIR) / "longform_state"
+
+    def checkpoints_info(self, limit: int = 100) -> dict:
+        """斷點記錄概況：條數、占用空間、最近 N 筆明細。
+
+        只讀，不刪任何東西。明細給設定頁的「查看詳情」用；超過 limit 筆時
+        只回最近的，另附 total 讓前端說明「還有 n 筆」。
+        """
+        import sqlite3
+        d = self.state_dir()
+        info = {"count": 0, "bytes": 0, "retentionDays": self._ckpt_days(),
+                "items": [], "total": 0}
+        if not d.is_dir():
+            return info
+        rows = []
+        db = d / "checkpoints.db"
+        if db.is_file():
+            try:
+                con = sqlite3.connect(str(db), timeout=10)
+                try:
+                    rows = list(con.execute(
+                        "SELECT task_id, status, updated_at, out_name "
+                        "FROM progress ORDER BY updated_at DESC"))
+                finally:
+                    con.close()
+            except sqlite3.Error:
+                rows = []
+        # 有 jsonl 但沒有斷點列的（舊版殘留）也算一條，否則「占用」對不上
+        seen = {r[0] for r in rows}
+        for f in d.glob("*.segments.jsonl"):
+            tid = f.name[:-len(".segments.jsonl")]
+            if tid not in seen:
+                try:
+                    rows.append((tid, "orphan", f.stat().st_mtime, ""))
+                except OSError:
+                    pass
+        total_bytes = 0
+        for name in ("checkpoints.db", "checkpoints.db-wal", "checkpoints.db-shm",
+                     "checkpoints.json"):
+            p = d / name
+            try:
+                if p.is_file():
+                    total_bytes += p.stat().st_size
+            except OSError:
+                pass
+        items = []
+        for tid, status, updated, out_name in rows:
+            jf = d / f"{tid}.segments.jsonl"
+            try:
+                jb = jf.stat().st_size if jf.is_file() else 0
+            except OSError:
+                jb = 0
+            total_bytes += jb
+            items.append({"task": tid, "name": out_name or "", "status": status or "",
+                          "updatedAt": float(updated or 0), "bytes": jb})
+        info["count"] = len(rows)
+        info["total"] = len(rows)
+        info["bytes"] = total_bytes
+        info["items"] = items[:limit]
+        return info
+
+    def clear_checkpoints(self) -> dict:
+        """清空所有斷點記錄（含逐段 jsonl）。
+
+        只刪狀態，不動 ``subtitles/`` 裡已產出的字幕 —— 那些是使用者的成品。
+        正在跑的任務若佔用 DB 會失敗，回報 failed 而不是靜默吞掉。
+        """
+        d = self.state_dir()
+        res = {"removed": 0, "freed": 0, "failed": 0}
+        if not d.is_dir():
+            return res
+        for f in list(d.glob("*.segments.jsonl")):
+            try:
+                size = f.stat().st_size
+                f.unlink()
+                res["removed"] += 1
+                res["freed"] += size
+            except OSError:
+                res["failed"] += 1
+        for name in ("checkpoints.db", "checkpoints.db-wal", "checkpoints.db-shm",
+                     "checkpoints.json", "checkpoints.json.tmp"):
+            p = d / name
+            try:
+                if p.is_file():
+                    size = p.stat().st_size
+                    p.unlink()
+                    res["freed"] += size
+            except OSError:
+                res["failed"] += 1
+        msg = _t.msg("set.ckptCleared", n=res["removed"])
+        self._emit("status", {"message": _t.plain(msg)})
+        try:
+            self.run_log.add(_t.plain(msg), level="info", source="ckpt")
+        except Exception:
+            pass
+        return res
+
+    def _ckpt_days(self) -> int:
+        """斷點保留天數（0 = 永不自動清理）。"""
+        try:
+            v = int(self._settings_raw().get("checkpoint_days", 30))
+        except (TypeError, ValueError):
+            v = 30
+        return max(0, min(3650, v))
+
     def work_in_flight(self) -> bool:
         """是否有正在进行的识别（单文件转写或批量队列）。
 
@@ -1730,9 +2023,13 @@ class WebBackend:
             "hardware": info["hardware"],
             "installed": installed,          # {"version","variant"}；None＝尚未安裝
             "latest": _CRISPASR_VERSION,
-            # 已裝但版本／版本別不符 → 前端提示「載入時會自動重新下載」
-            "needsDownload": (installed.get("version") != _CRISPASR_VERSION
-                              or installed.get("variant") != selected),
+            # 「需不需要下載」只在目前真的會用到 CrispASR 時才有意義。
+            # 選 OpenVINO／chatllm 時這顆核心永遠不會被載入，缺失不該變成
+            # 告警——使用者選 1.7B + CPU 卻看到「核心尚未下載」就是這樣來的。
+            "appliesToCurrent": self._current_backend() == "crispasr",
+            "needsDownload": (self._current_backend() == "crispasr"
+                              and (installed.get("version") != _CRISPASR_VERSION
+                                   or installed.get("variant") != selected)),
         }
 
     def set_accel(self, variant: str) -> dict:
@@ -2138,10 +2435,19 @@ class WebBackend:
         model_dir = self._model_dir()
         crispasr_dir = self._crispasr_dir()
 
-        def item(key, label, ok, ok_d, miss_d, downloadable=True):
+        def item(key, label, ok, ok_d, miss_d, downloadable=True, hint=None):
+            """一列自檢項目。
+
+            分成三層，前端才做得出「預設只看到重點」：
+              value 短狀態（綠：已下載；未就緒時留空，由前端補「未就緒」）
+              hint  完整說明（只在滑到圓形感嘆號時顯示，避免長文案撐高每一列）
+              detail 舊欄位，保留給既有前端與測試；等於 hint
+            """
             return {"key": key, "label": label,
                     "status": "green" if ok else ("yellow" if downloadable else "red"),
-                    "detail": ok_d if ok else miss_d}
+                    "value": ok_d if ok else "",
+                    "hint": miss_d if not ok else (hint or ""),
+                    "detail": miss_d if not ok else (hint or "")}
 
         def _vad_ok():
             return _vad_present(model_dir, getattr(self.engine, "vad_sess", None))
@@ -2150,20 +2456,24 @@ class WebBackend:
         diar_ok = quick_check_diarization(model_dir)
         ff = self._resolve_ffmpeg()
 
+        # 目前生效的後端（未載入模型時退回 settings），決定哪一組算「現用」、
+        # 哪些算「備用」——備用組的缺失不該計入摘要，也不該預設展開。
+        _be_now = self._current_backend()
+
         # OpenVINO（CPU）路徑
         ov_size = s.get("cpu_model_size", "0.6B")
         ov_model_ok = quick_check_1p7b(model_dir) if "1.7B" in ov_size else quick_check(model_dir)
         ov = {
             "label": _t.msg("health.group.ov"), "backend": "openvino",
+            "inactive": _be_now != "openvino",
             "items": [
+                # 詞級優化與說話者分離是**全後端共用**的元件，抽到 shared 只留
+                # 一列。舊版每一組各列一次，於是同一個檔案同時出現綠與黃。
                 item("model", _t.msg("health.ov.model", size=ov_size), ov_model_ok,
                      _t.msg("state.downloaded"), _t.msg("state.notDownloaded")),
                 item("vad", _t.msg("health.ov.vad"), _vad_ok(),
-                     _t.msg("state.builtin"), _t.msg("state.vadMissing"), downloadable=False),
-                item("fa", _t.msg("health.ov.fa"), quick_check_aligner(model_dir),
-                     _t.msg("state.downloaded"), _t.msg("state.notDownloadedFa")),
-                item("diar", _t.msg("health.ov.diar"), diar_ok,
-                     _t.msg("state.downloaded"), _t.msg("state.notDownloadedDiar")),
+                     _t.msg("state.builtin"), _t.msg("state.vadMissing"),
+                     downloadable=False),
             ],
         }
 
@@ -2185,8 +2495,7 @@ class WebBackend:
             _core_ver = (installed_crispasr_info(crispasr_dir) or {}).get("version")
         except Exception:
             _core_ver = None
-        _backend_now = getattr(self, "_active_backend", "openvino")
-        if _backend_now == "openvino":
+        if _be_now != "crispasr":
             _core_detail = _t.msg("health.crisp.coreNotNeeded")
         elif _core_ver == _CRISPASR_VERSION:
             _core_detail = _t.msg("health.crisp.coreVariantMismatch")
@@ -2199,6 +2508,7 @@ class WebBackend:
         crisp = {
             "label": _t.msg("health.group.crisp", variant=_variant_label),
             "backend": "crispasr",
+            "inactive": _be_now != "crispasr",
             "items": [
                 item("core", _t.msg("health.crisp.core", version=_CRISPASR_VERSION,
                                     variant=_variant_label),
@@ -2215,20 +2525,32 @@ class WebBackend:
                 item("tea", _t.msg("health.crisp.tea"),
                      quick_check_tea_asr_gguf(model_dir, "q8"),
                      _t.msg("state.downloaded"), _t.msg("health.crisp.teaMissing")),
-                item("fa", _t.msg("health.crisp.fa", quant=fa_quant.upper()),
-                     quick_check_aligner_gguf(crispasr_dir, fa_quant),
-                     _t.msg("state.downloaded"), _t.msg("health.crisp.faMissing")),
-                item("diar", _t.msg("health.crisp.diar"), diar_ok,
-                     _t.msg("state.downloaded"), _t.msg("state.notDownloadedDiar")),
+                # fa 與 diar 同上：全後端共用，統一列在 shared。
             ],
         }
 
+        # 詞級優化：全後端都需要，但**實際檔案取決於後端**——
+        #   openvino / chatllm → model_dir/qwen3-focedaligner-0.6b.bin（chatllm 子程序解）
+        #   crispasr          → crispasr_dir 的 aligner gguf
+        # 只列「現在真的會用到的那一份」；另一份即使存在也不算就緒。
+        if _be_now == "crispasr":
+            fa_ok = quick_check_aligner_gguf(crispasr_dir, fa_quant)
+            fa_label = _t.msg("health.crisp.fa", quant=fa_quant.upper())
+            fa_miss = _t.msg("health.crisp.faMissing")
+        else:
+            fa_ok = quick_check_aligner(model_dir)
+            fa_label = _t.msg("health.shared.fa")
+            fa_miss = _t.msg("state.notDownloadedFa")
+
         shared = [
             item("ffmpeg", _t.msg("health.shared.ffmpeg"), bool(ff),
-                 _t.msg("health.shared.ffmpegOk", path=str(ff)) if ff else "",
-                 _t.msg("health.shared.ffmpegMissing"), downloadable=True),
+                 _t.msg("state.ready"),
+                 _t.msg("health.shared.ffmpegMissing"), downloadable=True,
+                 hint=_t.msg("health.shared.ffmpegOk", path=str(ff)) if ff else ""),
             item("diar_shared", _t.msg("health.shared.diar"), diar_ok,
                  _t.msg("state.downloaded"), _t.msg("health.shared.diarMissing")),
+            item("fa_shared", fa_label, fa_ok,
+                 _t.msg("state.downloaded"), fa_miss),
         ]
 
         cores = [ov, crisp]
@@ -2248,29 +2570,36 @@ class WebBackend:
             bin_ok = any(p and Path(p).exists() for p in bin_candidates)
             chatllm = {
                 "label": _t.msg("health.group.chatllm"), "backend": "chatllm",
+                "inactive": _be_now != "chatllm",
                 "items": [
                     item("core", _t.msg("health.chatllm.core"), dll_ok,
                          _t.msg("state.ready"), _t.msg("state.notProvided"),
                          downloadable=False),
                     item("model", _t.msg("health.chatllm.model"), bin_ok,
                          _t.msg("state.downloaded"), _t.msg("health.chatllm.modelMissing")),
-                    item("fa", _t.msg("health.chatllm.fa"),
-                         quick_check_aligner(model_dir),
-                         _t.msg("state.downloaded"), _t.msg("state.notDownloadedFa")),
-                    item("diar", _t.msg("health.crisp.diar"), diar_ok,
-                         _t.msg("state.downloaded"), _t.msg("state.notDownloadedDiar")),
+                    # chatllm 也走 VAD（chatllm_engine._detect_speech_groups），
+                    # 舊版漏列，使用者會以為只有 OpenVINO 需要 VAD。
+                    item("vad", _t.msg("health.ov.vad"), _vad_ok(),
+                         _t.msg("state.builtin"), _t.msg("state.vadMissing"),
+                         downloadable=False),
                 ],
             }
             cores.append(chatllm)
 
-        # 紅燈：缺且不可自動補（目前僅 VAD/ffmpeg 屬此類）
-        reds = sum(1 for c in cores for it in c["items"] if it["status"] == "red")
-        yellows = sum(1 for c in cores for it in c["items"] if it["status"] == "yellow")
+        # 摘要只統計「目前後端 + 共用」。備用後端（沒在用）的缺失若也計入，
+        # 使用者選 1.7B + CPU 時會被「N 項可補」誤導，以為自己選的路有問題。
+        active_core = next((c for c in cores if c.get("backend") == _be_now), None)
+        counted = ([active_core] if active_core else []) + [{"items": shared}]
+        reds = sum(1 for c in counted for it in c["items"] if it["status"] == "red")
+        yellows = sum(1 for c in counted for it in c["items"] if it["status"] == "yellow")
+        inactive_missing = sum(
+            1 for c in cores if c.get("inactive")
+            for it in c["items"] if it["status"] != "green")
         return {
             "cores": cores, "shared": shared,
-            "summary": {"red": reds, "yellow": yellows,
-                        "ok": reds == 0},
-            "activeBackend": getattr(self, "_active_backend", None),
+            "summary": {"red": reds, "yellow": yellows, "ok": reds == 0,
+                        "inactiveMissing": inactive_missing},
+            "activeBackend": _be_now,
         }
 
     # ── 設定（讀寫既有 settings.json）───────────────────────
@@ -2310,8 +2639,19 @@ class WebBackend:
             "align": bool(s.get("align", True)),
             "hint": s.get("hint", ""),
             "trial": bool(s.get("trial", False)),
-            # Wave 12：轉檔完成後自動釋放模型記憶體（GPU 後端會顯示為 off）。
-            "autoRelease": bool(s.get("auto_release_model", True)),
+            # 必須回「生效值」：GPU 後端下即使勾著也不會釋放。若回原始設定，
+            # 開關會顯示「開」但實際永不作用（與 accel 誤報同一類問題）。
+            "autoRelease": self._auto_release_enabled(),
+            "autoReleaseRequested": bool(s.get("auto_release_model", True)),
+            # 同名檔案策略：suffix（保留舊稿）/ overwrite（覆蓋）/ hash（名字帶哈希）
+            "outNaming": (s.get("out_naming")
+                          if s.get("out_naming") in ("suffix", "overwrite", "hash")
+                          else "suffix"),
+            # 實際輸出目錄（唯讀顯示）。以前設定頁這一列只有標題沒有值，
+            # 使用者無從得知字幕到底落在哪；這裡回真實路徑。
+            "outputDir": str(Path(getattr(core, "SRT_DIR", BASE_DIR / "subtitles"))),
+            # 斷點保留天數（0 = 永不自動清理）
+            "checkpointDays": self._ckpt_days(),
         }
 
     def set_settings(self, patch: dict) -> dict:
@@ -2337,10 +2677,24 @@ class WebBackend:
                    "nSpeakers": "n_speakers", "align": "align", "hint": "hint",
                    "trial": "trial",
                    # Wave 12 (問題 1): model memory lifecycle.
-                   "autoRelease": "auto_release_model"}
+                   "autoRelease": "auto_release_model",
+                   # 同名檔案策略（suffix / overwrite / hash）
+                   "outNaming": "out_naming",
+                   # 斷點保留天數（0 = 永不自動清理）
+                   "checkpointDays": "checkpoint_days"}
         for k, v in patch.items():
             if k in key_map:
                 cur[key_map[k]] = v
+        # 只接受三種策略值，避免前端送錯字串被寫進 settings.json
+        # （讀的時候雖然會回退成 suffix，但存一個看不懂的值沒有意義）。
+        if "out_naming" in cur and cur["out_naming"] not in ("suffix", "overwrite", "hash"):
+            cur["out_naming"] = "suffix"
+        # 天數要能安全轉成 int（前端是數字輸入框，仍可能送空字串）
+        if "checkpoint_days" in cur:
+            try:
+                cur["checkpoint_days"] = max(0, min(3650, int(cur["checkpoint_days"])))
+            except (TypeError, ValueError):
+                cur["checkpoint_days"] = 30
         try:
             f.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
@@ -2540,7 +2894,8 @@ class WebBackend:
         import cf_tunnel
         if on_:
             if not (self._server and self._server.running):
-                return {"running": False, "url": "", "status": "請先啟動端點服務", "error": True}
+                return {"running": False, "url": "",
+                        "status": _t.render("msg.endpointNotStarted"), "error": True}
             if self._tunnel and self._tunnel.running:
                 return self.get_tunnel()
             self._tunnel = cf_tunnel.CloudflareTunnel()

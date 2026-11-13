@@ -116,8 +116,9 @@ def main() -> int:
                 "function markBusy(" in appjs)
         r.check("no scattered manual run-button re-enabling",
                 'btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>開始轉換`' not in appjs)
-        r.check("run button label follows i18n", '"file.running"' in i18n
-                and "file.running" in appjs)
+        r.check("run button label follows i18n (run / cancel)",
+                '"file.run"' in i18n and '"file.cancel"' in i18n
+                and '"file.run"' in appjs and '"file.cancel"' in appjs)
         r.check("log toggle / clear are wired",
                 '"#btn-log-toggle"' in appjs and '"#btn-log-clear"' in appjs and
                 'id="btn-log-toggle"' in html)
