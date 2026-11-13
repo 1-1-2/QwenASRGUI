@@ -207,13 +207,6 @@
   async function refreshStatus() {
     const s = await API.getStatus();
     _lastStatus = s;
-    // 沒有原生選檔能力時（非 Windows／精簡環境），「點選」其實也走 <input
-    // type=file>，兩種來源都是暫存副本、都要重新上傳。文案要跟著換，
-    // 不能還寫「點選＝重新選同一個檔案即可」。
-    if (s.pickerSupported === false) {
-      const main = $("#drop-mode .dm-main");
-      if (main) { main.dataset.i18n = "file.modeHintNoPicker"; I18N.apply(main); }
-    }
     // 批次頁的「本次執行設定」要顯示模型與推理方式，兩者只在 status 裡；
     // 這裡補一次重繪，值沒變時 renderBatchConfig 自己會跳過重建。
     try { renderBatchConfig(); } catch (e) {}
@@ -345,8 +338,6 @@
 
   function setFile(f) {
     picked = f;
-    const modeNote = $("#drop-mode");
-    if (modeNote) modeNote.classList.toggle("is-compact", !!f);
     if (!f) { drop.classList.remove("has-file"); renderDropEmpty(); syncActionButtons(); return; }
     drop.classList.add("has-file");
     const meta = f.sizeSec ? T("batch.seconds", null, { n: f.sizeSec })
@@ -369,7 +360,8 @@
   function renderDropEmpty() {
     drop.innerHTML = `<div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></div>
       <div class="big">${T("file.dropBigHtml", "拖曳音訊到此，或<b>點擊選擇檔案</b>")}</div>
-      <div class="sub">${T("file.dropSubHtml", "支援 mp3 / wav / m4a / 影片音軌")}</div>`;
+      <div class="sub">${T("file.dropSubHtml", "支援 mp3 / wav / m4a / 影片音軌")}</div>
+      <div class="drop-note">${T("file.modeHint", "中斷後可接續 · 拖放需重新拖入（會重新上傳）")}</div>`;
   }
 
   // 桌面：原生對話框（零複製）；非 Windows / 預覽模式：fallback 到 <input type=file>

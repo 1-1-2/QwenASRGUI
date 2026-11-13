@@ -99,19 +99,8 @@
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></div>
           <div class="big" data-i18n-html="file.dropBig">拖曳音訊到此，或<b>點擊選擇檔案</b></div>
           <div class="sub" data-i18n="file.dropSub">支援 mp3 / wav / m4a / 影片音軌</div>
-        </div>
-
-        <!-- 拖放與點選的能力不同，且差別會影響「中止後能不能繼續」，
-             所以放在拖放區正下方常駐，而不是折進說明或只寫在 hover 裡：
-               · 點選 → 後端原生對話框拿到絕對路徑 → 直接引用，斷點可接續
-               · 拖放 → 瀏覽器只給 File 物件 → 整份複製到 %TEMP%，結束即刪
-                 → 中止後沒有來源可接，重新拖入等於從頭再跑一次 -->
-        <div class="drop-mode" id="drop-mode">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>
-          <div class="dm-body">
-            <div class="dm-main" data-i18n="file.modeHint">中斷後都能接續：點選＝重新選同一個檔案即可；拖放＝需重新拖入同一檔案（會重新上傳一次）。</div>
-            <div class="dm-why" data-i18n="file.modeHintWhy">拖放會先把整份檔案複製到系統暫存資料夾（瀏覽器不交出真實路徑），請求結束即刪；斷點以檔案內容辨識，所以重新拖入同一支檔案仍接得上，只是要再傳一遍。點選直接引用本機檔案，不重傳。</div>
-          </div>
+          <!-- 能力差異只留一句：拖放要重傳、點選不用。詳細原因不佔版面。 -->
+          <div class="drop-note" data-i18n="file.modeHint">中斷後可接續 · 拖放需重新拖入（會重新上傳）</div>
         </div>
 
         <div class="controls controls--form">
@@ -622,7 +611,7 @@
         <!-- 效能與記憶體：全域偏好，不屬於「模型」頁的單一模型操作，
              故從模型頁移到此處。模型頁只留「釋放模型記憶體」按鈕與唯讀狀態。 -->
         <div class="card" style="margin-top:14px">
-          <div class="row">
+          <div class="row is-last">
             <div class="label">
               <div class="t" data-i18n="set.autoRelease">轉檔後自動釋放模型</div>
               <div class="d" data-i18n="set.autoReleaseDesc">每次轉檔結束後釋放模型記憶體，下次轉檔會重新載入（約需數秒）。GPU 核心常駐，不適用。</div>

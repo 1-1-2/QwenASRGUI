@@ -1038,9 +1038,6 @@ class WebBackend:
             "modelReady": bool(getattr(self.engine, "ready", False)),
             "loading": self._loading,
             "error": self._load_err,
-            # 原生選檔（絕對路徑直引）只有 Windows 有。前端據此決定要不要
-            # 宣稱「點選支援中斷接續」——沒有這能力時點選也是上傳副本。
-            "pickerSupported": sys.platform == "win32",
             "backend": self._backend_label(active, _t.render("status.backendCpu")),
             "backendKey": self._persisted_backend(),       # 已記住的核心選擇
             "activeBackend": active,                        # 實際載入中的核心

@@ -135,12 +135,8 @@
     "file.cancel": ["取消", "取消", "Cancel"],
     "file.canceling": ["正在取消…", "正在取消…", "Canceling…"],
     "file.cancelSent": ["已送出取消，正在保存已完成的部分…", "已发出取消，正在保存已完成的部分…", "Cancel requested - saving what is already transcribed…"],
-    // 拖放 vs 點選的差異：兩者都能接續，差別在「要不要重傳」。
-    // 拖放的副本每次落在隨機臨時目錄，靠內容哈希認出是同一個檔案，所以
-    // 重新拖入同一支檔案接得上，但整份檔案要再上傳一次。
-    "file.modeHint": ["中斷後都能接續：點選＝重新選同一個檔案即可；拖放＝需重新拖入同一檔案（會重新上傳一次）。", "中断后都能接续：点选＝重新选同一个文件即可；拖放＝需重新拖入同一文件（会重新上传一次）。", "Both can resume after a stop: click-to-pick just needs the same file picked again; drag-and-drop needs the same file dropped again (it is re-uploaded)."],
-    "file.modeHintWhy": ["拖放會先把整份檔案複製到系統暫存資料夾（瀏覽器不交出真實路徑），請求結束即刪；斷點以檔案內容辨識，所以重新拖入同一支檔案仍接得上，只是要再傳一遍。點選直接引用本機檔案，不重傳。", "拖放会先把整份文件复制到系统临时文件夹（浏览器不交出真实路径），请求结束即删除；断点以文件内容识别，所以重新拖入同一个文件仍接得上，只是要再传一遍。点选直接引用本机文件，不重传。", "Drag-and-drop first copies the whole file into the system temp folder (the browser never reveals its real path) and deletes it when the run ends. Breakpoints are keyed by file content, so dropping the same file again still resumes - it just uploads once more. Click-to-pick references your file in place with no re-upload."],
-    "file.modeHintNoPicker": ["中斷後可接續：重新選擇同一檔案即可（會重新上傳一次）。", "中断后可接续：重新选择同一个文件即可（会重新上传一次）。", "You can resume after a stop: pick the same file again (it is re-uploaded)."],
+    // 拖放框内的一句能力说明：拖放要重传，点选不用（默认路径不解释）
+    "file.modeHint": ["中斷後可接續 · 拖放需重新拖入（會重新上傳）", "中断后可接续 · 拖放需重新拖入（会重新上传）", "Resumable after a stop · drag-and-drop must re-upload"],
     "file.modeLocal": ["本機直引", "本机直引", "In place"],
     "file.modeLocalNote": ["可中斷接續", "可中断接续", "resumable"],
     "file.modeDragChip": ["拖放副本", "拖放副本", "Temp copy"],
