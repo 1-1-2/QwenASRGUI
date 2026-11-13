@@ -37,6 +37,7 @@
   --r-card: 12px;
   --r-btn:  8px;
   --r-pill: 999px;
+  --ctrl-h: 34px;   /* 控件行統一高度（下拉／按鈕／開關） */
 
   /* ── 陰影（極克制，僅一組 token）─────────── */
   --shadow-sm: 0 1px 2px rgba(20,20,30,.05);
@@ -312,6 +313,13 @@ button { font-family: inherit; }
 /* 控制列（按鈕＋開關水平排）*/
 .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 14px; }
 .controls .sp { flex: 1; }
+/* 带控件栏的表单行：主按钮与控件行底部对齐，中线才会和下拉框一致。
+   若用 align-items:center，按钮会被「说明文字＋控件」整块的高度居中，
+   结果比下拉框中线高约 8px。 */
+.controls--form { align-items: flex-end; }
+/* 主按钮默认 37px（13.5px 字 + 9px 上下内距 + 边框），比下拉框的 34px 高；
+   底部对齐后中线会低 1.5px。统一拉成控件行高度即可精确对齐。 */
+.controls--form > .btn { height: var(--ctrl-h); padding-top: 0; padding-bottom: 0; box-sizing: border-box; }
 
 /* 控件栏：说明在上、控件在下，用间距＋细竖线分组
    ─────────────────────────────────────────────────────────────
@@ -325,13 +333,23 @@ button { font-family: inherit; }
   gap: 18px; flex: 1; min-width: 0;
 }
 .ctrl-group { display: flex; align-items: flex-end; gap: 14px; }
-.ctrl { display: flex; flex-direction: column; gap: 5px; }
+.ctrl { display: flex; flex-direction: column; justify-content: flex-end; gap: 5px; }
 .ctrl-t {
   font-size: 11.5px; color: var(--muted); line-height: 1;
   letter-spacing: .02em; white-space: nowrap;
 }
-.ctrl-actions { display: flex; gap: 8px; }
-.ctrl-sep { width: 1px; height: 34px; background: var(--line-strong); flex: 0 0 auto; }
+.ctrl-actions { display: flex; align-items: center; gap: 8px; }
+/* 控件行统一高度 ─────────────────────────────────────────────
+   下拉(≈34px)、按鈕(≈35px)、開關(22px) 三者原生高度不同，
+   底部對齊時中線與上方說明文字都會參差：說明浮在各自控件高度之上，
+   開關的說明就被壓低、按鈕中線也與下拉框錯位。
+   這裡把「控件行」高度鎖成同一個值，三類控件都在同一條基線上居中。 */
+.ctrl > .select,
+.ctrl > .switch,
+.ctrl > .ctrl-actions { height: var(--ctrl-h); box-sizing: border-box; }
+.ctrl > .select { padding-top: 0; padding-bottom: 0; }
+.ctrl-actions .btn { height: 100%; padding-top: 0; padding-bottom: 0; box-sizing: border-box; }
+.ctrl-sep { width: 1px; height: var(--ctrl-h); background: var(--line-strong); flex: 0 0 auto; }
 .ctrl-spacer { flex: 1; }
 
 /* ============================================================
