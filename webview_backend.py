@@ -1556,6 +1556,10 @@ class WebBackend:
                 # 「嘗試並行」是全鏈路唯一的開關：開＝識別持續進行時，
                 # 內存足夠就同時拉起對齊；關＝識別期間不拉起，全部識別完
                 # 再統一補（收尾由 runner 的 _close_queues 完成）。
+                # 三個旋鈕一次讀齊（已夾到安全範圍）。門控與窗口在下面建隊列
+                # 時用掉，drain 傳給 runner —— 三處必須同源，否則使用者改了
+                # 設定卻只有一半生效，比不給調更糟。
+                _fa_tune = self._fa_tuning()
                 _align_queue = None
                 if (_align_active and opts.get("alignParallel")
                         and callable(getattr(self.engine, "_align_chunk", None))):
@@ -1565,7 +1569,8 @@ class WebBackend:
                             _align_window, src_path=audio_path,
                             out_path=_fa_path,
                             language=(_lang or "Chinese"),
-                            threshold_gb=float(_st.get("fa_gate_gb", 4.0) or 4.0),
+                            threshold_gb=_fa_tune["gate"],
+                            window_sec=_fa_tune["window"],
                             on_gate=lambda a, av, th, r:
                                 self.run_log.gate(a, av, th, r))
                         self._align_live = _align_queue
@@ -1672,6 +1677,8 @@ class WebBackend:
                     diar_queue=_diar_queue,
                     fa_path=_fa_path,
                     diar_path=_diar_path,
+                    # 收尾等對齊補完的上限。長片可能遠超預設 180 秒。
+                    drain_timeout=_fa_tune["drain"],
                 )
                 try:
                     result = runner.run(
@@ -2911,6 +2918,41 @@ class WebBackend:
         }
 
     # ── 設定（讀寫既有 settings.json）───────────────────────
+    # 對齊管線的三個旋鈕。它們都是「換一台機器表現就差很多」的值，寫死
+    # 等於讓使用者去改原始碼，所以交給設定頁；但仍夾在演算法安全範圍內。
+    _FA_GATE_RANGE = (1.0, 32.0)      # GB
+    _FA_WINDOW_RANGE = (10.0, 40.0)   # 秒；上限 = fa_queue.MAX_WINDOW_SEC
+    _FA_DRAIN_RANGE = (30.0, 900.0)   # 秒
+    # 低於此值開始換頁，FA 反而更慢。只提示不攔 —— 使用者的機器可能特殊。
+    _FA_GATE_WARN_GB = 3.0
+
+    @staticmethod
+    def _fa_avail_gb() -> float | None:
+        """當下可用實體記憶體（GB）。取不到回 None，前端改顯示「未知」。"""
+        try:
+            import sysmem
+            v = sysmem.available_gb()
+            return round(float(v), 2) if v is not None else None
+        except Exception:
+            return None
+
+    def _fa_tuning(self) -> dict:
+        """讀三個對齊旋鈕並夾到安全範圍（settings.json 可能被手改壞）。"""
+        s = self._settings_raw()
+
+        def num(key: str, default: float, rng: tuple) -> float:
+            try:
+                v = float(s.get(key, default))
+            except (TypeError, ValueError):
+                v = default
+            return max(rng[0], min(rng[1], v))
+
+        return {
+            "gate": num("fa_gate_gb", 4.0, self._FA_GATE_RANGE),
+            "window": num("fa_window_sec", 26.0, self._FA_WINDOW_RANGE),
+            "drain": num("fa_drain_sec", 180.0, self._FA_DRAIN_RANGE),
+        }
+
     def get_settings(self) -> dict:
         s = {}
         try:
@@ -2926,6 +2968,7 @@ class WebBackend:
             vocab = vc if vc in ("off", "s2twp", "s2t") else "s2twp"
         else:
             vocab = self._flags_to_vocab(bool(s.get("output_simplified", False)), bool(vc))
+        _tune = self._fa_tuning()
         return {
             "scale": int(s.get("ui_scale", 100)),
             "format": s.get("output_format", "srt"),
@@ -2963,6 +3006,17 @@ class WebBackend:
             "outputDir": str(Path(getattr(core, "SRT_DIR", BASE_DIR / "subtitles"))),
             # 斷點保留天數（0 = 永不自動清理）
             "checkpointDays": self._ckpt_days(),
+            # 對齊管線調校：門控閾值 / 攢批窗口 / 收尾等待。
+            # faAvailGb 是「當下」可用記憶體，每次讀設定都重新取 —— 使用者
+            # 要靠它決定閾值填多少，寫死或快取都會誤導。
+            "faGateGb": _tune["gate"],
+            "faWindowSec": _tune["window"],
+            "faDrainSec": _tune["drain"],
+            "faAvailGb": self._fa_avail_gb(),
+            "faGateWarnGb": self._FA_GATE_WARN_GB,
+            "faGateRange": list(self._FA_GATE_RANGE),
+            "faWindowRange": list(self._FA_WINDOW_RANGE),
+            "faDrainRange": list(self._FA_DRAIN_RANGE),
         }
 
     def set_settings(self, patch: dict) -> dict:
@@ -2993,7 +3047,11 @@ class WebBackend:
                    # 同名檔案策略（suffix / overwrite / hash）
                    "outNaming": "out_naming",
                    # 斷點保留天數（0 = 永不自動清理）
-                   "checkpointDays": "checkpoint_days"}
+                   "checkpointDays": "checkpoint_days",
+                   # 對齊管線調校
+                   "faGateGb": "fa_gate_gb",
+                   "faWindowSec": "fa_window_sec",
+                   "faDrainSec": "fa_drain_sec"}
         for k, v in patch.items():
             if k in key_map:
                 cur[key_map[k]] = v
@@ -3007,6 +3065,23 @@ class WebBackend:
                 cur["checkpoint_days"] = max(0, min(3650, int(cur["checkpoint_days"])))
             except (TypeError, ValueError):
                 cur["checkpoint_days"] = 30
+        # 對齊旋鈕一律夾到安全範圍。前端已用 min/max 限過，但 settings.json
+        # 是可以手改的，寫進一個 0.2 GB 的閾值會讓對齊永遠開不起來。
+        for key, rng, default in (
+                ("fa_gate_gb", self._FA_GATE_RANGE, 4.0),
+                ("fa_window_sec", self._FA_WINDOW_RANGE, 26.0),
+                ("fa_drain_sec", self._FA_DRAIN_RANGE, 180.0)):
+            if key not in cur:
+                continue
+            try:
+                cur[key] = max(rng[0], min(rng[1], float(cur[key])))
+            except (TypeError, ValueError):
+                cur[key] = default
+        # 窗口是整數秒（滑桿/輸入框都是整數），小數留著只會讓顯示變成 26.0
+        if "fa_window_sec" in cur:
+            cur["fa_window_sec"] = int(round(cur["fa_window_sec"]))
+        if "fa_drain_sec" in cur:
+            cur["fa_drain_sec"] = int(round(cur["fa_drain_sec"]))
         try:
             f.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:

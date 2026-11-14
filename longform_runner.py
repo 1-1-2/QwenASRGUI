@@ -76,8 +76,10 @@ _MIN_CH = 16                    # 最短语音段（帧）≈ 0.5s
 _PAD_CH = 5                     # 段前后各补 5 帧 ≈ 0.16s
 _MERGE_CH = 16                  # 相邻间隔 ≤16 帧则合并
 _TAIL_SEC = 0.35                # 多含尾段，补捉句尾轻声字（与 app.py 一致）
-# 收尾时把对齐积压跑完的上限；超过就放弃剩余（记进 stats，不静默吞）
-_DRAIN_TIMEOUT_SEC = 180.0
+# 收尾时把对齐积压跑完的上限；超过就放弃剩余（记进 stats，不静默吞）。
+# 默认值，可由设置页「对齐与内存」覆盖（drain_timeout 参数）。
+DRAIN_TIMEOUT_SEC = 180.0
+_DRAIN_TIMEOUT_SEC = DRAIN_TIMEOUT_SEC   # 兼容旧引用
 # 内存不足的重试：3 次 × 30 秒，总等待 ≤90 秒，仍失败则转「暂停」而非失败
 _OOM_RETRIES = 3
 _OOM_WAIT_SEC = 30.0
@@ -885,7 +887,8 @@ class LongformRunner:
                  detail_cb=None, segment_cb=None, enhancer=None,
                  refine_punct: bool = False,
                  align_queue=None, diar_queue=None,
-                 fa_path=None, diar_path=None):
+                 fa_path=None, diar_path=None,
+                 drain_timeout: float = DRAIN_TIMEOUT_SEC):
         """``align_queue``：``fa_queue.AlignQueue``。词级对齐的独立管线。
 
         识别线程只调用它的 ``submit()``（O(1)，不等待），对齐在后台按内存门控
@@ -896,6 +899,10 @@ class LongformRunner:
 
         ``fa_path`` / ``diar_path``：两条管线的产物路径。续跑时按行号截断，
         避免「行号变了、旧词级还留着」。
+
+        ``drain_timeout``：收尾时等对齐积压跑完的上限（秒）。识别结束后
+        ``_close_queues()`` 会把剩余窗口一次性补齐，长片可能远超默认 180 秒；
+        设置页「对齐与内存」可调（30~900）。
         """
         if vad_sess is None:
             raise ValueError("缺少 VAD session：请传入 engine.vad_sess")
@@ -915,6 +922,10 @@ class LongformRunner:
         self.task_id = task_id
         self.gc_every = gc_every
         self.threshold = vad_threshold
+        try:
+            self.drain_timeout = max(0.0, float(drain_timeout))
+        except (TypeError, ValueError):
+            self.drain_timeout = DRAIN_TIMEOUT_SEC
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.out_srt.parent.mkdir(parents=True, exist_ok=True)
         self.jsonl = self.work_dir / f"{task_id}.segments.jsonl"
@@ -1295,7 +1306,7 @@ class LongformRunner:
         """
         if self.align_queue is not None:
             try:
-                self.align_queue.close(timeout=_DRAIN_TIMEOUT_SEC)
+                self.align_queue.close(timeout=self.drain_timeout)
             except Exception:
                 pass
         if self.diar_queue is not None:

@@ -2764,6 +2764,9 @@
     // 斷點保留天數 + 目前留存的記錄（條數／占用／明細）
     if ($("#set-ckpt-days")) $("#set-ckpt-days").value = (s.checkpointDays ?? 30);
     refreshCheckpoints();
+    // 對齊管線三個旋鈕 + 當下可用記憶體。faAvailGb 是後端每次讀設定時
+    // 現查的，不是快取值 —— 使用者要靠它決定門控填多少。
+    applyFaTuning(s);
     applyTheme(s.theme || "light");                 // 啟動即套用深/淺色
     $("#set-mirror").value = s.mirror || "";
     $("#set-ffmpeg").value = s.ffmpeg || "";
@@ -3120,6 +3123,65 @@
     list.innerHTML = head + rows + (extra > 0
       ? `<div class="ck-more">${esc(T("set.ckptMore", null, { n: extra }))}</div>` : "");
   }
+  // ── 對齊管線旋鈕（設定頁「對齊與記憶體」）───────────────
+  // 三個值只影響「對齊」這條後台管線，不影響識別本身。存檔後即時生效：
+  // 下一次任務建隊列時會重新讀（webview_backend._fa_tuning）。
+  const _faTune = { gate: 4.0, window: 26, drain: 180, warn: 3.0, avail: null };
+
+  // 只重算文字，不碰輸入框 —— 切換語言時用，否則會蓋掉使用者正在輸入的值。
+  function refreshFaTuneLabels() {
+    const ms = $("#fa-mem-state");
+    if (ms) {
+      ms.textContent = _faTune.avail == null
+        ? T("set.faMemUnknown", "目前可用記憶體：未知")
+        : T("set.faMemNow", null, { gb: _faTune.avail.toFixed(1) });
+      // 可用記憶體低於門控 → 對齊現在開不起來。這是使用者最需要知道的事，
+      // 直接標成警示色，免得他跑完才發現沒有詞級時間軸。
+      ms.classList.toggle("is-low",
+        _faTune.avail != null && _faTune.avail < _faTune.gate);
+    }
+    const why = $("#fa-gate-why");
+    if (why) {
+      const low = isFinite(_faTune.gate) && _faTune.gate < _faTune.warn;
+      why.hidden = !low;
+      why.textContent = low
+        ? T("set.faGateLow", null, { gb: _faTune.warn.toFixed(1) }) : "";
+    }
+  }
+
+  function applyFaTuning(s) {
+    _faTune.gate = (s && s.faGateGb != null) ? +s.faGateGb : 4.0;
+    _faTune.window = (s && s.faWindowSec != null) ? +s.faWindowSec : 26;
+    _faTune.drain = (s && s.faDrainSec != null) ? +s.faDrainSec : 180;
+    _faTune.warn = (s && s.faGateWarnGb != null) ? +s.faGateWarnGb : 3.0;
+    _faTune.avail = (s && typeof s.faAvailGb === "number") ? s.faAvailGb : null;
+    if ($("#set-fa-gate")) $("#set-fa-gate").value = _faTune.gate;
+    if ($("#set-fa-window")) $("#set-fa-window").value = _faTune.window;
+    if ($("#set-fa-drain")) $("#set-fa-drain").value = _faTune.drain;
+    refreshFaTuneLabels();
+  }
+
+  // 三個輸入框共用一套夾緊：前端先擋一次，後端 _fa_tuning 再擋一次
+  // （settings.json 可以手改，只擋前端等於沒擋）。
+  [["#set-fa-gate", "faGateGb", 1, 32, false, 4],
+   ["#set-fa-window", "faWindowSec", 10, 40, true, 26],
+   ["#set-fa-drain", "faDrainSec", 30, 900, true, 180]].forEach(
+    ([sel, key, lo, hi, isInt, dflt]) => {
+      const el = $(sel);
+      if (!el) return;
+      el.addEventListener("change", async e => {
+        let v = isInt ? parseInt(e.target.value, 10) : parseFloat(e.target.value);
+        if (!isFinite(v)) v = dflt;
+        v = Math.max(lo, Math.min(hi, v));
+        e.target.value = v;
+        try {
+          const s = await API.setSettings({ [key]: v });
+          applyFaTuning(s);        // 後端回夾緊後的值 + 最新可用記憶體
+        } catch (err) { logLine("✕ " + (err.message || err)); }
+      });
+    });
+  if (window.I18N && I18N.onAfterLang) I18N.onAfterLang(refreshFaTuneLabels);
+
   $("#set-ckpt-days") && $("#set-ckpt-days").addEventListener("change", async e => {
     let v = parseInt(e.target.value, 10);
     if (!isFinite(v) || v < 0) v = 0;

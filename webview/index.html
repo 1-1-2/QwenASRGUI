@@ -666,6 +666,66 @@
           <div class="hint" id="auto-release-why" hidden></div>
         </div>
 
+        <!-- 對齊管線三個旋鈕：換一台機器表現就差很多，寫死等於逼使用者改原始碼。
+             每個值都掛實測依據（感嘆號 hover + 底部可展開表格），讓使用者自己
+             算要填多少。記憶體占用主要由模型權重決定，調窗口不會讓它變小 ——
+             這一點在提示裡寫清楚，否則使用者會以為調小窗口能省記憶體。 -->
+        <div class="card" style="margin-top:14px">
+          <div class="card-head">
+            <span class="card-title" data-i18n="set.faTitle">對齊與記憶體</span>
+            <span class="inline-state" id="fa-mem-state"></span>
+          </div>
+          <div class="row">
+            <div class="label">
+              <div class="t"><span data-i18n="set.faGate">記憶體門控</span><button class="hi-info wide" type="button" data-i18n-tip="set.faGateTip">i</button></div>
+              <div class="d" data-i18n="set.faGateDesc">可用記憶體達到這個值才拉起對齊；不到就等下一拍，不排隊也不降級。</div>
+            </div>
+            <div class="with-browse">
+              <input class="input" id="set-fa-gate" type="number" min="1" max="32" step="0.5" style="width:78px">
+              <span class="inline-state" data-i18n="set.faGateUnit">GB</span>
+            </div>
+          </div>
+          <div class="hint hint-warn" id="fa-gate-why" hidden></div>
+          <div class="row">
+            <div class="label">
+              <div class="t"><span data-i18n="set.faWindow">攢批窗口</span><button class="hi-info wide" type="button" data-i18n-tip="set.faWindowTip">i</button></div>
+              <div class="d" data-i18n="set.faWindowDesc">攢多少秒音訊再叫一次對齊。窗口越短，詞級時間軸出得越早，但對齊總耗時越高。</div>
+            </div>
+            <div class="with-browse">
+              <input class="input" id="set-fa-window" type="number" min="10" max="40" step="1" style="width:78px">
+              <span class="inline-state" data-i18n="set.faSecUnit">秒</span>
+            </div>
+          </div>
+          <div class="row is-last">
+            <div class="label">
+              <div class="t"><span data-i18n="set.faDrain">收尾等待上限</span><button class="hi-info wide" type="button" data-i18n-tip="set.faDrainTip">i</button></div>
+              <div class="d" data-i18n="set.faDrainDesc">辨識跑完後，等對齊把積壓補完的最長時間。超過就放棄剩餘窗口（字幕仍完整，只是沒有詞級時間軸）。</div>
+            </div>
+            <div class="with-browse">
+              <input class="input" id="set-fa-drain" type="number" min="30" max="900" step="30" style="width:78px">
+              <span class="inline-state" data-i18n="set.faSecUnit">秒</span>
+            </div>
+          </div>
+          <details class="fa-basis">
+            <summary data-i18n="set.faBasis">實測依據</summary>
+            <div class="fa-basis-t" data-i18n="set.faBasisWin">單窗對齊耗時（60 秒音檔、185 詞，2026-11-12 實測）</div>
+            <table class="fa-basis-tbl">
+              <thead><tr>
+                <th data-i18n="set.faBasisColWin">窗口</th>
+                <th data-i18n="set.faBasisColT">耗時</th>
+                <th data-i18n="set.faBasisColU">單位成本</th>
+              </tr></thead>
+              <tbody>
+                <tr><td>10 s</td><td>1.68 s</td><td>0.168</td></tr>
+                <tr><td>20 s</td><td>2.54 s</td><td>0.127</td></tr>
+                <tr class="is-best"><td>30 s</td><td>3.47 s</td><td>0.116</td></tr>
+                <tr><td>60 s</td><td>8.28 s</td><td>0.138</td></tr>
+              </tbody>
+            </table>
+            <div class="fa-basis-note" data-i18n="set.faBasisNote">單位成本＝耗時÷窗口，越低越划算。30 秒最省，但字幕延遲也最長；想早點看到詞級結果就往下調。記憶體占用主要由模型權重決定，調窗口不會讓它變小。</div>
+          </details>
+        </div>
+
         <!-- 暫存清理：正常路徑（請求結束即刪）之外的三種漏網情況，
              都在這裡補。啟動時也會自動掃一次。 -->
         <div class="card" style="margin-top:14px">

@@ -1217,6 +1217,58 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .hi-info:hover::after, .hi-info:focus-visible::after { opacity: 1; visibility: visible; }
 /* 觸屏沒有 hover：點一下切換（由 JS 加 .tip-on） */
 .hi-info.tip-on::after { opacity: 1; visibility: visible; }
+/* 寬版：對齊旋鈕的說明含實測數據，需要換行與更寬的氣泡。
+   pre-line 讓 i18n 字串裡的 \n 真的換行，否則整段會擠成一行。 */
+.hi-info.wide::after {
+  max-width: 420px; white-space: pre-line; line-height: 1.6;
+}
+/* 「目前可用 3.8 GB」貼齊卡片右緣，與下面三個輸入框的右邊界對齊。 */
+#fa-mem-state { margin-left: auto; }
+/* 設定頁的即時警告（門控閾值低於建議值）。只提示不攔 —— 使用者的機器
+   可能真的特殊，硬改他填的值比讓他看到風險更糟。 */
+.hint-warn {
+  font-size: 12px; line-height: 1.55; margin: -4px 2px 10px;
+  color: var(--warn-fg);
+}
+.hint-warn[hidden] { display: none; }
+/* 「目前可用 3.8 GB」低於門控閾值時：對齊現在開不起來，直接標警示色。 */
+.inline-state.is-low { color: var(--warn-fg); }
+/* 實測依據：預設收起，展開後是一張緊湊的三欄表。 */
+.fa-basis { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.fa-basis > summary {
+  font-size: 12px; color: var(--muted); cursor: pointer;
+  list-style: none; user-select: none;
+}
+.fa-basis > summary::-webkit-details-marker { display: none; }
+.fa-basis > summary::before {
+  content: "▸"; display: inline-block; margin-right: 6px;
+  transition: transform .15s; font-size: 10px;
+}
+.fa-basis[open] > summary::before { transform: rotate(90deg); }
+.fa-basis > summary:hover { color: var(--ink-2); }
+.fa-basis-t { font-size: 11.5px; color: var(--faint); margin: 8px 0 6px; }
+.fa-basis-tbl {
+  width: 100%; max-width: 340px; border-collapse: collapse;
+  font-size: 11.5px; color: var(--ink-2);
+}
+.fa-basis-tbl th {
+  text-align: right; font-weight: 500; color: var(--faint);
+  padding: 3px 8px; border-bottom: 1px solid var(--line);
+}
+.fa-basis-tbl th:first-child, .fa-basis-tbl td:first-child { text-align: left; }
+.fa-basis-tbl td {
+  text-align: right; padding: 3px 8px; border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+.fa-basis-tbl tr:last-child td { border-bottom: 0; }
+.fa-basis-tbl tr.is-best td { color: var(--ink); font-weight: 600; }
+.fa-basis-tbl tr.is-best td:first-child::after {
+  content: "★"; margin-left: 5px; color: var(--accent, #2f7d5d);
+}
+.fa-basis-note {
+  font-size: 11.5px; color: var(--faint); line-height: 1.6;
+  margin-top: 8px; max-width: 520px;
+}
 
 /* 備用後端：預設折成一行，不佔版面也不計入摘要 */
 .hc-inactive {
