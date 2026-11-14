@@ -1489,12 +1489,61 @@ class WebBackend:
                                 except OSError:
                                     pass
 
+                def _fa_align_raw(chunk, text, lang):
+                    """攒批用：整窗 PCM → 字级时间（相对整窗起点）。
+
+                    与 ``_fa_lines`` 走同一个 ``_align_chunk``，区别是不在这
+                    里断行 —— 整窗的词先按时间切回各段，再由 fa_batch 逐段
+                    断行。FA 的固定开销（起进程 + 载入 2.9 GB 权重）因此被
+                    摊到整个窗口上。
+                    """
+                    import os as _os2
+                    import tempfile
+                    import soundfile as _sf2
+
+                    path = None
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                                suffix=".wav", delete=False) as tf:
+                            path = tf.name
+                        _sf2.write(path, chunk, 16000, subtype="PCM_16")
+                        return self.engine._align_chunk(path, text, lang) or []
+                    finally:
+                        if path:
+                            try:
+                                _os2.unlink(path)
+                            except OSError:
+                                pass
+
                 # 「嘗試並行」是全鏈路唯一的並行開關：
                 #   識別頁＝FA 與 ASR 流水線重疊（本段）；
                 #   批次頁＝補齊任務與識別任務的調度順序（batch_queue）。
                 # 關掉就是逐段串行，行為與舊版一致。
+                # 攒批（默认开，``faBatch=0`` 一键回到逐段路径）：
+                # 逐段一次 FA 时，每次都要重起 chatllm 子进程并载入 2.9 GB
+                # 权重（实测固定开销 ≈0.9s）；窗口攒到 25 秒再跑一次，这笔
+                # 开销就被摊掉了。窗口满了才派发到后台，ASR 不等它。
+                _fa_batch = None
+                _batch_off = str(opts.get("faBatch", "1")).lower() in (
+                    "0", "false", "off", "no")
+                if (_fa_lines is not None and opts.get("alignParallel")
+                        and not _batch_off):
+                    import sysmem
+                    _mem_ok, _avail = sysmem.can_run_parallel_with_asr()
+                    if not _mem_ok:
+                        self._emit("status", {"message":
+                            "内存不足，词级对齐改为逐段串行（攒批未启用）"})
+                    else:
+                        from fa_batch import FaBatch
+                        try:
+                            _fa_batch = FaBatch(_fa_align_raw,
+                                                language=(_lang or "Chinese"))
+                        except Exception:
+                            _fa_batch = None
+
                 _fa_pipe = None
-                if _fa_lines is not None and opts.get("alignParallel"):
+                if (_fa_batch is None and _fa_lines is not None
+                        and opts.get("alignParallel")):
                     from fa_pipeline import open_pipeline
                     _fa_pipe, _why = open_pipeline(_fa_lines)
                     if _fa_pipe is None:
@@ -1622,9 +1671,13 @@ class WebBackend:
                     # 独立的 /api/export-handout，不依赖这一步。
                     refine_punct=False,
                     # FA 行生成（None = 用旧的比例分配路径，行为逐字节不变）
-                    fa_lines=_fa_lines,
+                    # 攒批模式下由 fa_batch 负责，逐段回调必须置空，否则
+                    # 两条路径会各跑一次 FA。
+                    fa_lines=(None if _fa_batch is not None else _fa_lines),
                     # 非 None 时同一个回调改在后台跑，与下一段 ASR 重叠
                     fa_pipeline=_fa_pipe,
+                    # 攒批：多段合并成一次 FA，窗口满了才派发到后台
+                    fa_batch=_fa_batch,
                 )
                 try:
                     result = runner.run(
@@ -1636,6 +1689,23 @@ class WebBackend:
                     # close() 不等待，避免“停止”按钮被卡住。
                     if _fa_pipe is not None:
                         _fa_pipe.close()
+
+                # 攒批效果记账：窗口数明显少于段数才算真的攒起来了，
+                # 否则说明被断点/组边界切碎，调窗口只会白忙。写进运行日志，
+                # 用户反馈“还是慢”时能直接看这一行。
+                if _fa_batch is not None:
+                    try:
+                        _bst = _fa_batch.stats()
+                        self.run_log.add(
+                            _t.plain(f"词级攒批：{_bst['windows']} 次 FA"
+                                     f"（{_bst['failures']} 次降级）· "
+                                     f"窗口 {_bst['windowSec']:.1f}s · "
+                                     f"FA 累计 {_bst['faSec']:.1f}s / "
+                                     f"音频 {_bst['audioSec']:.0f}s · "
+                                     f"{result.get('segments', 0)} 条字幕"),
+                            level="info", source="fa")
+                    except Exception:
+                        pass
 
                 def _discard_if_one_shot():
                     """試跑用完即清：每次都只跑前 5 分鐘，斷點永遠不會被續用。

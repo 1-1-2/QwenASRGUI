@@ -115,6 +115,8 @@ CHAIN = [
     "fa_pipeline", "vad_groups", "sysmem", "align_backfill",
     # 2026-11：超長段切分（能量低谷）从两个引擎抽出的公共实现。
     "chunk_split",
+    # 2026-11：自適應窗口的 FA 攢批隊列（詞級對齊與 ASR 真正並行的關鍵）。
+    "fa_batch",
 ]
 
 

@@ -24,6 +24,7 @@ ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
 from batch_queue import BatchQueue          # noqa: E402
+from fa_batch import FaBatch                # noqa: E402
 from fa_pipeline import FaPipeline          # noqa: E402
 from longform_runner import ArrayPcmStream, LongformRunner, SR  # noqa: E402
 import sysmem                               # noqa: E402
@@ -236,11 +237,92 @@ def test_scheduler(r: Result):
         _finish(q, be, saved)
 
 
+# ─────────────────── 4. FaBatch 接线（攒批窗口不改变结果）───────────────────
+
+def _align_raw(audio, ref, lang):
+    """一字一词、均匀铺满；模拟 FA 的返回契约（相对窗口起点）。"""
+    if not ref:
+        return []
+    step = (len(audio) / SR) / len(ref)
+    return [(c, i * step, (i + 1) * step) for i, c in enumerate(ref)]
+
+
+def _run_batch(tmp: Path, task: str, pcm: np.ndarray, window: float) -> str:
+    fb = FaBatch(_align_raw, initial_window=window,
+                 min_window=window, max_window=window)
+    runner = LongformRunner(
+        out_srt=tmp / f"{task}.srt", work_dir=tmp / f"w_{task}",
+        task_id=task, max_chunk_secs=30, engine=_Engine(), vad_sess=_VAD(),
+        fa_batch=fb)
+    runner.run(tmp / "a.wav", pcm_source=ArrayPcmStream(pcm),
+               total_sec=len(pcm) / SR)
+    return (tmp / f"{task}.srt").read_text(encoding="utf-8")
+
+
+def test_fa_batch(r: Result):
+    print("\n[4] FaBatch 接线：窗口大小不改变 SRT")
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        sys.path.insert(0, str(HERE))
+        from make_fixture import build as make_pcm
+        pcm, _rounds = make_pcm(0.4)
+        with wave.open(str(tmp / "a.wav"), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
+            w.writeframes(pcm.tobytes())
+
+        one = _run_batch(tmp, "one", pcm, 5.0)      # 两段一窗
+        many = _run_batch(tmp, "many", pcm, 90.0)   # 全部挤一窗
+        r.check("两种窗口都产出了字幕", bool(one.strip()) and bool(many.strip()),
+                f"{len(one)} / {len(many)} 字节")
+
+        def _rows(txt):
+            out = []
+            for row in txt.split("\n\n"):
+                parts = row.strip().split("\n")
+                if len(parts) >= 3:
+                    out.append((_ts(parts[1].split(" --> ")[0]),
+                                parts[2], _ts(parts[1].split(" --> ")[1])))
+            return out
+
+        a, b = _rows(one), _rows(many)
+        r.check("行数一致", len(a) == len(b), f"{len(a)} / {len(b)}")
+        r.check("行文本逐条一致", [x[1] for x in a] == [x[1] for x in b],
+                "" if [x[1] for x in a] == [x[1] for x in b] else "文本有差异")
+        # 不断言逐字节相同：合成「对齐器」把词在整窗里均匀铺开，跨窗边界
+        # 的词会被分到相邻段，时间自然差一窗。真实 FA 按声学定位，阶段 2 的
+        # 60 秒主动对拍里词时间中位偏差 0.00s、最大 0.32s。
+        r.check("两条覆盖到同一结尾",
+                abs(a[-1][2] - b[-1][2]) < 1.0 if a and b else False,
+                f"{a[-1][2]:.2f} vs {b[-1][2]:.2f}" if a and b else "空")
+
+        # 时间轴单调、无零长条目 —— 攒批跨段拼接最容易在这里出错。
+        rows = [ln for ln in one.split("\n\n") if ln.strip()]
+        ok_mono, prev = True, -1.0
+        for row in rows:
+            parts = row.strip().split("\n")
+            if len(parts) < 3:
+                continue
+            a, b = parts[1].split(" --> ")
+            t0 = _ts(a); t1 = _ts(b)
+            if t0 < prev - 1e-6 or t1 <= t0:
+                ok_mono = False
+                break
+            prev = t1
+        r.check("时间轴单调且无零长条目", ok_mono, f"{len(rows)} 条")
+
+
+def _ts(x: str) -> float:
+    h, m, rest = x.split(":")
+    s, ms = rest.split(",")
+    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+
+
 def main() -> int:
     r = Result()
     test_pipeline(r)
     test_equivalence(r)
     test_scheduler(r)
+    test_fa_batch(r)
     print(f"\nResult: {sum(r.items)}/{len(r.items)} passed")
     return 0 if r.ok else 1
 
