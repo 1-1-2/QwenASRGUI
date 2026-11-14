@@ -84,7 +84,9 @@
       host.innerHTML = bundles.map(b => {
         const rt = b.runtimeReady;
         const missN = b.total_count - b.present_count;
-        const badge = (rt === true || (rt == null && b.complete))
+        // 完成判定只算一次，徽章与整行淡绿共用 —— 两处各判一次迟早会不一致。
+        const isDone = (rt === true || (rt == null && b.complete));
+        const badge = isDone
           ? `<span class="chip" style="color:var(--ok,#1a7f45)">${T("dl.badgeComplete", "完整")}</span>`
           : (rt === false || b.complete === false)
             ? `<span class="chip chip-muted">${T("dl.badgeMissing", null,
@@ -107,12 +109,12 @@
                : (f.sha256_ok === false ? T("dl.shaBad", null) : T("dl.shaUnverified", null)))
             : T("dl.shaUnknown", null);
           const state = f.present ? "" : ("✗ " + esc(f.problem || T("dl.missing", "缺失")));
-          return `<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:12px;font-family:var(--font-mono)">
-            <span style="width:14px;color:${f.present ? "var(--ok,#1a7f45)" : "var(--warn,#b26a00)"}">${f.present ? "✓" : "✗"}</span>
-            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</span>
-            <span style="color:var(--ink-2)">${size}</span>
-            <span style="color:var(--ink-2);min-width:96px;text-align:right">${sha}</span>
-            <span style="color:var(--ink-2);min-width:150px;text-align:right">${state}</span>
+          return `<div class="dl-file-line">
+            <span class="dl-f-mark${f.present ? " is-ok" : " is-miss"}">${f.present ? "✓" : "✗"}</span>
+            <span class="dl-f-name">${esc(f.name)}</span>
+            <span class="dl-f-meta">${size}</span>
+            <span class="dl-f-meta dl-f-sha">${sha}</span>
+            <span class="dl-f-meta dl-f-state">${state}</span>
           </div>`;
         }).join("");
         // 缺失時直接說「還差幾個、怎麼補」，取代原本的「同自檢判斷」標籤。
@@ -120,9 +122,9 @@
           ? `<div class="hint" style="margin:6px 0 0">${T("dl.needFiles", null,
               { n: missN, size: b.size_hint ? hint(b.size_hint) : "" })}</div>`
           : "";
-        return `<details class="dl-group"${rt === false ? " open" : ""}>
+        return `<details class="dl-group${isDone ? " is-complete" : ""}">
           <summary>
-            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(window.I18N ? I18N.L(b.label) : b.label)}</span>
+            <span class="dl-g-label">${esc(window.I18N ? I18N.L(b.label) : b.label)}</span>
             ${approx}${badge}<span class="chev" aria-hidden="true">›</span>
           </summary>
           ${rtNote}
@@ -213,7 +215,7 @@
     const el = $("#model-status");
     el.classList.toggle("loading", !s.modelReady);
     $(".t", el).textContent = s.modelReady ? T("status.ready", "模型已就緒")
-      : (s.loading ? T("status.loading", "載入模型中…") : T("status.needModel", "就绪 · 模型未载入内存"));
+      : (s.loading ? T("status.loading", "載入模型中…") : T("status.needModel", "就绪 · 模型未载入内存（已释放）"));
     // 三条管线：只有跑任务时才显示，静默时整块隐藏（侧栏太窄，别常驻噪音）。
     const pipes = s.pipelines || null;
     const pl = $("#pipe-list");
@@ -685,8 +687,10 @@
   const batchLiveList = $("#batch-live-list");
   const batchLiveName = $("#batch-live-name");
   let batchLiveFollow = true;
+  let batchLiveHideTimer = 0;
   function batchLiveReset(name) {
     if (!batchLiveList) return;
+    clearTimeout(batchLiveHideTimer);       // 上一輪的延時隱藏要作廢
     batchLiveList.innerHTML = "";
     batchLiveFollow = true;
     if (batchLiveName) batchLiveName.textContent = name || "";
@@ -694,8 +698,14 @@
   }
   function batchLiveHide() {
     if (!batchLivePanel) return;
-    batchLivePanel.hidden = true;
-    if (batchLiveList) batchLiveList.innerHTML = "";
+    // 規格 D14：結束後保留最後一次內容 3 秒再隱藏 —— 使用者常在這時
+    // 才看到最後幾行，立刻清空等於白跑。切換檔案時由 reset 立即清。
+    clearTimeout(batchLiveHideTimer);
+    batchLiveHideTimer = setTimeout(() => {
+      if (!batchLivePanel) return;
+      batchLivePanel.hidden = true;
+      if (batchLiveList) batchLiveList.innerHTML = "";
+    }, 3000);
   }
   function appendBatchLive(segs) {
     if (!batchLiveList) return;
@@ -1256,6 +1266,7 @@
     const level = entry && entry.level;
     if (level === "error") d.classList.add("lv-error");
     else if (level === "warn") d.classList.add("lv-warn");
+    else if (level === "debug") d.classList.add("lv-debug");
     const msg = String(entry && entry.message != null ? entry.message : entry)
       .replace(/\r\n|\r|\n/g, " · ")
       .replace(/[ \t]{2,}/g, " ")
@@ -1284,6 +1295,20 @@
                    message: msg });
   }
   API.on("log", entry => { if (entry) appendLogRow(entry); });
+  // 級別過濾：debug（門控心跳等）預設隱藏。用 CSS 隱藏而不是不渲染，
+  // 這樣切換時歷史條目立刻回來，不必重抓。
+  let _logShowDebug = false;
+  function applyLogFilter() {
+    const el = $("#file-log");
+    if (el) el.classList.toggle("hide-debug", !_logShowDebug);
+    const b = $("#btn-log-debug");
+    if (b) b.setAttribute("aria-pressed", String(_logShowDebug));
+  }
+  $("#btn-log-debug") && $("#btn-log-debug").addEventListener("click", () => {
+    _logShowDebug = !_logShowDebug;
+    applyLogFilter();
+  });
+  applyLogFilter();
   $("#btn-log-toggle") && $("#btn-log-toggle").addEventListener("click", () => {
     const el = $("#file-log"); if (!el) return;
     logExpanded = !logExpanded; el.hidden = !logExpanded;
@@ -2325,16 +2350,9 @@
       st.textContent = ready ? T("model.loaded", "已載入") : T("model.notLoaded", "未載入");
       st.style.color = ready ? "var(--ok,#1a7f45)" : "var(--muted)";
     }
-    // 自動釋放已移到設定頁（全域偏好）；這裡只做「目前實際行為」的唯讀展示。
-    // abs 值是後端算好的生效值，不是 settings 的原始勾選狀態。
-    const ar = $("#auto-release-state");
-    if (ar) {
-      const eff = !!(s && s.autoReleaseModel);
-      ar.textContent = eff
-        ? T("model.autoReleaseOn", "轉檔後自動釋放：開")
-        : T("model.autoReleaseOff", "轉檔後自動釋放：關（此核心常駐）");
-      ar.title = T("model.autoReleaseWhere", "可在「設定 → 效能與記憶體」修改");
-    }
+    // 自動釋放開關與「釋放模型記憶體」按鈕都已移到設定頁那一行，
+    // 模型頁不再顯示唯讀的「轉檔後自動釋放：開／關」——它本來只是指路牌，
+    // 按鈕搬過去之後這句話沒有資訊量了。
   }
 
   async function renderModel() {

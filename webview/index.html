@@ -285,6 +285,12 @@
               <span id="log-count" style="font-size:11px;color:var(--muted)"></span>
             </button>
             <div class="sp" style="flex:1"></div>
+            <!-- 級別過濾：門控心跳是 debug，正常使用時只會刷屏。
+                 預設隱藏，需要排查時再打開；DOM 保留，切換即時生效。 -->
+            <button class="btn btn-ghost btn-sm" id="btn-log-debug"
+                    aria-pressed="false" data-i18n-title="log.debugHint">
+              <span data-i18n="log.debug">顯示除錯</span>
+            </button>
             <button class="btn btn-ghost btn-sm" id="btn-log-clear"><span data-i18n="log.clear">清除</span></button>
           </div>
           <div class="log" id="file-log" hidden></div>
@@ -558,23 +564,17 @@
 
           <!-- 進階模式：核心 + 模型下拉 -->
           <div id="advanced-pane" hidden>
-            <div class="sec-title" data-i18n="model.core">推理核心</div>
             <div class="radio-cards" id="core-cards"></div>
             <div class="model-pick" style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
               <span style="font-size:13px;color:var(--ink-2);min-width:36px" data-i18n="model.model">模型</span>
               <select class="select" id="model-select" style="min-width:250px"></select>
               <span class="chip chip-muted" id="model-arch"></span>
+              <button class="btn btn-primary" id="btn-model-load" data-i18n="model.load">下載並載入模型</button>
             </div>
             <div id="model-note" class="banner banner-warn" hidden style="margin-top:10px"></div>
           </div>
 
           <div id="model-msg"></div>
-
-          <div class="model-load-row">
-            <button class="btn btn-primary" id="btn-model-load" data-i18n="model.load">下載並載入模型</button>
-            <button class="btn btn-ghost" id="btn-model-release" data-i18n="model.releaseBtn">釋放模型記憶體</button>
-            <span class="inline-state" id="auto-release-state"></span>
-          </div>
 
           <div class="progress" id="model-progress" hidden style="margin-top:10px">
             <div class="meta"><span class="s" id="model-prog-status" data-i18n="common.preparing">準備中…</span><span class="p" id="model-prog-pct">0%</span></div>
@@ -619,10 +619,11 @@
           <div class="hint" data-i18n="dl.importDirHint" style="margin-bottom:8px">用途：從別台電腦／瀏覽器手動下載好模型檔後，把「裝著這些檔案的資料夾」貼進來，按「匯入並驗證」即會核對大小與 SHA256 並複製到正確位置；不會重新下載。</div>
           <div id="catalog-msg" style="font-size:13px;margin-bottom:8px"></div>
           <div id="catalog-list"></div>
-          <details class="catalog-note" id="catalog-note-fold">
-            <summary data-i18n="dl.noteTitle">關於檔案大小與校驗</summary>
+          <!-- 校驗說明常顯，不折疊：約兩行灰字，撐不高卡片；
+               藏起來反而讓使用者以為「未知」是程式算不出來。 -->
+          <div class="catalog-note-static">
             <div class="hint" data-i18n="dl.honesty">檔案大小與 SHA256 若顯示「未知」，代表尚未對遠端檔案實測驗證，不會用估計值冒充。括號中的約略值僅供參考，不用於進度計算。</div>
-          </details>
+          </div>
         </div>
       </section>
 
@@ -663,6 +664,9 @@
               <div class="d" data-i18n="set.autoReleaseDesc">每次轉檔結束後釋放模型記憶體，下次轉檔會重新載入（約需數秒）。GPU 核心常駐，不適用。</div>
             </div>
             <label class="switch"><input type="checkbox" id="sw-auto-release" checked><span class="track"></span></label>
+            <!-- 釋放按鈕與這個開關是一組操作（手動釋放 / 自動釋放），所以放同一行。
+                 元素只是搬位置，id 不變，app.js 的綁定與禁用態邏輯原樣生效。 -->
+            <button class="btn btn-ghost btn-sm" id="btn-model-release" data-i18n="model.releaseBtn">釋放模型記憶體</button>
           </div>
           <div class="hint" id="auto-release-why" hidden></div>
         </div>
