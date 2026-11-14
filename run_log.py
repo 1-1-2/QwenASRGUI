@@ -31,13 +31,27 @@ class RunLog:
 
     LEVELS = {"debug", "info", "warn", "error"}
 
-    def __init__(self, maxlen: int = 300, on_event=None):
+    # 3 小时任务 + 门控日志约 300~400 条，再加任务边界/异常，300 会挤掉
+    # 「任务开始」那条 —— 事后回溯时最需要的恰恰是它。
+    DEFAULT_MAXLEN = 2000
+
+    def __init__(self, maxlen: int = DEFAULT_MAXLEN, on_event=None):
         self._buf: deque[dict] = deque(maxlen=maxlen)
         self._lock = threading.Lock()
         self._on_event = on_event
         self._seq = 0
+        # 门控去重：只在状态翻转时记录，同状态最多每 60 秒一条心跳。
+        self._gate_state: str | None = None
+        self._gate_ts = 0.0
+        self._gate_reason: str | None = None
 
-    def add(self, message, level: str = "info", source: str = "backend") -> dict:
+    def add(self, message, level: str = "info", source: str = "backend",
+            event: str | None = None, **fields) -> dict:
+        """Append one entry.
+
+        ``event`` / ``fields`` 是新增的结构化字段；不传时行为与旧的自由
+        文本完全一致（前向兼容），旧调用方一行都不用改。
+        """
         message = str(message).strip()
         if not message:
             return {}
@@ -47,6 +61,11 @@ class RunLog:
             self._seq += 1
             entry = {"seq": self._seq, "ts": _now(), "level": level,
                      "source": source, "message": message[:1000]}
+            if event:
+                entry["event"] = event
+                if fields:
+                    entry["fields"] = {k: v for k, v in fields.items()
+                                       if v is not None}
             self._buf.append(entry)
         if self._on_event:
             try:
@@ -54,6 +73,32 @@ class RunLog:
             except Exception:
                 pass
         return entry
+
+    def gate(self, action: str, avail_gb: float, threshold_gb: float,
+             reason: str = "", heartbeat_sec: float = 60.0) -> dict | None:
+        """记录一次内存门控判定，**只在状态翻转时真正落一条**。
+
+        500ms 检查一次、每次都打会把缓冲刷满，也会把真正有用的事件挤掉。
+        返回写出的 entry；被去重时返回 None。
+        """
+        import time as _time
+        now = _time.monotonic()
+        with self._lock:
+            flipped = action != self._gate_state
+            stale = (now - self._gate_ts) >= heartbeat_sec
+            if not flipped and not stale:
+                self._gate_reason = reason or self._gate_reason
+                return None
+            self._gate_state = action
+            self._gate_ts = now
+        level = "info" if flipped else "debug"
+        return self.add(
+            f"内存门控 {action}（可用 {avail_gb:.1f} GB / 阈值 "
+            f"{threshold_gb:.1f} GB{('，原因 ' + reason) if reason else ''}）",
+            level=level, source="fa", event="gate.change",
+            action=action, availGb=round(float(avail_gb), 2),
+            thresholdGb=round(float(threshold_gb), 2),
+            reason=reason or None)
 
     def snapshot(self, limit: int | None = None) -> dict:
         with self._lock:

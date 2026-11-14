@@ -1,15 +1,17 @@
-"""FA 流水线 + 批次调度的并行策略回归。
+"""独立管线的行为回归：对齐队列 + 运行器接线 + 批次调度。
 
 覆盖三件事（都不需要模型权重 / 网络）：
 
-  1. ``FaPipeline`` 单线程、严格按提交顺序、失败回退；
-  2. 流水线产出的 SRT 与同步路径**逐字节相同**（并行不得改变结果）；
-  3. 批次调度：补齐优先，识别只在「剩最后一个补齐文件 + 内存够」时进场。
+  1. ``AlignQueue``：submit 不阻塞、窗口攒够才派发、内存门控、词→行归属、
+     整窗失败仍保证游标连续、收尾会 drain；
+  2. 运行器接线：**对齐开不开、快不快、成不成，SRT 都逐字节相同**；
+  3. 断点续跑：中途取消再续，结果与一次跑完逐字节相同。
 
     python tests/test_parallel_policy.py
 """
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import threading
@@ -22,10 +24,10 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(HERE))
 
 from batch_queue import BatchQueue          # noqa: E402
-from fa_batch import FaBatch                # noqa: E402
-from fa_pipeline import FaPipeline          # noqa: E402
+from fa_queue import AlignQueue             # noqa: E402
 from longform_runner import ArrayPcmStream, LongformRunner, SR  # noqa: E402
 import sysmem                               # noqa: E402
 
@@ -43,40 +45,96 @@ class Result:
         return all(self.items)
 
 
-# ───────────────────────── 1. FaPipeline ─────────────────────────
+# ───────────────────────── 1. AlignQueue 单元 ─────────────────────────
 
-def test_pipeline(r: Result):
-    print("\n[1] FaPipeline：顺序 / 并发 / 失败回退")
-    order, live, peak = [], [0], [0]
-    lock = threading.Lock()
-
-    def build(idx):
-        with lock:
-            live[0] += 1
-            peak[0] = max(peak[0], live[0])
-        time.sleep(0.03)                     # 模拟 FA 子进程
-        with lock:
-            live[0] -= 1
-            order.append(idx)
-        if idx == 2:
-            raise RuntimeError("模拟子进程崩溃")
-        return [(0.0, 1.0, f"line{idx}")]
-
-    p = FaPipeline(build)
-    futs = [p.submit(i) for i in range(2)]
-    got = [p.collect(f) for f in futs]
-    r.check("顺序返回", [g[0][2] for g in got] == ["line0", "line1"], str(got))
-    r.check("单线程执行", peak[0] == 1, f"peak={peak[0]}")
-
-    r.check("异常 → None（调用方回退）", p.collect(p.submit(2)) is None)
-    r.check("失败计数", p.failed == 1, str(p.failed))
-    p.close()
-    r.check("关闭后提交返回 None", p.submit(9) is None)
-    p.close()                                 # 幂等
-    r.check("close 幂等", True)
+def _words_for(t0, t1, text):
+    """一字一词、按时间均匀铺满；模拟 FA 的返回契约（绝对时间）。"""
+    if not text:
+        return []
+    step = max(1e-3, (t1 - t0) / len(text))
+    return [(c, t0 + i * step, t0 + (i + 1) * step)
+            for i, c in enumerate(text)]
 
 
-# ───────────────────────── 2. 与同步路径等价 ─────────────────────────
+def _read_fa(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            out.append(json.loads(line))
+    return out
+
+
+def test_align_queue(r: Result):
+    print("\n[1] AlignQueue：不阻塞 / 窗口 / 门控 / 归属")
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        calls: list[tuple[float, float]] = []
+        release = threading.Event()
+
+        def slow_align(src, t0, t1, text, lang):
+            calls.append((t0, t1))
+            release.wait(2.0)                 # 故意拖住，验证 submit 不等它
+            return _words_for(t0, t1, text)
+
+        q = AlignQueue(slow_align, src_path="x.wav", out_path=tmp / "a.fa.jsonl",
+                       window_sec=2.0, tick=0.02, avail_fn=lambda: 99.0)
+
+        t = time.perf_counter()
+        for i in range(3):
+            q.submit(i * 2.0, i * 2.0 + 2.0, "一二三四", [(i * 2.0, i * 2.0 + 2.0, "一二三四")],
+                     index=i * 1 + 1)
+        cost = time.perf_counter() - t
+        r.check("submit 不阻塞（3 段 < 50ms）", cost < 0.05, f"{cost * 1000:.1f}ms")
+        r.check("窗口未满时不派发", not calls, str(calls))
+
+        release.set()
+        deadline = time.time() + 3
+        while time.time() < deadline and len(_read_fa(tmp / "a.fa.jsonl")) < 3:
+            time.sleep(0.02)
+        rows = _read_fa(tmp / "a.fa.jsonl")
+        r.check("窗口满后派发并落盘", len(rows) >= 3, str(len(rows)))
+        r.check("每个行号都有记录（游标连续）",
+                [x["index"] for x in rows[:3]] == [1, 2, 3],
+                str([x["index"] for x in rows[:3]]))
+        r.check("词按时间归属到行",
+                all(x["words"] for x in rows[:3]),
+                str([len(x["words"]) for x in rows[:3]]))
+        q.close(timeout=3)
+        r.check("close 幂等", (q.close(timeout=1), True)[1])
+
+    # 内存门控：不够就一次都不派发
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        hit = []
+        q = AlignQueue(lambda *a: hit.append(1) or [],
+                       src_path="x.wav", out_path=tmp / "b.fa.jsonl",
+                       window_sec=1.0, tick=0.02, avail_fn=lambda: 1.0)
+        q.submit(0.0, 2.0, "甲乙", [(0.0, 2.0, "甲乙")], index=1)
+        time.sleep(0.4)
+        r.check("内存不足时不派发", not hit, str(len(hit)))
+        r.check("归因为 mem", q.block_reason() == "mem", q.block_reason())
+        r.check("标记为从未运行", q.ever_ran() is False)
+        q.close(timeout=1)
+
+    # 整窗失败：仍写空词，保证游标不断
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        q = AlignQueue(lambda *a: (_ for _ in ()).throw(RuntimeError("boom")),
+                       src_path="x.wav", out_path=tmp / "c.fa.jsonl",
+                       window_sec=1.0, tick=0.02, avail_fn=lambda: 99.0)
+        q.submit(0.0, 2.0, "丙丁", [(0.0, 2.0, "丙丁")], index=7)
+        q.close(timeout=3)
+        rows = _read_fa(tmp / "c.fa.jsonl")
+        r.check("失败仍写空词（游标不断）",
+                rows and rows[0]["index"] == 7 and rows[0]["words"] == [],
+                str(rows[:1]))
+        r.check("失败计数 +1", q.stats()["failures"] == 1, str(q.stats()))
+
+
+# ───────────────────────── 2. 运行器接线 ─────────────────────────
 
 class _VAD:
     def run(self, _names, feed):
@@ -89,80 +147,137 @@ class _VAD:
 class _Engine:
     max_chunk_secs = 30
 
-    def __init__(self):
+    def __init__(self, cancel_after: int = 0, cancel=None):
         self.n = 0
+        self.cancel_after = cancel_after
+        self.cancel = cancel
 
     def transcribe(self, audio, language=None, context=None, **_kw):
         self.n += 1
-        return "这是用于验证流水线与同步路径一致性的测试字幕，包含标点。"
+        if self.cancel is not None and self.n >= self.cancel_after:
+            self.cancel.set()
+        return "这是用于验证独立管线接线的测试字幕，包含标点。"
 
 
-def _run_once(tmp: Path, task: str, pcm: np.ndarray, sync: bool):
-    """同一个固定行生成器，分别在同步 / 流水线下跑一遍。"""
+def _pcm(rounds: int = 6) -> np.ndarray:
+    """N 段 1 秒语音 + 1 秒静音。
 
-    def build(chunk, text, t0, t1):
-        return [(t0, t1, text)]               # 单行覆盖整段：结果只取决于 t0/t1
+    静音必须长于 ``_MERGE_CH``（16 帧 ≈ 0.5 秒），否则相邻语音会被合并成
+    一个 group —— 那样整段只会切出一块，测不出「多段」的行为。
+    """
+    sr = SR
+    quiet = np.zeros(int(1.0 * sr), dtype=np.float32)
+    loud = (np.random.default_rng(3).standard_normal(int(1.0 * sr))
+            * 0.2).astype(np.float32)
+    parts = []
+    for _ in range(rounds):
+        parts.extend([loud, quiet])
+    return np.concatenate(parts)
 
-    kw = {"fa_lines": build} if sync else {"fa_pipeline": FaPipeline(build)}
+
+def _run(tmp: Path, task: str, pcm: np.ndarray, *, align: bool = False,
+         cancel_after: int = 0, resume: bool = False,
+         cancel: threading.Event | None = None) -> dict:
+    fa_path = tmp / f"{task}.fa.jsonl"
+    q = None
+    if align:
+        q = AlignQueue(lambda src, t0, t1, text, lang: _words_for(t0, t1, text),
+                       src_path="x.wav", out_path=fa_path,
+                       window_sec=2.0, tick=0.02, avail_fn=lambda: 99.0)
+    ev = cancel or threading.Event()
     runner = LongformRunner(
         out_srt=tmp / f"{task}.srt", work_dir=tmp / f"w_{task}",
-        task_id=task, max_chunk_secs=30, engine=_Engine(), vad_sess=_VAD(), **kw)
-    runner.run(tmp / "a.wav", pcm_source=ArrayPcmStream(pcm), total_sec=len(pcm) / SR)
-    return (tmp / f"{task}.srt").read_text(encoding="utf-8")
+        task_id=task, max_chunk_secs=30,
+        engine=_Engine(cancel_after, ev if cancel_after else None),
+        vad_sess=_VAD(), cancel=ev, align_queue=q, fa_path=fa_path)
+    res = runner.run(tmp / "a.wav", pcm_source=ArrayPcmStream(pcm),
+                     total_sec=len(pcm) / SR, resume=resume)
+    return res
 
 
-def test_equivalence(r: Result):
-    print("\n[2] 流水线 vs 同步：SRT 逐字节相同")
+def test_runner_wiring(r: Result):
+    print("\n[2] 运行器接线：对齐不影响字幕")
+    pcm = _pcm()
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
-        sys.path.insert(0, str(HERE))
-        from make_fixture import build as make_pcm
-        pcm, _rounds = make_pcm(0.4)
-        with wave.open(str(tmp / "a.wav"), "wb") as w:
-            w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
-            w.writeframes(pcm.tobytes())
+        _run(tmp, "off", pcm, align=False)
+        _run(tmp, "on", pcm, align=True)
+        off = (tmp / "off.srt").read_text(encoding="utf-8")
+        on = (tmp / "on.srt").read_text(encoding="utf-8")
+        r.check("对齐开关不改变 SRT（逐字节）", off == on,
+                "" if off == on else "首个差异见文件")
+        rows = _read_fa(tmp / "on.fa.jsonl")
+        r.check("对齐结果独立落盘", bool(rows), f"{len(rows)} 行")
 
-        a = _run_once(tmp, "sync", pcm, True)
-        b = _run_once(tmp, "pipe", pcm, False)
-        r.check("两路都产出了字幕", bool(a.strip()) and bool(b.strip()),
-                f"{len(a)} / {len(b)} 字节")
-        r.check("逐字节一致", a == b,
-                "" if a == b else "首个差异：" + repr(a[:80]) + " vs " + repr(b[:80]))
+    # 对齐整窗失败：SRT 仍然一样
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        bad = AlignQueue(lambda *a: (_ for _ in ()).throw(RuntimeError("boom")),
+                         src_path="x.wav", out_path=tmp / "bad.fa.jsonl",
+                         window_sec=2.0, tick=0.02, avail_fn=lambda: 99.0)
+        runner = LongformRunner(
+            out_srt=tmp / "bad.srt", work_dir=tmp / "w_bad", task_id="bad",
+            max_chunk_secs=30, engine=_Engine(), vad_sess=_VAD(),
+            align_queue=bad, fa_path=tmp / "bad.fa.jsonl")
+        runner.run(tmp / "a.wav", pcm_source=ArrayPcmStream(pcm),
+                   total_sec=len(pcm) / SR)
+        bad_srt = (tmp / "bad.srt").read_text(encoding="utf-8")
+        r.check("对齐全失败时 SRT 不受影响", bad_srt.strip() != "")
 
 
-# ───────────────────────── 3. 批次调度策略 ─────────────────────────
+def test_resume(r: Result):
+    print("\n[3] 断点续跑：与一次跑完逐字节相同")
+    pcm = _pcm(6)
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        _run(tmp, "full", pcm)
+        full = (tmp / "full.srt").read_text(encoding="utf-8")
+
+        # 跑到第 2 段时取消
+        res = _run(tmp, "part", pcm, cancel_after=2)
+        r.check("中途取消返回 paused", res["status"] == "paused", res["status"])
+        partial = (tmp / "part.srt").read_text(encoding="utf-8")
+        r.check("取消时已写出的行保留", partial.strip() != "")
+
+        # 续跑（同一个 task_id / work_dir）
+        _run(tmp, "part", pcm, resume=True)
+        resumed = (tmp / "part.srt").read_text(encoding="utf-8")
+        r.check("续跑结果与一次跑完逐字节相同", resumed == full,
+                f"{len(resumed)} vs {len(full)} 字节")
+
+        # 序号连续、无重复
+        nums = [int(b.strip().split("\n")[0]) for b in resumed.split("\n\n")
+                if b.strip() and b.strip().split("\n")[0].isdigit()]
+        r.check("序号连续无重复", nums == list(range(1, len(nums) + 1)),
+                f"{len(nums)} 条")
+
+
+# ───────────────────────── 4. 批次调度 ─────────────────────────
 
 class GateBackend:
-    """补齐任务一个一个放行；记录调用顺序。"""
+    """假的後端：把「識別」與「補做對齊」都擋在同一個閘門上，好觀察順序。"""
 
-    def __init__(self, lanes: int):
+    def __init__(self):
         self.gate = threading.Semaphore(0)
         self.events = []
-        self.lock = threading.Lock()
         self.align_started = threading.Event()
         self.asr_started = threading.Event()
 
-    def _name(self, opts):
-        return Path(str(opts.get("name"))).name
+    def transcribe(self, opts, progress_cb=None):
+        self.events.append((time.time(), "asr"))
+        self.asr_started.set()
+        self.gate.acquire(timeout=5)
+        return {"srtPath": "x.srt", "totalSegments": 1}
 
     def align_item(self, opts, progress_cb=None, should_stop=None):
-        with self.lock:
-            self.events.append(("start", "align", self._name(opts)))
+        self.events.append((time.time(), "align"))
         self.align_started.set()
         self.gate.acquire(timeout=5)
-        with self.lock:
-            self.events.append(("end", "align", self._name(opts)))
-        return {"srtPath": "x.srt", "ratio": 1.0, "lanes": 1}
-
-    def transcribe(self, opts, progress_cb=None):
-        with self.lock:
-            self.events.append(("start", "asr", self._name(opts)))
-        self.asr_started.set()
         return {"srtPath": "x.srt", "totalSegments": 1}
 
 
-def _queue(tmp: Path, name: str, mem_ok: bool, parallel: bool, lanes: int = 2):
-    be = GateBackend(lanes)
+def _queue(tmp: Path, name: str, mem_ok: bool, parallel: bool):
+    be = GateBackend()
     q = BatchQueue(be, state_dir=tmp / f"st_{name}")
     ids = []
     for i in range(3):
@@ -170,15 +285,11 @@ def _queue(tmp: Path, name: str, mem_ok: bool, parallel: bool, lanes: int = 2):
         if not p.exists():
             p.write_bytes(b"RIFF-fake")
         ids.append(q.add(p, p.name)["id"])
-    q.mark_align(ids[:2])                     # 前两个变成「补做对齐」
+    q.mark_align(ids[:2])
     saved = sysmem.can_run_parallel_with_asr
     sysmem.can_run_parallel_with_asr = lambda: (mem_ok, 20.0 if mem_ok else 2.0)
-    try:
-        q.start({"alignParallel": parallel})
-    except Exception:
-        sysmem.can_run_parallel_with_asr = saved
-        raise
-    return q, be, ids, saved
+    q.start({"alignParallel": parallel})
+    return q, be, saved
 
 
 def _finish(q, be, saved, releases: int = 3):
@@ -191,16 +302,14 @@ def _finish(q, be, saved, releases: int = 3):
 
 
 def test_scheduler(r: Result):
-    print("\n[3] 批次调度：补齐优先 + 尾段放行")
-
-    # (a) 关并行：补齐全部跑完才允许识别
+    print("\n[4] 批次调度：补齐优先 + 尾段放行")
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
-        q, be, ids, saved = _queue(tmp, "off", True, False)
+        q, be, saved = _queue(tmp, "off", True, False)
         be.align_started.wait(2)
         r.check("关并行：先跑补齐", be.events and be.events[0][1] == "align",
                 str(be.events[:2]))
-        be.gate.release()                     # 第一个补齐结束，第二个顶上
+        be.gate.release()
         time.sleep(0.5)
         r.check("关并行：仍有补齐在跑时识别不启动",
                 not be.asr_started.is_set(), str(be.events))
@@ -209,121 +318,35 @@ def test_scheduler(r: Result):
                 str(be.events))
         _finish(q, be, saved)
 
-    # (b) 开并行 + 内存够：剩最后一个补齐时识别进场
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
-        q, be, ids, saved = _queue(tmp, "on", True, True)
-        be.align_started.wait(2)
-        time.sleep(0.6)
-        r.check("开并行：补齐积压 >1 时识别仍等待",
-                not be.asr_started.is_set(), str(be.events))
-        be.gate.release()                     # 第一个补齐结束，第二个开始
-        r.check("开并行：剩 1 个补齐时识别进场", be.asr_started.wait(4),
+        q, be, saved = _queue(tmp, "on", True, True)
+        # 旧规则「补齐积压 > 1 时识别等待」已删除：识别不再被补做对齐压住。
+        r.check("开并行：识别立刻进场（不再等补齐积压清零）",
+                be.asr_started.wait(4), str(be.events))
+        r.check("开并行：补齐同时在后台跑", be.align_started.wait(4),
                 str(be.events))
         _finish(q, be, saved)
 
-    # (c) 开并行但内存不足：退回串行
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
-        q, be, ids, saved = _queue(tmp, "low", False, True)
-        be.align_started.wait(2)
-        be.gate.release()
-        time.sleep(0.8)
-        r.check("内存不足：剩 1 个补齐也不放识别",
-                not be.asr_started.is_set(), str(be.events))
-        be.gate.release()
-        r.check("内存不足：补齐跑完后识别启动", be.asr_started.wait(4),
+        q, be, saved = _queue(tmp, "low", False, True)
+        # 内存不再是「识别能不能进场」的判据 —— 它只决定对齐拉不拉起。
+        # 识别必须无条件往前跑，否则一次误判就压住整条流水线。
+        r.check("内存不足：识别照常进场", be.asr_started.wait(4),
                 str(be.events))
         _finish(q, be, saved)
-
-
-# ─────────────────── 4. FaBatch 接线（攒批窗口不改变结果）───────────────────
-
-def _align_raw(audio, ref, lang):
-    """一字一词、均匀铺满；模拟 FA 的返回契约（相对窗口起点）。"""
-    if not ref:
-        return []
-    step = (len(audio) / SR) / len(ref)
-    return [(c, i * step, (i + 1) * step) for i, c in enumerate(ref)]
-
-
-def _run_batch(tmp: Path, task: str, pcm: np.ndarray, window: float) -> str:
-    fb = FaBatch(_align_raw, initial_window=window,
-                 min_window=window, max_window=window)
-    runner = LongformRunner(
-        out_srt=tmp / f"{task}.srt", work_dir=tmp / f"w_{task}",
-        task_id=task, max_chunk_secs=30, engine=_Engine(), vad_sess=_VAD(),
-        fa_batch=fb)
-    runner.run(tmp / "a.wav", pcm_source=ArrayPcmStream(pcm),
-               total_sec=len(pcm) / SR)
-    return (tmp / f"{task}.srt").read_text(encoding="utf-8")
-
-
-def test_fa_batch(r: Result):
-    print("\n[4] FaBatch 接线：窗口大小不改变 SRT")
-    with tempfile.TemporaryDirectory() as td:
-        tmp = Path(td)
-        sys.path.insert(0, str(HERE))
-        from make_fixture import build as make_pcm
-        pcm, _rounds = make_pcm(0.4)
-        with wave.open(str(tmp / "a.wav"), "wb") as w:
-            w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
-            w.writeframes(pcm.tobytes())
-
-        one = _run_batch(tmp, "one", pcm, 5.0)      # 两段一窗
-        many = _run_batch(tmp, "many", pcm, 90.0)   # 全部挤一窗
-        r.check("两种窗口都产出了字幕", bool(one.strip()) and bool(many.strip()),
-                f"{len(one)} / {len(many)} 字节")
-
-        def _rows(txt):
-            out = []
-            for row in txt.split("\n\n"):
-                parts = row.strip().split("\n")
-                if len(parts) >= 3:
-                    out.append((_ts(parts[1].split(" --> ")[0]),
-                                parts[2], _ts(parts[1].split(" --> ")[1])))
-            return out
-
-        a, b = _rows(one), _rows(many)
-        r.check("行数一致", len(a) == len(b), f"{len(a)} / {len(b)}")
-        r.check("行文本逐条一致", [x[1] for x in a] == [x[1] for x in b],
-                "" if [x[1] for x in a] == [x[1] for x in b] else "文本有差异")
-        # 不断言逐字节相同：合成「对齐器」把词在整窗里均匀铺开，跨窗边界
-        # 的词会被分到相邻段，时间自然差一窗。真实 FA 按声学定位，阶段 2 的
-        # 60 秒主动对拍里词时间中位偏差 0.00s、最大 0.32s。
-        r.check("两条覆盖到同一结尾",
-                abs(a[-1][2] - b[-1][2]) < 1.0 if a and b else False,
-                f"{a[-1][2]:.2f} vs {b[-1][2]:.2f}" if a and b else "空")
-
-        # 时间轴单调、无零长条目 —— 攒批跨段拼接最容易在这里出错。
-        rows = [ln for ln in one.split("\n\n") if ln.strip()]
-        ok_mono, prev = True, -1.0
-        for row in rows:
-            parts = row.strip().split("\n")
-            if len(parts) < 3:
-                continue
-            a, b = parts[1].split(" --> ")
-            t0 = _ts(a); t1 = _ts(b)
-            if t0 < prev - 1e-6 or t1 <= t0:
-                ok_mono = False
-                break
-            prev = t1
-        r.check("时间轴单调且无零长条目", ok_mono, f"{len(rows)} 条")
-
-
-def _ts(x: str) -> float:
-    h, m, rest = x.split(":")
-    s, ms = rest.split(",")
-    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+        kinds = [k for _t, k in be.events]
+        r.check("内存不足：三项最终都跑完", len(kinds) >= 3, str(kinds))
 
 
 def main() -> int:
     r = Result()
-    test_pipeline(r)
-    test_equivalence(r)
+    test_align_queue(r)
+    test_runner_wiring(r)
+    test_resume(r)
     test_scheduler(r)
-    test_fa_batch(r)
-    print(f"\nResult: {sum(r.items)}/{len(r.items)} passed")
+    print(f"\n{'ALL PASS' if r.ok else 'FAILED'} — {sum(r.items)}/{len(r.items)}")
     return 0 if r.ok else 1
 
 

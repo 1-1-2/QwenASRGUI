@@ -21,10 +21,12 @@ Deliberate non-goals
 --------------------
 * No parallel ASR. ``ASREngine.transcribe()`` holds ``self._lock``, so extra
   threads only queue; extra processes each load their own IR and multiply
-  memory peaks. The one concurrency we do allow is ``fa_pipeline``: the
-  ForcedAligner runs in a **subprocess**, so it can overlap the next chunk's
-  ASR without touching the engine lock. Output order — and therefore the SRT —
-  is unaffected; see fa_pipeline.py.
+  memory peaks.
+* **No alignment work inside the recognition loop.** The ForcedAligner runs in
+  a subprocess owned by ``fa_queue.AlignQueue``; the runner only calls
+  ``submit()`` (O(1)) and never waits for a result. The SRT is therefore
+  written at full speed and is completely independent of how fast — or whether
+  — alignment keeps up. See fa_queue.py.
 * No changes to OpenVINO thread policy (PERFORMANCE_HINT / INFERENCE_NUM_THREADS
   are controlled from the Model page and are a separate tuning axis).
 * The memory sawtooth is flattened by releasing at group boundaries and keeping
@@ -74,7 +76,32 @@ _MIN_CH = 16                    # 最短语音段（帧）≈ 0.5s
 _PAD_CH = 5                     # 段前后各补 5 帧 ≈ 0.16s
 _MERGE_CH = 16                  # 相邻间隔 ≤16 帧则合并
 _TAIL_SEC = 0.35                # 多含尾段，补捉句尾轻声字（与 app.py 一致）
+# 收尾时把对齐积压跑完的上限；超过就放弃剩余（记进 stats，不静默吞）
+_DRAIN_TIMEOUT_SEC = 180.0
+# 内存不足的重试：3 次 × 30 秒，总等待 ≤90 秒，仍失败则转「暂停」而非失败
+_OOM_RETRIES = 3
+_OOM_WAIT_SEC = 30.0
 _APPEND_MIN_GAP = 0.04          # 流式写入时相邻两条的最小间隔（防跨 group 重叠）
+
+
+def _is_oom(exc: BaseException) -> bool:
+    """判断异常是不是「内存分配失败」。"""
+    if isinstance(exc, MemoryError):
+        return True
+    text = str(exc).lower()
+    return any(k in text for k in ("unable to allocate", "out of memory",
+                                   "bad_alloc", "cannot allocate",
+                                   "not enough memory"))
+
+
+def _avail_gb() -> float:
+    """当前可用物理内存（GB）；取不到返回 0（视为不可用）。"""
+    try:
+        import sysmem
+        v = sysmem.available_gb()
+        return float(v) if v is not None else 0.0
+    except Exception:
+        return 0.0
 
 
 class Cancelled(Exception):
@@ -583,6 +610,20 @@ def pcm_stream(path: Path, ffmpeg: str = "ffmpeg", start_sec: float = 0.0):
     return ffmpeg_pcm_stream(path, ffmpeg, start_sec)
 
 
+def skip_samples(source, n: int):
+    """丢弃前 ``n`` 个采样后继续产出；用于离线源的续跑偏移。"""
+    dropped = 0
+    for chunk in source:
+        if dropped >= n:
+            yield chunk
+            continue
+        take = min(n - dropped, len(chunk))
+        dropped += take
+        rest = chunk[take:]
+        if len(rest):
+            yield rest
+
+
 class ArrayPcmStream:
     """Offline / test source: feed a numpy array in chunks, bypassing ffmpeg."""
     def __init__(self, audio: np.ndarray, start_sec: float = 0.0):
@@ -843,19 +884,18 @@ class LongformRunner:
                  vad_threshold: float = 0.5,
                  detail_cb=None, segment_cb=None, enhancer=None,
                  refine_punct: bool = False,
-                 fa_lines=None, fa_pipeline=None, fa_batch=None):
-        """``fa_lines``：可选回调 ``(chunk_ndarray, text, t0, t1) -> lines | None``。
+                 align_queue=None, diar_queue=None,
+                 fa_path=None, diar_path=None):
+        """``align_queue``：``fa_queue.AlignQueue``。词级对齐的独立管线。
 
-        提供时优先用它生成字幕行（FA 字级时间戳驱动，见 fa_segmenter.py），
-        返回空/抛异常则回退 ``line_splitter``。默认 None = 行为与旧版完全一致。
+        识别线程只调用它的 ``submit()``（O(1)，不等待），对齐在后台按内存门控
+        自己拉起子进程。**运行器里没有任何等待对齐的同步点** —— 这是本次改造
+        的核心：旧实现把 ``pending`` 攒在组边界，一组写完就得收，等于同步。
 
-        ``fa_pipeline``：``fa_pipeline.FaPipeline``。提供时同一个回调改在后台
-        线程执行，与下一段 ASR 重叠；收取仍严格按提交顺序，输出与同步路径
-        逐字节相同。两者都为空 = 纯比例分配。
+        ``diar_queue``：``diar_queue.DiarQueue``。说话人向量同理，只入队。
 
-        ``fa_batch``：``fa_batch.FaBatch``。在 ``fa_pipeline`` 之上再做攒批 ——
-        多段音频合并成一次 FA 调用（窗口按实测 T(L) 自适应），窗口满了才派发
-        到后台。优先级最高，给了它就不再走 ``fa_pipeline`` / ``fa_lines``。
+        ``fa_path`` / ``diar_path``：两条管线的产物路径。续跑时按行号截断，
+        避免「行号变了、旧词级还留着」。
         """
         if vad_sess is None:
             raise ValueError("缺少 VAD session：请传入 engine.vad_sess")
@@ -896,24 +936,11 @@ class LongformRunner:
         # 层级：它是断句依据，不是字幕内容。需要时仍可显式传 True（讲义导出
         # 等场景），但默认不再改写 SRT。
         self.refine_punct = refine_punct
-        # FA 行生成回调（有则优先，失败回退 line_splitter）
-        self.fa_lines = fa_lines
-        # 流水线模式下回调在后台跑；深度 0 = 同步（settle 立刻发生）
-        self.fa_pipeline = fa_pipeline
-        # 攒批模式（fa_batch.FaBatch）：一段一次 FA 改成攒满窗口跑一次，
-        # 且窗口满了才派发到后台，主线程不等待。
-        self.fa_batch = fa_batch
-        self._fa_depth_max = 10
-        if fa_batch is not None:
-            # 队列深度要够「藏住一窗 FA」。推导：窗口 L 秒、FA 单位成本约
-            # 0.21 s/秒音频、ASR 约 0.30 s/秒音频 → 要压住的段数 ≈
-            # L/段长 × 0.21/0.30，再加窗口本身占的段数。取 +4 是留余量；
-            # 跑起来若仍在等，_tune_fa_depth 会继续加深（上限 10 段）。
-            _w = float(getattr(fa_batch, "window_sec", 25.0) or 25.0)
-            self._fa_depth = max(
-                2, int(math.ceil(_w / max(1, self.max_secs))) + 4)
-        else:
-            self._fa_depth = 1 if fa_pipeline is not None else 0
+        # 独立管线：识别只入队，不等任何东西。
+        self.align_queue = align_queue
+        self.diar_queue = diar_queue
+        self.fa_path = Path(fa_path) if fa_path else None
+        self.diar_path = Path(diar_path) if diar_path else None
         self._seg_batch: list[dict] = []
         self._last_seg_flush = 0.0
         self._start_wall = time.monotonic()
@@ -1069,10 +1096,110 @@ class LongformRunner:
         except OSError:
             pass
 
-    def _init_outputs(self, next_index: int):
-        if next_index <= 1:
+    # ── 续跑对账 ────────────────────────────────────────────────
+    def _count_srt_lines(self) -> int | None:
+        """数出 SRT 里完整的条目数；读不到返回 None。"""
+        try:
+            if not self.out_srt.is_file():
+                return 0
+            raw = self.out_srt.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        n = 0
+        for block in raw.split("\n\n"):
+            block = block.strip()
+            if not block:
+                continue
+            head = block.split("\n", 1)[0].strip()
+            if head.isdigit():
+                n += 1
+        return n
+
+    def _truncate_srt(self, keep: int) -> None:
+        """只保留前 ``keep`` 个完整条目（顺带丢弃不完整的尾块）。"""
+        try:
+            raw = self.out_srt.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        kept, n = [], 0
+        for block in raw.split("\n\n"):
+            block = block.strip()
+            if not block:
+                continue
+            head = block.split("\n", 1)[0].strip()
+            if not head.isdigit():
+                continue          # 不完整的尾块，丢弃
+            if n >= keep:
+                break
+            kept.append(block)
+            n += 1
+        body = "\n\n".join(kept)
+        self.out_srt.write_text((body + "\n\n") if body else "",
+                                encoding="utf-8")
+
+    @staticmethod
+    def _truncate_jsonl(path, keep: int) -> None:
+        """保留前 ``keep`` 条可解析的记录；末行半截直接丢。
+
+        词级 / 说话人文件的行号与字幕行号绑定，字幕一截断它们就必须跟着截，
+        否则续跑会拿旧词级去配新行。
+        """
+        if path is None:
+            return
+        try:
+            path = Path(path)
+            if not path.is_file():
+                return
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+        kept = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                json.loads(line)
+            except ValueError:
+                continue          # 半行
+            if len(kept) >= keep:
+                continue
+            kept.append(line)
+        path.write_text(("\n".join(kept) + "\n") if kept else "",
+                        encoding="utf-8")
+
+    def _init_outputs(self, next_index: int) -> int:
+        """续跑前把「断点」与「已写出的文件」对齐，返回生效的下一序号。
+
+        两个方向都要处理：
+
+        * 文件**超前**断点（写完行、还没存断点就崩了）→ 截掉多余的行；
+        * 文件**落后**断点（存了断点、写盘失败或断电）→ 无法定位对应帧号，
+          只能从头重跑，否则会留下序号空洞。
+
+        只处理前者会让 SRT 从 N-5 直接跳到 N，播放器直接报错。
+        """
+        effective = int(next_index)
+        srt_lines = self._count_srt_lines()
+        if srt_lines is not None:
+            if srt_lines + 1 < effective:
+                self._emit(0, "输出文件落后于断点，已从头重跑以免字幕缺行")
+                effective = 1
+            else:
+                effective = min(effective, srt_lines + 1)
+        if effective <= 1:
             self.out_srt.write_text("", encoding="utf-8")
             self.jsonl.write_text("", encoding="utf-8")
+            self._truncate_jsonl(self.fa_path, 0)
+            self._truncate_jsonl(self.diar_path, 0)
+        else:
+            self._truncate_srt(effective - 1)
+            self._truncate_jsonl(self.jsonl, effective - 1)
+            self._truncate_jsonl(self.fa_path, effective - 1)
+            # 说话人文件没有行号，按段数粗留（多留无妨，聚类只多几个向量）
+            self._truncate_jsonl(self.diar_path, effective - 1)
+        self._last_end = None
+        return effective
 
     def _resume_last_end(self) -> float | None:
         """上一條已寫出的 ``end``；續跑時從既有 SRT 末尾恢復。
@@ -1131,30 +1258,49 @@ class LongformRunner:
                              "end": round(end, 3), "text": text})
         return index + 1
 
-    def _tune_fa_depth(self) -> None:
-        """收取时真的等了 FA，就把队列再压深一段；完全藏住则保持。
+    def _transcribe(self, chunk) -> str:
+        """识别一段；内存不足时等待重试，仍失败才抛出。
 
-        只增不减：来回抖会让字幕延迟忽长忽短，而多压一段的代价只是
-        「晚一段出现」，对批次任务无所谓，对本机更是如此。
+        背景：对齐进程与识别抢内存时，解码器物化 KV 输出（20 秒段约 29 MiB）
+        可能直接分配失败。旧实现把这一次失败当成整份任务失败 —— 4 小时的
+        活干到一半就作废。现在最多等 3×30 秒，超时也只会转成「暂停」，
+        断点保留，随时可继续。
         """
-        fb = self.fa_batch
-        if fb is None or self._fa_depth >= self._fa_depth_max:
-            return
-        try:
-            if fb.avg_wait() > 0.08:
-                self._fa_depth += 1
-                fb.reset_wait()
-        except Exception:
-            pass
-
-    def _close_fa_batch(self) -> None:
-        """收掉 FA 攒批的后台线程；重复调用安全。
-
-        不关会留下一个 idle 的 ThreadPoolExecutor，每次任务泄漏一个线程。
-        """
-        if self.fa_batch is not None:
+        for attempt in range(_OOM_RETRIES + 1):
             try:
-                self.fa_batch.close()
+                return self.engine.transcribe(
+                    chunk, language=self.language, context=self.context) or ""
+            except BaseException as exc:      # noqa: BLE001 - 分类后再抛
+                if not _is_oom(exc) or attempt >= _OOM_RETRIES:
+                    raise
+                self._emit(0, f"内存不足，等待释放后重试"
+                              f"（{attempt + 1}/{_OOM_RETRIES}）…")
+                try:
+                    gc.collect()
+                except Exception:
+                    pass
+                deadline = time.monotonic() + _OOM_WAIT_SEC
+                while time.monotonic() < deadline:
+                    if self.cancel.is_set():
+                        raise
+                    if _avail_gb() >= 3.0:
+                        break
+                    time.sleep(0.5)
+        raise RuntimeError("内存重试次数耗尽")   # pragma: no cover
+
+    def _close_queues(self) -> None:
+        """把两条后台管线的剩余工作跑完再收线程；重复调用安全。
+
+        收尾时识别已停，内存最宽松 —— 这正是把积压补齐的最佳时机。
+        """
+        if self.align_queue is not None:
+            try:
+                self.align_queue.close(timeout=_DRAIN_TIMEOUT_SEC)
+            except Exception:
+                pass
+        if self.diar_queue is not None:
+            try:
+                self.diar_queue.close(timeout=60.0)
             except Exception:
                 pass
 
@@ -1222,7 +1368,8 @@ class LongformRunner:
                     "segments": next_index - 1, "resumed": True,
                     "resumeFrom": resume_from,
                     "peaks": [], "duration": 0.0, "truncated": False}
-        self._init_outputs(next_index)
+        # 对账：断点与已写出的文件必须对齐，返回生效的下一序号。
+        next_index = self._init_outputs(next_index)
 
         start_sec = next_frame * VAD_CHUNK / SR
         # 續跑的倍率基準：本輪真正新處理的音訊從 start_sec 起算。
@@ -1234,8 +1381,15 @@ class LongformRunner:
                     "totalSec": round(total_sec or 0, 1),
                     "segments": max(0, next_index - 1),
                     "phase": "resume" if start_sec else "start"})
-        stream = (pcm_source if pcm_source is not None else
-                  pcm_stream(Path(audio_path), self.ffmpeg, start_sec))
+        if pcm_source is not None:
+            # 离线数组源也要遵守续跑偏移：否则续跑会从 0 重放，把已写出的
+            # 行再写一遍（序号重复）。生产路径走 ffmpeg 的 -ss，不受影响。
+            stream = pcm_source
+            _skip = int(start_sec * SR)
+            if _skip > 0:
+                stream = skip_samples(stream, _skip)
+        else:
+            stream = pcm_stream(Path(audio_path), self.ffmpeg, start_sec)
         if total_sec is None and audio_path is not None:
             self._emit(0, "正在探测音频时长…")
             total_sec = probe_duration(audio_path, self.ffmpeg)
@@ -1276,71 +1430,31 @@ class LongformRunner:
         tail = int(_TAIL_SEC * SR)
         keep_limit = int((self.max_secs + _TAIL_SEC + 2.0) * SR)
 
-        # ── FA 收取隊列（跨 VAD 組累積）────────────────────────────
-        # 以前 pending 是 emit_group 的局部變量，一組寫完就清空 —— 等於
-        # 「提交完立刻收」，FA 再快也重疊不了。現在提到 run() 這一層，讓
-        # 窗口能跨組合併，同時 ASR 繼續跑下一組。代價是字幕晚 _fa_depth 段。
-        #
-        # 落盤順序仍嚴格按提交順序（SRT 序號與 _resume_last_end 的單調性
-        # 都依賴它）；變的只是「什麼時候收」—— 從組邊界改到深度/斷點邊界。
-        pending: collections.deque = collections.deque()
+        def _ckpt_at(nf: int) -> None:
+            """在一段语音的**起点**存断点。
 
-        def _settle(item) -> None:
-            """把一段的結果落盤；FA 結果先收，取不到就回退比例切行器。
-
-            顺序不可换：SRT 序号与 ``_resume_last_end`` 的单调性都依赖
-            「按提交顺序收取」。流水线只是把等待挪到后台线程，不改顺序。
+            为什么不是段尾：段尾之后还有 ``_TAIL_SEC`` 尾段，从段尾续跑会把
+            那截已经识别过的尾音再识别一遍（多出字）。存在段起点则续跑会把
+            这一整段重做一遍 —— 同样的音频、同样的切块，结果逐字节相同。
+            代价是每次续跑重做最后一段，可接受。
             """
-            nonlocal seg_index, group_count
-            lines = item["lines"]
-            if lines is None and item["future"] is not None:
-                if item.get("batched") and self.fa_batch is not None:
-                    lines = self.fa_batch.settle(item["future"])
-                elif self.fa_pipeline is not None:
-                    lines = self.fa_pipeline.collect(item["future"])
-            if not lines:
-                lines = (self.line_splitter(item["text"], item["t0"], item["t1"])
-                         if self.line_splitter
-                         else simple_lines(item["text"], item["t0"], item["t1"]))
-            # Enrich before the chunk leaves scope: aligner / embedding
-            # reuse this exact buffer, so there is no second decode pass.
-            if self.enhancer is not None:
-                try:
-                    self.enhancer.on_group(item["chunk"], item["t0"], item["t1"],
-                                           item["text"], lines,
-                                           start_index=seg_index)
-                except Exception:
-                    pass
-            for ln in lines:
-                # 行可能是 (s, e, text)，也可能是 FA 路径的
-                # (s, e, text, words)；words 只是附带的词级时间，落盘
-                # 时不需要，取值时只认前三项。
-                seg_index = self._append(seg_index, ln[0], ln[1], ln[2])
-            group_count += 1
-
-        def _flush_pending() -> None:
-            """把未落盘的段全部写出。
-
-            断点保存、文件结束、取消回卷之前都必须调用：断点记的是「已写到
-            第几条」，任何未落盘的段都会在续跑时凭空消失。
-            """
-            while pending:
-                _settle(pending.popleft())
+            try:
+                self.ckpt.save(int(nf), seg_index, "running",
+                               fingerprint=self.fingerprint, vad_state="")
+            except Exception:
+                pass
 
         def emit_group(gs_f: int, ge_f: int) -> int:
-            """Split one speech group into <=max_secs chunks, transcribe and
-            append each result.
+            """把一段语音按 <=max_secs 切开，逐块识别并**立即落盘**。
 
-            落盘不再是「一组结束就全部写出」：未落盘的段落按提交顺序累积，
-            由深度或断点边界统一收取（见 run() 里的 _flush_pending）。
-            「按提交顺序落盘」这条不变 —— SRT 序号、_resume_last_end 的单调
-            性、断点续跑的逐字节一致性都靠它。
+            与旧版的关键差别：不再把 PCM 攒进 pending 队列等对齐。识别段一
+            写完就交给独立管线（对齐 / 说话人），本函数立刻返回 —— 识别线程
+            里没有任何等待对齐的同步点，也没有「组边界必须清空队列」的约束。
 
-            Cancellation is deliberately NOT checked inside this loop: the
-            chunks of one group are appended in order by _settle, so a resume
-            can rewind to the group start without duplicating half-written
-            subtitles. The main loop checks the cancel flag at group boundaries
-            instead.
+            Cancellation is deliberately NOT checked inside this loop: a group
+            is written atomically, so a resume can rewind to its start without
+            duplicating half-written subtitles. The main loop checks the cancel
+            flag at group boundaries instead.
 
             Returns the global sample index where the group ends, used to trim
             the rolling buffer.
@@ -1358,38 +1472,32 @@ class LongformRunner:
             while cur < len(samples):
                 nxt = min(len(samples), cur + max_samples)
                 chunk = np.ascontiguousarray(samples[cur:nxt], dtype=np.float32)
-                text = (self.engine.transcribe(
-                    chunk, language=self.language, context=self.context) or "").strip()
+                text = self._transcribe(chunk).strip()
                 t0 = (base + a + cur) / SR
                 t1 = (base + a + nxt) / SR
 
-                # FA 字级对齐优先：有字级时间戳时，行边界与时间轴都由声学
-                # 决定（强标点/弱标点够长/字间静默 三条信号），比按字数比例
-                # 硬分配准确得多。拿不到就静默回退到旧路径，字幕永不丢失。
-                item = {"chunk": chunk, "text": text, "t0": t0, "t1": t1,
-                        "future": None, "lines": None,
-                        # 这段音频的起始 VAD 帧。断点遇到「有段落未落盘」时
-                        # 回卷到这里，而不是强行 flush。
-                        "frame0": (base + a + cur) // VAD_CHUNK}
-                if self.fa_batch is not None:
-                    # 攒批模式：窗口未满时什么也不做，主线程直接跑下一段
-                    # ASR；窗口满了后台线程去对整窗，ASR 不被阻塞。
-                    item["future"] = self.fa_batch.submit(chunk, text, t0, t1)
-                    item["batched"] = True
-                elif self.fa_pipeline is not None:
-                    # 提交后立刻进入下一段 ASR —— 重叠就发生在这里
-                    item["future"] = self.fa_pipeline.submit(chunk, text, t0, t1)
-                elif self.fa_lines is not None:
-                    try:
-                        item["lines"] = self.fa_lines(chunk, text, t0, t1) or None
-                    except Exception:
-                        item["lines"] = None   # 增强失败 → 回退，不影响出字幕
+                # 比例切行 + 立即落盘：预览零延迟，也不再依赖对齐结果。
+                # 行边界不再由声学决定 —— 那是收尾重排（可选）的事。
+                lines = (self.line_splitter(text, t0, t1)
+                         if self.line_splitter
+                         else simple_lines(text, t0, t1))
+                first_index = seg_index
+                for ln in lines:
+                    seg_index = self._append(seg_index, ln[0], ln[1], ln[2])
 
-                pending.append(item)
-                # 深度 0（无 FA）＝ 立刻落盘；1＝压一段；攒批模式按窗口深浅
-                while len(pending) > self._fa_depth:
-                    _settle(pending.popleft())
-                    self._tune_fa_depth()
+                # 交给独立管线：O(1) 入队，不等任何东西。
+                if self.align_queue is not None and text:
+                    try:
+                        self.align_queue.submit(t0, t1, text, lines, first_index)
+                    except Exception:
+                        pass
+                if self.diar_queue is not None:
+                    try:
+                        self.diar_queue.submit(t0, t1)
+                    except Exception:
+                        pass
+
+                group_count += 1
                 cur = nxt
                 if self.gc_every and group_count % self.gc_every == 0:
                     gc.collect()
@@ -1433,6 +1541,9 @@ class LongformRunner:
                 cut_to = None
                 for gs, ge in ready:
                     cut_to = emit_group(gs, ge)
+                    # 一段写完立刻存断点：断点记的是这一段**起点**，续跑会
+                    # 把这一段重做一遍（同样的音频、同样的切块 → 逐字节相同）。
+                    _ckpt_at(gs)
                 if cut_to is not None:
                     cut = min(max(0, cut_to - base), len(carry))
                     carry = carry[cut:]
@@ -1458,20 +1569,10 @@ class LongformRunner:
                                 "groups": group_count,
                                 "etaSec": self._eta_sec(done_sec, total_sec or 0),
                                 "phase": "running"})
-                    # 断点必须与「已写出到第几条」一致。这里**不 flush**：
-                    # flush 会立刻派发半满窗口并同步等 FA，把后台对齐变成
-                    # 每 16 秒一次的屏障 —— 那正是攒批要消除的开销。
-                    # 改為回卷到最早未落盘的那一段（VAD 状态清空，与取消
-                    # 时的回卷走同一条已支持的路径），续跑从那里重放。
-                    if pending:
-                        _rf = int(pending[0].get("frame0") or frame)
-                        self.ckpt.save(min(_rf, frame), seg_index, "running",
-                                       fingerprint=self.fingerprint,
-                                       vad_state="")
-                    else:
-                        self.ckpt.save(frame, seg_index, "running",
-                                       fingerprint=self.fingerprint,
-                                       vad_state=encode_vad_state(h, c))
+                    # 断点只在「段完成」时写（见上面的 _ckpt_at）。这里不再
+                    # 按固定帧数落点：chunk 边界依赖组起点，中途存点会让续跑
+                    # 重新切分，得不到逐字节一致的结果。
+                    pass
                 elif processed_frames % 128 == 0:
                     # Progress is emitted more often than the checkpoint is
                     # written. The old 512-frame (16 s) cadence produced no
@@ -1496,14 +1597,13 @@ class LongformRunner:
                     merged.append([s, e])
             for gs, ge in merged:
                 emit_group(gs, ge)
-            _flush_pending()
+                _ckpt_at(gs)
 
         except Cancelled:
             # Rewind to the start of any speech group detected but not yet
             # written. Everything already appended belongs to earlier groups,
             # so resuming from here reproduces an uninterrupted run byte-for-byte
             # instead of losing or duplicating the group straddling the stop.
-            _flush_pending()
             rewind: list[int] = []
             if in_sp:
                 rewind.append(s0)
@@ -1525,7 +1625,7 @@ class LongformRunner:
                         "totalSec": round(total_sec or 0, 1),
                         "groups": group_count, "phase": "paused"})
             self._flush_segments(force=True)
-            self._close_fa_batch()
+            self._close_queues()
             return {"status": "paused", "srt": str(self.out_srt),
                     "segments": seg_index - 1, "next_frame": resume_frame,
                     "groups": group_count, "frames": frame,
@@ -1533,7 +1633,41 @@ class LongformRunner:
                     "truncated": truncated,
                     "resumeFrom": resume_from, "resumed": resume_from > 1}
 
-        _flush_pending()
+        except BaseException as exc:
+            # 异常兜底：把断点存到「还没写完的那一段的起点」，再强制落盘。
+            # 没有这一步，进程异常退出时断点会停在最后一次段完成处，而 SRT
+            # 可能已经多写了几行 —— 续跑就会重复序号、时间轴倒退。
+            rewind: list[int] = []
+            if in_sp:
+                rewind.append(s0)
+            if raw:
+                rewind.append(min(s for s, _ in raw))
+            resume_frame = min(rewind) if rewind else frame
+            try:
+                self.ckpt.save(resume_frame, seg_index, "paused",
+                               fingerprint=self.fingerprint, vad_state="")
+                self._flush_segments(force=True)
+            except Exception:
+                pass
+            if self.align_queue is not None:
+                try:
+                    self.align_queue.close(timeout=5.0)
+                except Exception:
+                    pass
+            if _is_oom(exc):
+                self._emit(0, "内存不足，已保存断点，可稍后继续",
+                           {"phase": "paused", "reason": "lowmem"})
+                return {"status": "paused", "reason": "lowmem",
+                        "srt": str(self.out_srt), "segments": seg_index - 1,
+                        "next_frame": resume_frame, "groups": group_count,
+                        "frames": frame, "peaks": peaks.to_bars(),
+                        "duration": peaks.duration, "truncated": truncated,
+                        "resumeFrom": resume_from, "resumed": resume_from > 1,
+                        "error": str(exc)[:200]}
+            self._emit(0, f"任务异常，已保存断点：{str(exc)[:80]}",
+                       {"phase": "error", "reason": "error"})
+            raise
+
         # C1: refine the finished SRT in place (single pass, done path only).
         self._finalize_punctuation()
         self.ckpt.save(frame, seg_index, "done",
@@ -1543,7 +1677,7 @@ class LongformRunner:
                     "totalSec": round(total_sec or 0, 1),
                     "groups": group_count, "etaSec": 0, "phase": "done"})
         self._flush_segments(force=True)
-        self._close_fa_batch()
+        self._close_queues()
         return {"status": "done", "srt": str(self.out_srt),
                 "segments": seg_index - 1, "next_frame": frame,
                 "groups": group_count, "frames": frame,

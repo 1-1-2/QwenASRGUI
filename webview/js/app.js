@@ -213,7 +213,25 @@
     const el = $("#model-status");
     el.classList.toggle("loading", !s.modelReady);
     $(".t", el).textContent = s.modelReady ? T("status.ready", "模型已就緒")
-      : (s.loading ? T("status.loading", "載入模型中…") : T("status.needModel", "尚未載入模型"));
+      : (s.loading ? T("status.loading", "載入模型中…") : T("status.needModel", "就绪 · 模型未载入内存"));
+    // 三条管线：只有跑任务时才显示，静默时整块隐藏（侧栏太窄，别常驻噪音）。
+    const pipes = s.pipelines || null;
+    const pl = $("#pipe-list");
+    if (pl) {
+      const active = !!pipes && (pipes.asr === "running" || pipes.fa === "running"
+                                 || pipes.fa === "waiting" || pipes.diar === "running");
+      pl.hidden = !active;
+      if (active) {
+        const word = (v) => v === "running" ? T("status.pipeRun", "运行中")
+          : v === "waiting" ? T("status.pipeWait", "等待")
+          : v === "idle" ? T("status.pipeIdle", "空闲")
+          : T("status.pipeOff", "未启用");
+        const set = (id, v) => { const e = $(id); if (e) e.textContent = word(v); };
+        set("#pipe-asr", pipes.asr);
+        set("#pipe-fa", pipes.fa);
+        set("#pipe-diar", pipes.diar);
+      }
+    }
     // 版本徽章：純數字版本前綴 v（如 v1.0.9）；已含文字者（如 webview 0.1）原樣顯示
     if (s.version) $("#app-version").textContent = /^\d/.test(s.version) ? "v" + s.version : s.version;
     // J5: a page reload must still show a TLS downgrade that happened earlier.
@@ -653,12 +671,64 @@
       if (batchActiveId !== a.id) {
         batchActiveId = a.id;
         if (!batchRunStartAt) batchRunStartAt = Date.now();
+        batchLiveReset(a.name || "");
       }
     } else {
       batchActiveId = null;
-      if (!batchRunning) batchRunStartAt = 0;
+      if (!batchRunning) { batchRunStartAt = 0; batchLiveHide(); }
     }
   }
+
+  // ── 批次頁即時字幕 ───────────────────────────────────────────────
+  //  與單檔頁共用 .live-row 樣式；切檔即清空，避免前後兩支的段混在一起。
+  const batchLivePanel = $("#batch-live-panel");
+  const batchLiveList = $("#batch-live-list");
+  const batchLiveName = $("#batch-live-name");
+  let batchLiveFollow = true;
+  function batchLiveReset(name) {
+    if (!batchLiveList) return;
+    batchLiveList.innerHTML = "";
+    batchLiveFollow = true;
+    if (batchLiveName) batchLiveName.textContent = name || "";
+    if (batchLivePanel) batchLivePanel.hidden = false;
+  }
+  function batchLiveHide() {
+    if (!batchLivePanel) return;
+    batchLivePanel.hidden = true;
+    if (batchLiveList) batchLiveList.innerHTML = "";
+  }
+  function appendBatchLive(segs) {
+    if (!batchLiveList) return;
+    const frag = document.createDocumentFragment();
+    for (const s of segs) {
+      const row = document.createElement("div");
+      row.className = "live-row";
+      const t = document.createElement("span");
+      t.className = "t"; t.textContent = fmtDur(s.start);
+      const x = document.createElement("span");
+      x.className = "x"; x.textContent = s.text;
+      row.append(t, x);
+      frag.appendChild(row);
+    }
+    batchLiveList.appendChild(frag);
+    // 與單檔頁同一個上限：五小時講座不能把渲染器撐爆。
+    while (batchLiveList.childElementCount > LIVE_MAX) {
+      batchLiveList.removeChild(batchLiveList.firstElementChild);
+    }
+    if (batchLiveFollow) batchLiveList.scrollTop = batchLiveList.scrollHeight;
+    if (batchLivePanel) batchLivePanel.hidden = false;
+  }
+  if (batchLiveList) {
+    batchLiveList.addEventListener("scroll", () => {
+      const nearBottom = batchLiveList.scrollHeight - batchLiveList.scrollTop
+        - batchLiveList.clientHeight < 40;
+      if (!nearBottom) batchLiveFollow = false;
+    });
+  }
+  $("#btn-batch-live-follow") && $("#btn-batch-live-follow").addEventListener("click", () => {
+    batchLiveFollow = true;
+    if (batchLiveList) batchLiveList.scrollTop = batchLiveList.scrollHeight;
+  });
   function batchElapsedSec(d) {
     if (d && Number(d.elapsedSec) > 0) return Number(d.elapsedSec);
     return batchRunStartAt ? (Date.now() - batchRunStartAt) / 1000 : 0;
@@ -774,17 +844,26 @@
     });
   }
   API.on("segments", (p) => {
-    if (!p || !Array.isArray(p.segments) || !liveListEl) return;
-    if (batchRunning) return;   // queue items are not the single-file live view
+    if (!p || !Array.isArray(p.segments)) return;
+    // 批次：只收「當前這一支」的段（用 taskId 比對）。
+    // 舊版只看 batchRunning 就直接丟棄，於是佇列殘留事件在 batchRunning
+    // 變回 false 之後會誤投到單檔頁；改成比對 taskId 兩邊都不會串。
+    if (batchRunning || batchActiveId) {
+      if (p.itemId && batchActiveId && p.itemId === batchActiveId) {
+        appendBatchLive(p.segments);
+      }
+      return;
+    }
+    if (!liveListEl) return;
     const frag = document.createDocumentFragment();
     for (const s of p.segments) {
       const row = document.createElement("div");
-      row.style.cssText = "display:flex;gap:10px;padding:3px 2px;border-bottom:1px solid var(--line)";
+      row.className = "live-row";
       const t = document.createElement("span");
-      t.style.cssText = "color:var(--ink-2);font-family:var(--font-mono);white-space:nowrap;font-size:11px";
+      t.className = "t";
       t.textContent = fmtDur(s.start);
       const x = document.createElement("span");
-      x.style.cssText = "flex:1;min-width:0;word-break:break-word";
+      x.className = "x";
       x.textContent = s.text;
       row.append(t, x);
       frag.appendChild(row);
@@ -1404,42 +1483,65 @@
     if (statusEl) {
       // 狀態只講「處於什麼狀態」，檔案名交給下面的檔案級區塊，避免同一句
       // 話在兩層各說一遍（舊版 status 與 active 都帶 name）。
+      // 「完成」= 识别完成 **且** 对齐清空。识别跑完但对齐还没补齐时，
+      // 说「全部完成」就是在骗人 —— 词级时间还没写进 rich.json。
+      const sm = batchSummaryData || {};
+      const aligning = (sm.alignLinesTotal || 0) > (sm.alignLinesDone || 0)
+                       || !!sm.faRunning;
       if (active) statusEl.textContent = T("batch.stRunning", "辨識中");
       else if (batchRunning) statusEl.textContent = T("batch.progPaused", null, { n: pending });
       else if (!total) statusEl.textContent = T("batch.progEmpty", "尚未加入檔案");
+      else if (done + failed === total && aligning)
+        statusEl.textContent = T("batch.progDoneAligning", "识别完成 · 对齐中");
       else if (done + failed === total) statusEl.textContent = T("batch.progDone", "全部完成");
       else statusEl.textContent = T("batch.idle", "待處理");
     }
     if (countEl) {
       let c = T("batch.progCount", null, { done, total });
       if (failed) c += " · " + T("batch.progFailed", null, { n: failed });
+      // 双进度：识别期间的对齐进度（按行）也报出来，否则用户只看到识别在动、
+      // 不知道词级还差多少。
+      const sm2 = batchSummaryData || {};
+      const aTotal = sm2.alignLinesTotal || 0;
+      if (aTotal) {
+        c += " · " + T("batch.progAlign", null,
+                       { done: Math.min(aTotal, sm2.alignLinesDone || 0),
+                         total: aTotal });
+      }
       if (aligns.length) {
         const ad = aligns.filter(i => i.status === "done").length;
-        c += " · " + T("batch.progAlign", null, { done: ad, total: aligns.length });
+        c += " · " + T("batch.progAlignJobs", null,
+                       { done: ad, total: aligns.length });
       }
       countEl.textContent = c;
     }
-    // 「嘗試並行」的實際狀態：勾了但記憶體不夠 → 後端不會起第二條 worker，
-    // 這裡要說清楚是「降級串行」而不是「沒生效」。
+    // 队列状态五态。判据全部来自后端：
+    //   faRunning / faEverRan / faBlockReason（对齐管线的真实状态）
+    //   queueStartedAt（状态 5 的 60 秒宽限）
+    // 以前这里用 parallelActive（补齐 worker 是否活着）冒充并行状态，
+    // 只有识别任务的队列永远不会创建它 —— 于是永远显示「资源不足，已降级串行」。
     const parEl = $("#batch-par-state");
     if (parEl) {
       const s = batchSummaryData || {};
       const wanted = s.parallelWanted != null
         ? s.parallelWanted
         : ($("#batch-align-par") ? $("#batch-align-par").checked : false);
-      const waiting = batchRunning && wanted && (s.alignBacklog || 0) > 1;
-      if (waiting) {
-        // 補齊還有 ≥2 個：識別依策略壓住不動，這不是「降級」而是正常排隊。
-        parEl.hidden = false;
-        parEl.textContent = T("batch.parWaiting");
-      } else if (batchRunning && wanted && !s.parallelActive) {
-        parEl.hidden = false;
-        parEl.textContent = T("batch.parDowngrade");
-      } else if (batchRunning && s.parallelActive) {        parEl.hidden = false;
-        parEl.textContent = T("batch.parActive");
+      const startedAt = Number(s.queueStartedAt) || 0;
+      const warm = startedAt > 0 && (Date.now() - startedAt) < 60000;
+      let text = "";
+      if (!batchRunning) {
+        text = "";                                   // 状态 1：未启动，不显示
+      } else if (!wanted) {
+        text = T("batch.qNoAlign");                  // 状态 2
+      } else if (s.faRunning) {
+        text = T("batch.faRunning");                 // 状态 3
+      } else if (!s.faEverRan && s.faBlockReason === "mem" && !warm) {
+        text = T("batch.faNever");                   // 状态 5（只在真因内存时）
       } else {
-        parEl.hidden = true;
+        text = T("batch.faIdle");                    // 状态 4
       }
+      parEl.hidden = !text;
+      if (text) parEl.textContent = text;
     }
     // 佇列級「已耗時」放 meta；「預計剩餘」放 detail 的尾端，兩者互不重複。
     const metaEl = $("#batch-prog-meta");

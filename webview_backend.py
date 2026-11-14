@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import sys
+import subprocess
 import threading
 import time
 import traceback
@@ -289,6 +290,10 @@ class WebBackend:
         # progress / progress-detail 帶 scope，前端才知道要畫在「批次」頁，
         # 而不是把批次進度誤顯示在「音檔轉字幕」頁。
         self._progress_scope = None
+        # 当前正在跑的对齐队列（None = 本次没开对齐）。前端的状态机与双进度
+        # 都从这里取数 —— 它是唯一知道「对齐是否在跑 / 为什么没跑」的地方。
+        self._align_live = None
+        self._diar_live = None
         # Wave 12／問題 1：模型記憶體生命週期。
         #   _running       正在執行中的 transcribe() 數（釋放必須等它歸零）
         #   _batch_running BatchQueue 整隊進行中（其間不在每個 item 後重載模型）
@@ -593,6 +598,25 @@ class WebBackend:
         if scope == "batch":
             self._batch_running = True
 
+    def fa_status(self) -> dict:
+        """当前对齐管线的实时状态；给队列摘要与左下角状态用。"""
+        empty = {"faRunning": False, "faEverRan": False,
+                 "faBlockReason": "empty", "alignLinesDone": 0,
+                 "alignLinesTotal": 0, "alignPendingSec": 0.0}
+        q = getattr(self, "_align_live", None)
+        if q is None:
+            return empty
+        try:
+            st = q.stats()
+            return {"faRunning": bool(q.running()),
+                    "faEverRan": bool(q.ever_ran()),
+                    "faBlockReason": q.block_reason() or "",
+                    "alignLinesDone": int(st.get("linesDone") or 0),
+                    "alignLinesTotal": int(st.get("linesTotal") or 0),
+                    "alignPendingSec": round(q.pending_sec(), 1)}
+        except Exception:
+            return empty
+
     def _emit_inner(self, event: str, payload: dict):
         # Wave 11：只對進度類事件加 scope，其餘事件契約完全不變。
         # 單檔任務 scope=None → payload 一個字都不動，舊前端也相容。
@@ -600,6 +624,27 @@ class WebBackend:
         if scope and event in ("progress", "progress-detail") and isinstance(payload, dict):
             payload = dict(payload)
             payload["scope"] = scope
+        # 批次即時字幕：附上佇列 item id，前端據此只收「當前這一支」的段。
+        # 單檔任務沒有這個屬性，payload 一個字都不動。
+        if event == "segments" and isinstance(payload, dict):
+            _bid = getattr(self, "_batch_item_id", None)
+            if _bid:
+                payload = dict(payload)
+                payload["itemId"] = _bid
+        # 三条管线的运行标志：左下角状态要显示「识别 / 对齐 / 说话人」
+        # 各自在做什么。挂在 status 事件上，前端不必再发一次请求。
+        if event == "status" and isinstance(payload, dict):
+            try:
+                fa = self.fa_status()
+                payload = dict(payload)
+                payload["pipelines"] = {
+                    "asr": "running" if self._running else "idle",
+                    "fa": ("running" if fa["faRunning"] else
+                           "waiting" if fa["alignLinesTotal"] else "off"),
+                    "diar": "running" if getattr(self, "_diar_live", None) else "off",
+                }
+            except Exception:
+                pass
         # Mirror user-visible backend messages into the run log. "log" itself
         # is excluded to avoid an infinite publish loop.
         if event in ("status", "capabilities", "download", "warning") and isinstance(payload, dict):
@@ -1384,173 +1429,10 @@ class WebBackend:
                     return merge_tails(balance_lines(
                         [(s, e, t, None) for (s, e, t) in raw_lines]))
 
-                # FA 驱动的行生成（可选）。只有「启用了对齐」且 FA 模型就绪时
-                # 才注册；失败自动回退 _splitter，见 fa_segmenter 的降级契约。
-                _fa_lines = None
-                if _align_active and getattr(self.engine, "_align_chunk", None):
-                    # 跨 chunk 边界的上一行结束时间。FA 的逐字时间戳首尾相接，
-                    # 若两个 chunk 恰好切在同一个时间点，会出现 end[i]==start[i+1]
-                    # 的字幕瞬切；align_to_lines 的 normalize_gaps 只管 chunk 内部，
-                    # 所以边界这一处必须在这里补。
-                    _prev_end = [None]
+                # ── 独立管线：对齐 + 说话人 ─────────────────────────
+                # 识别线程只调用 submit（O(1)），两条管线各自在后台跑。
+                # 对齐进程不常驻：每窗起一次、跑完退出，内存随之归还。
 
-                    def _fa_lines(chunk, text, t0, t1, _lang=_lang):
-                        """chunk → 临时 wav → FA 字级时间戳 → 字幕行。"""
-                        import os as _os
-                        import tempfile
-                        import soundfile as _sf
-                        from fa_segmenter import align_to_lines, MIN_GAP
-
-                        if _os.environ.get("QWENASR_FA_DEBUG"):
-                            import sys as _sys
-                            print(f"[FA] 进入: t0={t0:.2f} t1={t1:.2f} "
-                                  f"chars={len(text)}", file=_sys.stderr)
-
-                        path = None
-                        try:
-                            with tempfile.NamedTemporaryFile(
-                                    suffix=".wav", delete=False) as tf:
-                                path = tf.name
-                            _sf.write(path, chunk, 16000, subtype="PCM_16")
-                            lang = (_lang if _lang and _lang != "auto"
-                                    else "Chinese")
-                            items = self.engine._align_chunk(path, text, lang)
-                            if not items:
-                                return None
-                            # align_chunk 返回的是「相对这段 wav 起点」的时间
-                            # （0 起算），加上 t0 即转成整段音频的绝对时间。
-                            lines = align_to_lines(items, text, offset=float(t0),
-                                                   merge=True)
-                            if not lines:
-                                return None
-                            # 一次 FA 同时供两件事：上面已用它断行，这里再按
-                            # 字符偏移把词切给每一行。FA 的词序列与原文严格同序、
-                            # 一字一 token，所以行文本就是原文的连续切片；
-                            # 不能按「词中点落进哪行的区间」来归属 —— 行时间是
-                            # ASR 给的、词时间是 FA 给的，两把尺子在行边界处
-                            # 差几十到几百毫秒，必然丢字或串到下一行。
-                            words_ok = (len(items) == len(text)
-                                        and "".join(ln[2] for ln in lines) == text)
-                            if words_ok:
-                                off = 0
-                                buf = []
-                                for _s, _e, _t in lines:
-                                    buf.append([
-                                        {"word": str(w),
-                                         "start": round(float(t0) + float(a), 3),
-                                         "end": round(float(t0) + float(b), 3)}
-                                        for w, a, b in items[off:off + len(_t)]])
-                                    off += len(_t)
-                                # 先按字符偏移把詞切給細行，再交給版面層
-                                # 按 ceil(字数/20) 均分 —— 順序不能反：細行是
-                                # 「聲音在哪斷得開」的結論，均分是「這屏放幾個字」。
-                                from subtitle_lines import balance_lines, merge_tails
-                                _tmp = [(ln[0], ln[1], ln[2], None, buf[i])
-                                        for i, ln in enumerate(lines)]
-                                lines = [(s, e, t, w) for (s, e, t, _sp, w)
-                                         in merge_tails(balance_lines(_tmp))]
-                            else:
-                                # 字数对不上（英文整词 token、数字被拆、标点被吞）：
-                                # 不能按字符偏移切片，退到「词中点落在哪一行」。
-                                #
-                                # 不能指望增强器补这一步：它看到 4 元组就认为
-                                # 已经带了词级（carried），不会再跑 FA。旧注释
-                                # 说「交给增强器按旧路径处理」，实际从没执行过，
-                                # 结果是这些段永远没有 words（前端只能内插）。
-                                _w = [(str(w), float(t0) + float(a), float(t0) + float(b))
-                                      for w, a, b in items]
-                                lines = [
-                                    (s, e, tx,
-                                     [{"word": w, "start": round(ws, 3),
-                                       "end": round(we, 3)}
-                                      for w, ws, we in _w
-                                      if s <= (ws + we) / 2 < e])
-                                    for (s, e, tx) in lines]
-                            # 跨 chunk：本段首行不早于上一段末行 + MIN_GAP
-                            if _prev_end[0] is not None:
-                                s, e, t = lines[0][0], lines[0][1], lines[0][2]
-                                floor = _prev_end[0] + MIN_GAP
-                                if s < floor - 1e-6 and e > floor + 0.12:
-                                    lines[0] = (floor, e, t) + tuple(lines[0][3:])
-                            _prev_end[0] = lines[-1][1]
-                            return lines
-                        except Exception as _exc:
-                            if _os.environ.get("QWENASR_FA_DEBUG"):
-                                import traceback as _tb
-                                print("[FA] 对齐失败，回退比例分配："
-                                      f"{type(_exc).__name__}: {_exc}",
-                                      file=__import__("sys").stderr)
-                                _tb.print_exc()
-                            return None
-                        finally:
-                            if path:
-                                try:
-                                    _os.unlink(path)
-                                except OSError:
-                                    pass
-
-                def _fa_align_raw(chunk, text, lang):
-                    """攒批用：整窗 PCM → 字级时间（相对整窗起点）。
-
-                    与 ``_fa_lines`` 走同一个 ``_align_chunk``，区别是不在这
-                    里断行 —— 整窗的词先按时间切回各段，再由 fa_batch 逐段
-                    断行。FA 的固定开销（起进程 + 载入 2.9 GB 权重）因此被
-                    摊到整个窗口上。
-                    """
-                    import os as _os2
-                    import tempfile
-                    import soundfile as _sf2
-
-                    path = None
-                    try:
-                        with tempfile.NamedTemporaryFile(
-                                suffix=".wav", delete=False) as tf:
-                            path = tf.name
-                        _sf2.write(path, chunk, 16000, subtype="PCM_16")
-                        return self.engine._align_chunk(path, text, lang) or []
-                    finally:
-                        if path:
-                            try:
-                                _os2.unlink(path)
-                            except OSError:
-                                pass
-
-                # 「嘗試並行」是全鏈路唯一的並行開關：
-                #   識別頁＝FA 與 ASR 流水線重疊（本段）；
-                #   批次頁＝補齊任務與識別任務的調度順序（batch_queue）。
-                # 關掉就是逐段串行，行為與舊版一致。
-                # 攒批（默认开，``faBatch=0`` 一键回到逐段路径）：
-                # 逐段一次 FA 时，每次都要重起 chatllm 子进程并载入 2.9 GB
-                # 权重（实测固定开销 ≈0.9s）；窗口攒到 25 秒再跑一次，这笔
-                # 开销就被摊掉了。窗口满了才派发到后台，ASR 不等它。
-                _fa_batch = None
-                _batch_off = str(opts.get("faBatch", "1")).lower() in (
-                    "0", "false", "off", "no")
-                if (_fa_lines is not None and opts.get("alignParallel")
-                        and not _batch_off):
-                    import sysmem
-                    _mem_ok, _avail = sysmem.can_run_parallel_with_asr()
-                    if not _mem_ok:
-                        self._emit("status", {"message":
-                            "内存不足，词级对齐改为逐段串行（攒批未启用）"})
-                    else:
-                        from fa_batch import FaBatch
-                        try:
-                            _fa_batch = FaBatch(_fa_align_raw,
-                                                language=(_lang or "Chinese"))
-                        except Exception:
-                            _fa_batch = None
-
-                _fa_pipe = None
-                if (_fa_batch is None and _fa_lines is not None
-                        and opts.get("alignParallel")):
-                    from fa_pipeline import open_pipeline
-                    _fa_pipe, _why = open_pipeline(_fa_lines)
-                    if _fa_pipe is None:
-                        self._emit("status", {"message":
-                            "内存不足，词级对齐改为串行（流水线未启用）"
-                            if _why == "lowmem" else
-                            "词级对齐流水线启动失败，已回退串行"})
 
                 # 身分來源：本機路徑（點選／批次）沿用 audio_path（影片會是抽出的
                 # wav）；拖放上傳用原本那個檔的內容身分 —— 臨時路徑每次不同，
@@ -1606,6 +1488,103 @@ class WebBackend:
                 except Exception:
                     out_srt = srt_dir / "transcript.srt"
 
+                _fa_path = out_srt.with_suffix(".fa.jsonl")
+                _diar_path = out_srt.with_suffix(".diar.jsonl")
+
+                def _decode_window(src, t0, t1, dst):
+                    """从源文件解出一窗 16 kHz 单声道 wav。
+
+                    对齐不再复用识别手里的 PCM —— 那是把两条管线绑死的根源。
+                    自己解码多花 0.1~0.2 秒，换来「识别不必为对齐保留缓冲」。
+                    """
+                    dur = max(0.2, float(t1) - float(t0))
+                    cmd = [_ff, "-v", "error", "-y",
+                           "-ss", f"{float(t0):.3f}", "-t", f"{dur:.3f}",
+                           "-i", str(src), "-ar", "16000", "-ac", "1",
+                           "-c:a", "pcm_s16le", str(dst)]
+                    subprocess.run(cmd, capture_output=True, timeout=180)
+
+                def _align_window(src, t0, t1, text, lang):
+                    """整窗对齐：自己解码 → FA → **绝对音频时间**的词序列。"""
+                    import tempfile
+                    path = None
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                                suffix=".wav", delete=False) as tf:
+                            path = tf.name
+                        _decode_window(src, t0, t1, path)
+                        if not os.path.exists(path) or os.path.getsize(path) < 1024:
+                            return []
+                        items = self.engine._align_chunk(path, text, lang) or []
+                        return [(str(w), float(t0) + float(a), float(t0) + float(b))
+                                for w, a, b in items]
+                    finally:
+                        if path:
+                            try:
+                                os.unlink(path)
+                            except OSError:
+                                pass
+
+                def _embed_window(src, t0, t1):
+                    """一段语音的说话人向量；拿不到就返回 None。"""
+                    import tempfile
+                    import soundfile as _sf
+                    eng = getattr(self.engine, "diar_engine", None)
+                    fn = getattr(eng, "_get_embedding", None)
+                    if not callable(fn):
+                        return None
+                    path = None
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                                suffix=".wav", delete=False) as tf:
+                            path = tf.name
+                        _decode_window(src, t0, t1, path)
+                        if not os.path.exists(path) or os.path.getsize(path) < 1024:
+                            return None
+                        arr, _sr = _sf.read(path, dtype="float32",
+                                            always_2d=False)
+                        if arr is None or len(arr) < 8000:
+                            return None
+                        return fn(arr, 0.0, len(arr) / 16000.0)
+                    finally:
+                        if path:
+                            try:
+                                os.unlink(path)
+                            except OSError:
+                                pass
+
+                # 「嘗試並行」是全鏈路唯一的開關：開＝識別持續進行時，
+                # 內存足夠就同時拉起對齊；關＝識別期間不拉起，全部識別完
+                # 再統一補（收尾由 runner 的 _close_queues 完成）。
+                _align_queue = None
+                if (_align_active and opts.get("alignParallel")
+                        and callable(getattr(self.engine, "_align_chunk", None))):
+                    from fa_queue import AlignQueue
+                    try:
+                        _align_queue = AlignQueue(
+                            _align_window, src_path=audio_path,
+                            out_path=_fa_path,
+                            language=(_lang or "Chinese"),
+                            threshold_gb=float(_st.get("fa_gate_gb", 4.0) or 4.0),
+                            on_gate=lambda a, av, th, r:
+                                self.run_log.gate(a, av, th, r))
+                        self._align_live = _align_queue
+                    except Exception as _exc:
+                        self._emit("status", {"message":
+                            f"对齐管线启动失败，本次不补词级：{_exc}"})
+
+                _diar_queue = None
+                if (_diar_active
+                        and getattr(self.engine, "diar_engine", None) is not None):
+                    from diar_queue import DiarQueue
+                    try:
+                        _diar_queue = DiarQueue(_embed_window,
+                                                src_path=audio_path,
+                                                out_path=_diar_path)
+                        self._diar_live = _diar_queue
+                    except Exception:
+                        _diar_queue = None
+
                 rich_path = out_srt.with_suffix(".rich.json")
                 # 這一步會把舊的富集檔整個刪掉重建。若舊檔已經補好詞級時間、
                 # 而本次沒開「詞級優化」，那些 words 就再也回不來了（重跑 ASR
@@ -1634,17 +1613,35 @@ class WebBackend:
                     _nsp = int(_nsp) if _nsp and str(_nsp) not in ("auto", "自動") else None
                 except (TypeError, ValueError):
                     _nsp = None
+                # 增强器是**纯消费者**：不参与识别循环，也不调用任何模型。
+                # 它只在收尾时读三份产物（段级清单 / 词级 / 说话人向量）合成。
                 enhancer = StreamEnhancer(
-                    engine=self.engine,
                     rich_path=rich_path,
                     language=_lang,
-                    enable_align=_align_active,
-                    enable_diar=_diar_active,
+                    enable_align=_align_queue is not None,
+                    enable_diar=_diar_queue is not None,
                     n_speakers=_nsp,
                     status_cb=lambda m: self._emit("status", {"message": m}),
                     existing_jsonl=BASE_DIR / "longform_state" /
                                    f"{task_id}.segments.jsonl",
+                    diar_engine=getattr(self.engine, "diar_engine", None),
                 )
+
+                # 任务开始：一条日志把「这次跑的是什么配置」记全，事后回溯
+                # 不必再去猜模型/段长/阈值。
+                try:
+                    self.run_log.add(
+                        _t.plain(f"开始识别：{out_srt.name}"),
+                        level="info", source="task", event="task.start",
+                        file=out_srt.name,
+                        chunkSecs=int(getattr(self.engine, "max_chunk_secs", 0)),
+                        vad=float(_st.get("vad_threshold", 0.5) or 0.5),
+                        language=(_lang or "auto"),
+                        align=bool(_align_queue is not None),
+                        diar=bool(_diar_queue is not None),
+                        model=str(_st.get("cpu_model_size", "")))
+                except Exception:
+                    pass
 
                 runner = LongformRunner(
                     engine=self.engine,
@@ -1670,35 +1667,55 @@ class WebBackend:
                     # 算法伪造的，不是模型识别的。需要标点的讲义导出走
                     # 独立的 /api/export-handout，不依赖这一步。
                     refine_punct=False,
-                    # FA 行生成（None = 用旧的比例分配路径，行为逐字节不变）
-                    # 攒批模式下由 fa_batch 负责，逐段回调必须置空，否则
-                    # 两条路径会各跑一次 FA。
-                    fa_lines=(None if _fa_batch is not None else _fa_lines),
-                    # 非 None 时同一个回调改在后台跑，与下一段 ASR 重叠
-                    fa_pipeline=_fa_pipe,
-                    # 攒批：多段合并成一次 FA，窗口满了才派发到后台
-                    fa_batch=_fa_batch,
+                    # 两条独立管线：识别只入队，不等任何东西
+                    align_queue=_align_queue,
+                    diar_queue=_diar_queue,
+                    fa_path=_fa_path,
+                    diar_path=_diar_path,
                 )
                 try:
                     result = runner.run(
                         audio_path, total_sec=_duration,
                         resume=not trial and bool(opts.get("longform_resume", True)),
                         limit_sec=limit_sec)
-                finally:
-                    # 取消时 FA 子进程可能还在跑（subprocess timeout 45s），
-                    # close() 不等待，避免“停止”按钮被卡住。
-                    if _fa_pipe is not None:
-                        _fa_pipe.close()
-
-                # 攒批效果记账：窗口数明显少于段数才算真的攒起来了，
-                # 否则说明被断点/组边界切碎，调窗口只会白忙。写进运行日志，
-                # 用户反馈“还是慢”时能直接看这一行。
-                if _fa_batch is not None:
+                except BaseException as _exc:
+                    # 异常也要留一条：断点已由 runner 兜底保存，这里只负责
+                    # 把「哪个文件、错在哪」写进运行日志。
                     try:
-                        _bst = _fa_batch.stats()
                         self.run_log.add(
-                            _t.plain(f"词级攒批：{_bst['windows']} 次 FA"
-                                     f"（{_bst['failures']} 次降级）· "
+                            _t.plain(f"任务异常：{out_srt.name} · "
+                                     f"{type(_exc).__name__}: {str(_exc)[:120]}"),
+                            level="error", source="task", event="task.error",
+                            file=out_srt.name,
+                            error=f"{type(_exc).__name__}: {str(_exc)[:200]}")
+                    except Exception:
+                        pass
+                    raise
+                finally:
+                    # 取消时对齐子进程可能还在跑；close() 有超时，不会把
+                    # “停止”按钮卡住（runner 内部已按 5 秒收过一遍）。
+                    if _align_queue is not None:
+                        try:
+                            _align_queue.close(timeout=10.0)
+                        except Exception:
+                            pass
+                    self._align_live = None
+                    self._diar_live = None
+                    if _diar_queue is not None:
+                        try:
+                            _diar_queue.close(timeout=10.0)
+                        except Exception:
+                            pass
+
+                # 对齐记账：窗口数、FA 累计秒数、失败数写进运行日志。
+                # 用户反馈「还是慢」时看这一行就知道是门没开还是对齐太慢。
+                if _align_queue is not None:
+                    try:
+                        _bst = _align_queue.stats()
+                        self.run_log.add(
+                            _t.plain(f"词级对齐：{_bst['windows']} 次 FA"
+                                     f"（{_bst['failures']} 次失败 / "
+                                     f"{_bst['dropped']} 段放弃）· "
                                      f"窗口 {_bst['windowSec']:.1f}s · "
                                      f"FA 累计 {_bst['faSec']:.1f}s / "
                                      f"音频 {_bst['audioSec']:.0f}s · "
@@ -1729,6 +1746,8 @@ class WebBackend:
                     #   舊版在此直接 raise，等於中斷後使用者連字級時間軸／說話者
                     #   都拿不到，只能等整份跑完。
                     try:
+                        enhancer.load_words(_fa_path)
+                        enhancer.load_speakers(_diar_path)
                         enhancer.finalize(jsonl_path=runner.jsonl)
                     except Exception:
                         pass
@@ -1738,11 +1757,31 @@ class WebBackend:
                         + ("重新拖入同一檔案即可接續（會重新上傳一次）。"
                            if opts.get("uploaded")
                            else "重新选择同一文件可从断点继续。"))
+                # 任务结束：行数 / 音频时长 / 墙钟 / 倍速一条说完。
+                try:
+                    _elapsed = time.monotonic() - getattr(runner, "_start_wall",
+                                                          time.monotonic())
+                    _dur = float(result.get("duration") or 0.0)
+                    self.run_log.add(
+                        _t.plain(f"识别完成：{runner.out_srt.name} · "
+                                 f"{result.get('segments', 0)} 条字幕 · "
+                                 f"音频 {_dur / 60:.1f} 分钟 · "
+                                 f"墙钟 {_elapsed / 60:.1f} 分钟 · "
+                                 f"{(_dur / _elapsed) if _elapsed > 0 else 0:.2f}x"),
+                        level="info", source="task", event="task.end",
+                        file=runner.out_srt.name,
+                        lines=int(result.get("segments", 0) or 0),
+                        audioSec=round(_dur, 1),
+                        wallSec=round(_elapsed, 1))
+                except Exception:
+                    pass
                 srt = runner.out_srt
                 runner_result = result
                 # Enrichment is strictly best-effort: finalize() never raises
                 # and the SRT has already been written line by line.
                 try:
+                    enhancer.load_words(_fa_path)
+                    enhancer.load_speakers(_diar_path)
                     enhancer.finalize(jsonl_path=runner.jsonl)
                 except Exception:
                     pass
@@ -1757,10 +1796,17 @@ class WebBackend:
                     import align_backfill
                     _rich = Path(str(srt)).with_suffix(".rich.json")
                     _data = json.loads(_rich.read_text(encoding="utf-8"))
-                    if int(_data.get("layout") or 1) < 4:
-                        _laid = align_backfill.relayout(_data.get("segments") or [])
+                    _layout = int(_data.get("layout") or 1)
+                    _segs = _data.get("segments") or []
+                    _has_words = any(s.get("words") for s in _segs)
+                    # layout<4 = 旧版面，必须拉回；layout 5 = 比例断行 +
+                    # 独立词级，若拿到了词级就再做一次「用词级校正行时间 +
+                    # 统一单行版面」，标记为 6。关掉 reflow 则停在 5。
+                    if _layout < 4 or (_layout < 6 and _has_words
+                                       and opts.get("reflow", True)):
+                        _laid = align_backfill.relayout(_segs)
                         align_backfill._write_json(_rich, _laid,
-                                                   {**_data, "layout": 4})
+                                                   {**_data, "layout": 6})
                         align_backfill.rebuild_srt(Path(str(srt)), _laid)
                 except Exception:
                     pass

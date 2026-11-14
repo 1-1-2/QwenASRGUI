@@ -287,7 +287,7 @@ class _ChatLLMRunner:
         )
         output = r.stdout + r.stderr
         if "Qwen3-ASR" not in output:
-            raise RuntimeError(f"模型驗證失敗（rc={r.returncode}）：{output[:300]}")
+            raise RuntimeError(f"模型验证失败（rc={r.returncode}）：{output[:300]}")
 
     def transcribe(self, wav_path: str, sys_prompt: str | None = None) -> str:
         """送入 WAV 路徑（絕對路徑），回傳轉錄文字。"""
@@ -319,8 +319,8 @@ class _ChatLLMRunner:
         if "<asr_text>" not in output:
             preview = output.strip()[:300] or "(無輸出)"
             raise RuntimeError(
-                f"GPU 推理失敗，未取得語音輸出。\n"
-                f"可能原因：裝置不相容、模型錯誤或記憶體不足。\n"
+                f"GPU 推理失败，未取得语音输出。\n"
+                f"可能原因：设备不兼容、模型错误或内存不足。\n"
                 f"chatllm 輸出：{preview}"
             )
         text = output.split("<asr_text>", 1)[1].strip()
@@ -510,8 +510,8 @@ class _DLLASRRunner:
         if "<asr_text>" not in full:
             preview = full.strip()[:300] or "(無輸出)"
             raise RuntimeError(
-                f"GPU 推理失敗，未取得語音輸出。\n"
-                f"可能原因：裝置不相容、模型錯誤或記憶體不足。\n"
+                f"GPU 推理失败，未取得语音输出。\n"
+                f"可能原因：设备不兼容、模型错误或内存不足。\n"
                 f"DLL 輸出：{preview}"
             )
         text = full.split("<asr_text>", 1)[1].strip()
@@ -670,7 +670,7 @@ class ChatLLMASREngine:
         self._device_id    = device_id   # FA 對齊的 -ngl {id}:all 需要
 
         # ── VAD ──────────────────────────────────────────────────────
-        _s("載入 VAD 模型…")
+        _s("载入 VAD 模型…")
         vad_candidates = [
             BASE_DIR / "ov_models" / "silero_vad_v4.onnx",
             BASE_DIR / "GPUModel"  / "silero_vad_v4.onnx",
@@ -687,7 +687,7 @@ class ChatLLMASREngine:
         )
 
         # ── 說話者分離（CPU ONNX，與後端無關）───────────────────────
-        _s("載入說話者分離模型…")
+        _s("载入说话人分离模型…")
         try:
             from diarize import DiarizationEngine
             diar_candidates = [

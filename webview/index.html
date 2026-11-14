@@ -81,6 +81,12 @@
       <div class="status-dot" id="model-status">
         <span class="dot"></span><span class="t" data-i18n="status.ready">模型已就緒</span>
       </div>
+      <!-- 三条管线的运行指示：只在跑任务时出现，静默时不占地方 -->
+      <div class="pipe-list" id="pipe-list" hidden>
+        <div class="pipe"><span class="pipe-n" data-i18n="status.pipeAsr">識別</span><span class="pipe-s" id="pipe-asr">—</span></div>
+        <div class="pipe"><span class="pipe-n" data-i18n="status.pipeFa">對齊</span><span class="pipe-s" id="pipe-fa">—</span></div>
+        <div class="pipe"><span class="pipe-n" data-i18n="status.pipeDiar">說話人</span><span class="pipe-s" id="pipe-diar">—</span></div>
+      </div>
     </div>
   </aside>
 
@@ -103,7 +109,8 @@
           <div class="drop-note" data-i18n="file.modeHint">中斷後可接續 · 拖放需重新拖入（會重新上傳）</div>
         </div>
 
-        <div class="controls controls--form">
+        <!-- 動作行：只放「會做事」的按鈕。與設定分開，掃視時不會把參數當成動作。 -->
+        <div class="controls action-row">
           <button class="btn btn-primary" id="btn-run" disabled>
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span data-i18n="file.run">開始轉換</span>
           </button>
@@ -111,57 +118,51 @@
                所以在「開始轉換」旁邊常駐一個醒目徽章，勾選時立刻出現。 -->
           <span class="trial-badge" id="trial-badge" hidden
                 data-i18n="file.trialBadge">試跑前 5 分鐘 · 不會完整轉檔</span>
-          <div class="ctrl-bar">
-            <div class="ctrl-group">
-              <div class="ctrl">
-                <span class="ctrl-t" data-i18n="file.langLabel">辨識語言</span>
-                <select class="select" id="sel-lang" data-i18n-title="file.langHint"><option value="" data-i18n="common.langAuto">語言 自動</option></select>
-              </div>
-              <div class="ctrl">
-                <span class="ctrl-t" data-i18n="file.diar">說話者分離</span>
-                <select class="select" id="sel-diar" data-i18n-title="file.diarHint">
-                  <option value="off" data-i18n="file.diarOff">關閉</option>
-                  <option value="auto" data-i18n="file.diarAuto" selected>自動</option>
-                  <option value="2">2</option><option value="3">3</option>
-                  <option value="4">4</option><option value="5">5</option>
-                  <option value="6">6</option>
-                </select>
-              </div>
+          <!-- 常亮：資料夾本來就存在，不該等「有輸出」才能開。
+               hover 說明 .srt 與 .rich.json 的差別（data-i18n-tip）。 -->
+          <button class="btn btn-ghost" id="btn-open-dir" data-i18n-tip="file.openDirTip">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span data-i18n="file.openDir">開啟輸出資料夾</span>
+          </button>
+          <!-- 這顆不是「保存」：磁碟上的 SRT 已由 runner 逐行自動寫入，
+               它匯出的是結果區「行內校對」之後的版本（校對只改記憶體）。 -->
+          <button class="btn btn-ghost" id="btn-save-sub" disabled data-i18n-tip="file.saveSubTip">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg><span data-i18n="file.saveSub">匯出校對稿</span>
+          </button>
+        </div>
+
+        <!-- 設定行：參數類控制項。 -->
+        <div class="controls settings-row">
+          <div class="ctrl-group">
+            <div class="ctrl">
+              <span class="ctrl-t" data-i18n="file.langLabel">辨識語言</span>
+              <select class="select" id="sel-lang" data-i18n-title="file.langHint"><option value="" data-i18n="common.langAuto">語言 自動</option></select>
             </div>
-
-            <div class="ctrl-sep"></div>
-
-            <div class="ctrl-group">
-              <div class="ctrl">
-                <!-- 小標題掛長說明（原生 title），開關本體掛量化短句（氣泡）：
-                     兩種說明不放在同一個元素上，hover 才不會同時跳出兩個。 -->
-                <span class="ctrl-t" data-i18n="file.align" data-i18n-title="file.alignHint">詞級優化</span>
-                <label class="switch" data-i18n-tip="file.alignTip"><input type="checkbox" id="sw-align" checked><span class="track"></span></label>
-              </div>
-              <div class="ctrl">
-                <!-- 「嘗試並行」是唯一的並行開關：識別頁控制 FA 與 ASR 重疊，
-                     批次頁控制補齊優先／尾段放行。兩處共用同一個設定值。 -->
-                <span class="ctrl-t" data-i18n="file.alignPar">嘗試並行</span>
-                <label class="switch" data-i18n-tip="file.alignParHint"><input type="checkbox" id="sw-align-par"><span class="track"></span></label>
-              </div>
+            <div class="ctrl">
+              <span class="ctrl-t" data-i18n="file.diar">說話者分離</span>
+              <select class="select" id="sel-diar" data-i18n-title="file.diarHint">
+                <option value="off" data-i18n="file.diarOff">關閉</option>
+                <option value="auto" data-i18n="file.diarAuto" selected>自動</option>
+                <option value="2">2</option><option value="3">3</option>
+                <option value="4">4</option><option value="5">5</option>
+                <option value="6">6</option>
+              </select>
             </div>
+          </div>
 
-            <div class="ctrl-spacer"></div>
+          <div class="ctrl-sep"></div>
 
-            <div class="ctrl-group">
-              <div class="ctrl">
-                <span class="ctrl-t" data-i18n="file.outputLabel">輸出</span>
-                <div class="ctrl-actions">
-                  <!-- 常亮：資料夾本來就存在，不該等「有輸出」才能開。
-                       hover 說明 .srt 與 .rich.json 的差別（data-i18n-tip）。 -->
-                  <button class="btn btn-ghost" id="btn-open-dir" data-i18n-tip="file.openDirTip">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span data-i18n="file.openDir">開啟輸出資料夾</span>
-                  </button>
-                  <button class="btn btn-ghost" id="btn-save-sub" disabled>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg><span data-i18n="file.saveSub">字幕存檔</span>
-                  </button>
-                </div>
-              </div>
+          <div class="ctrl-group">
+            <div class="ctrl">
+              <!-- 小標題掛長說明（原生 title），開關本體掛量化短句（氣泡）：
+                   兩種說明不放在同一個元素上，hover 才不會同時跳出兩個。 -->
+              <span class="ctrl-t" data-i18n="file.align" data-i18n-title="file.alignHint">詞級優化</span>
+              <label class="switch" data-i18n-tip="file.alignTip"><input type="checkbox" id="sw-align" checked><span class="track"></span></label>
+            </div>
+            <div class="ctrl">
+              <!-- 「嘗試並行」是唯一的並行開關：識別頁控制 FA 與 ASR 重疊，
+                   批次頁控制補齊優先／尾段放行。兩處共用同一個設定值。 -->
+              <span class="ctrl-t" data-i18n="file.alignPar">嘗試並行</span>
+              <label class="switch" data-i18n-tip="file.alignParHint"><input type="checkbox" id="sw-align-par"><span class="track"></span></label>
             </div>
           </div>
           <!-- 字幕驗證：對應模組於 WebView 上尚未重新規劃，暫時隱藏 -->
@@ -187,7 +188,9 @@
           </summary>
           <div class="seg-body">
           <div class="row">
-            <div class="label"><div class="t" data-i18n="file.vad">語音偵測靈敏度（VAD）</div></div>
+            <!-- 靈敏度是唯一「調大調小方向相反、且沒有視覺回饋」的參數，
+                 所以在標題旁掛一個小圖示說明兩個方向的效果。 -->
+            <div class="label"><div class="t"><span data-i18n="file.vad">語音偵測靈敏度（VAD）</span><button type="button" class="hi-info" data-i18n-tip="file.vadTip" data-i18n-aria="file.vadTip" aria-label="VAD 說明">!</button></div></div>
             <input type="range" class="slider" id="seg-vad" min="0.30" max="0.80" step="0.01" value="0.50"><span class="slider-val" id="seg-vad-val">0.50</span>
           </div>
           <div class="row">
@@ -378,6 +381,19 @@
             </div>
             <div class="cur-detail" id="batch-cur-detail"></div>
           </div>
+        </div>
+
+        <!-- 批次即時字幕：只顯示「當前這一支」的段，切檔即清空，避免前後檔串台。
+             高度固定 180px，不隨條目數抖動；與單檔頁共用同一套 .live-row 樣式。 -->
+        <div class="card batch-live" id="batch-live-panel" hidden>
+          <div class="hint-head">
+            <div class="l">
+              <span class="t" data-i18n="live.title">即時字幕</span>
+              <span class="d" id="batch-live-name"></span>
+            </div>
+            <button class="btn btn-ghost btn-sm" id="btn-batch-live-follow" data-i18n="live.follow">回到最新</button>
+          </div>
+          <div id="batch-live-list" class="live-list batch-live-list"></div>
         </div>
 
         <div class="batch-queue-head">

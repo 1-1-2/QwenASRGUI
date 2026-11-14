@@ -446,7 +446,7 @@ class ASREngine:
         if vad_path is None:
             raise FileNotFoundError(
                 "找不到 silero_vad_v4.onnx（VAD 模型）。請確認已隨安裝包附帶或放入 ov_models/。")
-        _s("載入 VAD 模型…")
+        _s("载入 VAD 模型…")
         # VAD 必須單執行緒。Silero 每幀只吃 512 個採樣點（32ms），總計算量小到
         # 幾十萬次乘加；不傳 SessionOptions 時 ORT 依 intra_op_num_threads=0
         # 自動按物理核數開池，於是幾十個執行緒去搶這點計算——喚醒、barrier
@@ -463,7 +463,7 @@ class ASREngine:
             str(vad_path), _vad_so, providers=["CPUExecutionProvider"]
         )
 
-        _s("載入說話者分離模型…")
+        _s("载入说话人分离模型…")
         try:
             from diarize import DiarizationEngine
             diar_dir = model_dir / "diarization"
@@ -472,13 +472,13 @@ class ASREngine:
         except Exception:
             self.diar_engine = None
 
-        _s(f"編譯 ASR 模型（{device}）…")
+        _s(f"编译 ASR 模型（{device}）…")
         core = ov.Core()
         self.audio_enc = core.compile_model(str(ov_dir / "audio_encoder_model.xml"),      device, cpu_cfg)
         self.embedder  = core.compile_model(str(ov_dir / "thinker_embeddings_model.xml"), device, cpu_cfg)
         self._compile_decoder(core, ov_dir, device, cpu_cfg)   # 0.6B stateful / 1.7B KV-cache
 
-        _s("載入 Processor（純 numpy）…")
+        _s("载入 Processor（纯 numpy）…")
         self.processor = LightProcessor(ov_dir, max_secs=self.max_chunk_secs)
         self.pad_id    = self.processor.pad_id
         self.cc        = opencc.OpenCC(_opencc_config())
@@ -498,7 +498,7 @@ class ASREngine:
 
         self.ready     = True
         aligner_info = "  + ForcedAligner" if self.use_aligner else ""
-        _s(f"編譯完成（{device}{aligner_info}）")
+        _s(f"编译完成（{device}{aligner_info}）")
 
     def rebuild_cc(self):
         """依目前的詞彙轉換旗標重建 OpenCC 轉換器（免重新載入模型）。"""

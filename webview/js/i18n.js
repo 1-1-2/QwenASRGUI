@@ -42,7 +42,12 @@
     // 按鈕 hover 說明：srt 與同名 .rich.json 的差別。使用者常常不知道
     // 兩份檔該拿哪一份去給剪輯軟體／播放器，這裡一次講清楚。
     "file.openDirTip": ["資料夾裡每支音檔會產生兩種檔：.srt 是字幕，播放器、剪映、Premiere 可直接載入；同名的 .rich.json 是詞級時間軸＋說話者明細，供卡拉OK 高亮與說話者標籤使用，不是第二份字幕，刪掉不影響 .srt。", "文件夹里每支音频会产生两种文件：.srt 是字幕，播放器、剪映、Premiere 可直接加载；同名的 .rich.json 是词级时间轴＋说话人明细，供卡拉OK 高亮与说话人标签使用，不是第二份字幕，删掉不影响 .srt。", "Each run writes two files. The .srt is the subtitle track - players, CapCut and Premiere load it directly. The same-named .rich.json holds word-level timings and speaker labels (for karaoke highlighting and speaker tags); it is not a second subtitle file, and deleting it does not affect the .srt."],
-    "file.saveSub": ["字幕存檔", "保存字幕", "Save subtitles"],
+    "file.saveSub": ["匯出校對稿", "导出校对稿", "Export proofread"],
+    // 這顆不是「保存」：磁碟上的 SRT 已由 runner 逐行自動寫入，
+    // 它匯出的是結果區「行內校對」之後的版本（校對只改記憶體，不回寫檔案）。
+    "file.saveSubTip": ["磁碟上的 .srt 已自動儲存；這裡匯出的是你在結果區逐行校對後的版本（校對只改畫面，不會改寫原檔）。",
+                        "磁盘上的 .srt 已自动保存；这里导出的是你在结果区逐行校对后的版本（校对只改画面，不会改写原文件）。",
+                        "The .srt on disk is already saved automatically. This exports the version you proofread line by line in the result panel; proofreading only changes the view, not the file."],
     "file.verify": ["字幕驗證", "字幕校验", "Verify"],
     "file.diar": ["說話者分離", "说话者分离", "Speaker diarization"],
     // 说话者分离与人数合并成一个下拉：关闭 / 自动 / 2..6。
@@ -57,9 +62,7 @@
     "file.langHint": ["指定語言可提升準確度；留空＝自動偵測",
                       "指定语言可提升准确度；留空＝自动侦测",
                       "Naming the language improves accuracy; leave blank to auto-detect"],
-    "file.outputLabel": ["輸出", "输出", "Output"],
-    "file.toolsLabel": ["字幕工具", "字幕工具", "Subtitle tools"],
-    "file.align": ["詞級優化", "词级优化", "Word-level refine"],
+    "file.toolsLabel": ["字幕工具", "字幕工具", "Subtitle tools"],    "file.align": ["詞級優化", "词级优化", "Word-level refine"],
     // Hover 说明：必须写清「改什么 / 不改什么 / 依赖与失败行为」。
     // 「不改识别文字」这一句尤其重要——否则容易被误读成词级纠错。
     "file.alignHint": [
@@ -89,6 +92,9 @@
     "file.segTitle": ["切分參數", "切分参数", "Segmentation"],
     "file.segDesc": ["切得越長，語句越完整。", "切得越长，语句越完整。", "Longer segments keep sentences intact."],
     "file.vad": ["語音偵測靈敏度（VAD）", "语音侦测灵敏度（VAD）", "VAD sensitivity"],
+    "file.vadTip": ["調大（0.6~0.8）：只把明確的人聲當語音，噪音與輕聲會被跳過，適合安靜的錄音。調小（0.3~0.4）：更容易判定為語音，適合輕聲、遠場或嘈雜環境，但可能把噪音切進來。預設 0.5。",
+                    "调大（0.6~0.8）：只把明确的人声当语音，噪音与轻声会被跳过，适合安静的录音。调小（0.3~0.4）：更容易判定为语音，适合轻声、远场或嘈杂环境，但可能把噪音切进来。默认 0.5。",
+                    "Higher (0.6-0.8): only clear speech counts - noise and soft voices are skipped, good for clean recordings. Lower (0.3-0.4): more sensitive - better for soft, distant or noisy audio, but noise may leak in. Default 0.5."],
     "file.chunk": ["每段最長秒數", "每段最长秒数", "Max seconds per segment"],
     "file.effective": ["目前生效", "当前生效", "Effective"],
     "file.ramHint": ["記憶體", "内存", "Memory"],
@@ -170,16 +176,18 @@
     "batch.par": ["嘗試並行", "尝试并行", "Try parallel"],
     // 這個開關現在管兩件事：識別頁的 FA 流水線、批次頁的補齊優先順序。
     "batch.parHint": [
-      "識別頁：詞級對齊與識別重疊執行，耗時約減半。批次頁：補齊任務優先，剩最後一個文件才放識別進場；實際能否並行由可用記憶體決定。關閉＝全程串行。",
-      "识别页：词级对齐与识别重叠执行，耗时约减半。批次页：补齐任务优先，剩最后一个文件才放识别进场；实际能否并行由可用内存决定。关闭＝全程串行。",
-      "Audio page: word-level alignment overlaps recognition, roughly halving the run. Batch page: backfill jobs go first, recognition joins for the last file only. Actual parallelism depends on free memory. Off = fully serial."],
-    "batch.parActive": ["並行中", "并行中", "Parallel"],
-    "batch.parWaiting": ["補齊優先：等最後一個文件再啟動識別", "补齐优先：等最后一个文件再启动识别", "Backfill first: recognition starts with the last file"],
-    "batch.parDowngrade": ["資源不足，已降級串行", "资源不足，已降级串行", "Low memory — fell back to serial"],
+      "開啟：識別持續進行時，內存足夠就同時拉起對齊做詞級時間；不夠就跳過，等下一次檢查——識別全程不停。關閉：識別期間不拉起對齊，全部識別完再統一補。",
+      "开启：识别持续进行时，内存足够就同时拉起对齐做词级时间；不够就跳过，等下一次检查——识别全程不停。关闭：识别期间不拉起对齐，全部识别完再统一补。",
+      "On: while recognition keeps running, alignment is launched whenever memory allows; if not, it is skipped and retried on the next check — recognition never pauses. Off: no alignment during recognition; everything is aligned once recognition finishes."],
+    "batch.qNoAlign": ["執行中，無對齊任務", "执行中，无对齐任务", "Running · no alignment"],
+    "batch.faRunning": ["對齊執行中", "对齐运行中", "Alignment running"],
+    "batch.faIdle": ["檢測內存窗口中：對齊等待執行", "检测内存窗口中：对齐等待运行", "Waiting for a memory window"],
+    "batch.faNever": ["內存不足，對齊未曾執行", "内存不足，对齐未曾运行", "Not enough memory — alignment never ran"],
     "batch.cfgPar": ["對齊執行", "对齐执行", "Alignment mode"],
     "batch.cfgParOn": ["嘗試並行", "尝试并行", "Parallel"],
     "batch.cfgParOff": ["串行", "串行", "Serial"],
-    "batch.progAlign": ["詞級 {done}/{total}", "词级 {done}/{total}", "Words {done}/{total}"],
+    "batch.progAlign": ["對齊 {done}/{total} 行", "对齐 {done}/{total} 行", "Aligned {done}/{total} lines"],
+    "batch.progAlignJobs": ["補齊 {done}/{total}", "补齐 {done}/{total}", "Backfill {done}/{total}"],
     "batch.probeBlocked": ["不可執行：{why}", "不可执行：{why}", "Blocked: {why}"],
     "batch.probeLenient": ["長度一致，待試對齊", "长度一致，待试对齐", "Length matches; probing"],
     "batch.probeOk": ["試對齊通過", "试对齐通过", "Probe passed"],
@@ -217,6 +225,7 @@
     "batch.progRunning": ["辨識中 · {name}", "识别中 · {name}", "Transcribing · {name}"],
     "batch.progPaused": ["已暫停 · 尚有 {n} 個待處理", "已暂停 · 还有 {n} 个待处理", "Paused · {n} pending"],
     "batch.progDone": ["全部完成", "全部完成", "All finished"],
+    "batch.progDoneAligning": ["識別完成 · 對齊中", "识别完成 · 对齐中", "Recognized · aligning"],
     "batch.progEmpty": ["尚未加入檔案", "尚未加入文件", "No files yet"],
     "batch.progCount": ["{done} / {total} 完成", "{done} / {total} 完成", "{done} / {total} done"],
     "batch.progFailed": ["{n} 失敗", "{n} 失败", "{n} failed"],
@@ -342,7 +351,14 @@
     // Sidebar is only ~100px wide: keep these short enough for one line.
     "status.ready": ["模型已就緒", "模型已就绪", "Ready"],
     "status.loading": ["載入中…", "加载中…", "Loading…"],
-    "status.needModel": ["未載入模型", "未加载模型", "No model"],
+    "status.needModel": ["就緒 · 模型未載入內存（已釋放）", "就绪 · 模型未载入内存（已释放）", "Ready · model not in memory (released)"],
+    "status.pipeAsr": ["識別", "识别", "ASR"],
+    "status.pipeFa": ["對齊", "对齐", "Align"],
+    "status.pipeDiar": ["說話人", "说话人", "Speakers"],
+    "status.pipeRun": ["執行中", "运行中", "running"],
+    "status.pipeWait": ["等待", "等待", "waiting"],
+    "status.pipeIdle": ["空閒", "空闲", "idle"],
+    "status.pipeOff": ["未啟用", "未启用", "off"],
     "status.appName": ["聲音辨識小工具", "声音识别小工具", "Speech to Text"],
     "model.accel": ["推理加速版本", "推理加速版本", "Acceleration build"],
     "model.gotoTranscribe": ["前往語音轉文字", "前往语音转文字", "Go to transcription"],

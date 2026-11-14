@@ -350,14 +350,30 @@ class BatchQueue:
         elapsed = self.elapsed_sec
         if self.running and self.started_at:
             elapsed += time.time() - self.started_at
+        # 对齐管线的实时状态由后端提供（它是唯一知道「对齐在跑没有」的地方）。
+        # 以前这里用「补齐 worker 线程是否活着」冒充并行状态，导致只有识别
+        # 任务的队列永远显示「资源不足，已降级串行」—— 判据接错了线。
+        fa = {}
+        try:
+            fn = getattr(self.backend, "fa_status", None)
+            if callable(fn):
+                fa = fn() or {}
+        except Exception:
+            fa = {}
         return {"total": total, "done": done, "failed": failed,
                 "alignTotal": len(aligns), "alignDone": align_done,
                 "allTotal": len(items),
                 "parallelWanted": bool((self.run_opts or {}).get("alignParallel")),
-                "parallelActive": bool(self._align_worker
-                                       and self._align_worker.is_alive()),
-                # 還有幾個補齊文件在跑或待跑：前端據此顯示「等待補齊收尾」，
-                # 使用者才知道識別任務為什麼還沒動。
+                # 五态状态机的三个输入
+                "faRunning": bool(fa.get("faRunning")),
+                "faEverRan": bool(fa.get("faEverRan")),
+                "faBlockReason": fa.get("faBlockReason") or "empty",
+                # 双进度：识别看 progress，对齐看这两个数
+                "alignLinesDone": int(fa.get("alignLinesDone") or 0),
+                "alignLinesTotal": int(fa.get("alignLinesTotal") or 0),
+                "alignPendingSec": float(fa.get("alignPendingSec") or 0.0),
+                # 隊列開始時刻：狀態 5 的 60 秒寬限要用
+                "queueStartedAt": (self.started_at or 0) * 1000,
                 "alignBacklog": sum(1 for i in aligns
                                     if i.get("status") in ("pending", "running")),
                 "active": self.active_id, "running": self.running,
@@ -366,9 +382,17 @@ class BatchQueue:
 
     def snapshot(self) -> dict:
         with self._lock:
+            items = []
+            for i in self.items:
+                d = dict(i)
+                # 「可续跑」= 失败但有断点。断点是否存在由 runner 决定，
+                # 这里按状态给一个保守值：失败项一律允许「继续」，真没断点
+                # 时重跑一遍也是正确结果（只是不省时间）。
+                d["resumable"] = (d.get("status") == _FAILED)
+                items.append(d)
             return {"summary": self.summary(),
                     "runOpts": dict(self.run_opts or {}),
-                    "items": [dict(i) for i in self.items]}
+                    "items": items}
 
     def add(self, src_path: Path, name: str, opts: dict | None = None) -> dict:
         """Register an already-uploaded file. The file is *moved* into the
@@ -813,30 +837,24 @@ class BatchQueue:
 
         呼叫方需持鎖；本函式可能啟動並行 worker（內部會自行加鎖）。
         """
-        backlog = self._align_backlog()
         trans = next((i for i in self.items
                       if i.get("status") == "pending"
                       and (i.get("kind") or KIND_TRANSCRIBE) != KIND_ALIGN), None)
         align = next((i for i in self.items
                       if i.get("status") == "pending"
                       and (i.get("kind") or KIND_TRANSCRIBE) == KIND_ALIGN), None)
-        if backlog <= 0:
-            return trans or align
-
+        # 旧规则「补齐积压 > 1 → 识别不进场」已删除：识别期间的对齐现在由
+        # 独立管线按内存门控自己拉起，不再与识别争入场。
+        #
+        # 但「补做对齐」是另一回事：它是对**已完成文件**重建字幕，要读
+        # rich.json、要占内存。所以：
+        #   关并行 → 先把它清完再识别（用户明确要求串行）；
+        #   开并行 → 丢给后台 worker，识别立刻进场。
         parallel = bool((self.run_opts or {}).get("alignParallel"))
-        if not parallel or backlog > 1:
-            # 沒開並行，或補齊還有一堆：自己跑（沒 worker 時）或等它跑
-            return _WAIT if self._align_worker is not None else align
-
-        # 尾段：只剩 1 個補齊文件，看記憶體
-        if not self._parallel_mem_ok():
-            return _WAIT if self._align_worker is not None else align
-        if self._align_worker is None:
+        if not parallel:
+            return align or trans
+        if align is not None and self._align_worker is None:
             self._maybe_start_align_worker(gen)
-            if self._align_worker is None:
-                # 記憶體剛剛夠、但執行緒起不來 → 自己先把最後一份跑掉，
-                # 不能讓它永遠排在識別後面。
-                return align
         return trans or align
 
     def _run(self, gen: int):
@@ -899,7 +917,21 @@ class BatchQueue:
                             opts, progress_cb=_progress,
                             should_stop=lambda _id=item_id: self._item_stopped(_id, gen))
                     else:
-                        result = self.backend.transcribe(opts, progress_cb=_progress)
+                        # 讓 segments 事件帶上佇列 item id：前端的「批次即時字幕」
+                        # 靠它只收當前這一支的段。runner 的 taskId 是
+                        # 「路徑+大小+時間」的雜湊，與 item id（uuid）不同源，
+                        # 不能拿來比對。
+                        try:
+                            setattr(self.backend, "_batch_item_id", item_id)
+                        except Exception:
+                            pass
+                        try:
+                            result = self.backend.transcribe(opts, progress_cb=_progress)
+                        finally:
+                            try:
+                                setattr(self.backend, "_batch_item_id", None)
+                            except Exception:
+                                pass
                     with self._lock:
                         # gen 已變 = 使用者按了「停止」或又按了「開始」，
                         # 這個舊 worker 的結果不能再寫回佇列。

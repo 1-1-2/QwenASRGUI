@@ -363,6 +363,8 @@ button { font-family: inherit; }
 .row .label { flex: 1; }
 .row .label .t { font-size: 13.5px; font-weight: 500; color: var(--ink); }
 .row .label .d { font-size: 12px; color: var(--muted); margin-top: 1px; }
+/* 標題旁的小圖示（14px 圓形）：跟著文字基線微調，避免浮太高。 */
+.row .label .t .hi-info { margin-left: 6px; vertical-align: -2px; }
 
 /* 控制列（按鈕＋開關水平排）*/
 .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 14px; }
@@ -375,6 +377,12 @@ button { font-family: inherit; }
    底部对齐后中线会低 1.5px。统一拉成控件行高度即可精确对齐。 */
 .controls--form > .btn { height: var(--ctrl-h); padding-top: 0; padding-bottom: 0; box-sizing: border-box; }
 
+/* 音檔頁改成兩行：動作（開始／開資料夾／匯出校對稿）與設定分開。
+   舊版把 7 個元素平鋪在一行，掃視時分不出哪個是「執行」、哪個是「參數」。 */
+.action-row { gap: 10px; }
+.action-row > .btn { height: var(--ctrl-h); padding-top: 0; padding-bottom: 0; box-sizing: border-box; }
+.settings-row { align-items: flex-end; gap: 18px; margin-top: 12px; }
+
 /* 控件栏：说明在上、控件在下，用间距＋细竖线分组
    ─────────────────────────────────────────────────────────────
    旧版把「语言/说话者分离/人数/词级优化」和两个动作按钮平铺成一排，
@@ -382,10 +390,6 @@ button { font-family: inherit; }
    底部对齐（align-items:flex-end）让说明自然浮在上方。
    组内 14px、组间 18px + 1px 竖线；动作按钮保持按钮形态，不做成开关
    ——「打开文件夹」没有开/关语义，做成开关会让人以为可以关掉。 */
-.ctrl-bar {
-  display: flex; align-items: flex-end; flex-wrap: wrap;
-  gap: 18px; flex: 1; min-width: 0;
-}
 .ctrl-group { display: flex; align-items: flex-end; gap: 14px; }
 .ctrl { display: flex; flex-direction: column; justify-content: flex-end; gap: 5px; }
 .ctrl-t {
@@ -505,6 +509,10 @@ button { font-family: inherit; }
 .hint-head .l { display: flex; align-items: baseline; gap: 8px; }
 .hint-head .l .t { font-size: 13px; font-weight: 600; }
 .hint-head .l .d { font-size: 11.5px; color: var(--faint); }
+/* 這個標題行原本是為「表單流」設計的（與上一個欄位拉開 18px）。
+   放進 .card 當第一個子元素時，會與卡片自身的 18px padding 疊成 36px 空白
+   —— 即時字幕框頂部那條「不明空白」就是這麼來的。 */
+.card > .hint-head:first-child { margin-top: 0; }
 textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-height: 1.6; }
 
 /* 切分參數：與其他設定卡共用 .row 節奏，字級 / 行距 / 間距全部收斂到一組。
@@ -582,6 +590,25 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .bar { height: 7px; border-radius: 5px; background: var(--line); overflow: hidden; }
 .bar > i { display: block; height: 100%; width: 0; border-radius: 5px;
   background: linear-gradient(90deg, var(--accent), var(--accent-strong)); transition: width .3s ease; }
+
+/* 即時字幕行：時間與正文用 baseline 對齊，且不再畫分隔線。
+   舊版是 flex 預設的 stretch，兩段文字各自按自己的 font ascent 排基線
+   （時間 11px、正文 13px），時間會比中文高約 1.6px —— 不是字體問題，
+   是基線沒對齊；改成 baseline 後兩段基線重合。 */
+.live-row {
+  display: flex; gap: 10px; padding: 3px 2px;
+  align-items: baseline;
+}
+.live-row .t {
+  color: var(--ink-2); font-family: var(--font-mono);
+  white-space: nowrap; font-size: 11px; line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+.live-row .x { flex: 1; min-width: 0; word-break: break-word; line-height: 1.6; }
+/* 批次頁的即時字幕：固定高度，避免條目增減時整個佇列上下跳。 */
+.batch-live { margin-top: 12px; }
+.live-list { max-height: 220px; overflow: auto; font-size: 13px; }
+.batch-live-list { max-height: 180px; }
 
 /* Wave 11／問題 1：進度條上下方不再重複。
    上方 .meta 已經有「辨識中 · 第 5/8 段」這種主狀態；舊版下方又顯示
@@ -1285,3 +1312,14 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
   background: var(--accent-soft, rgba(0,0,0,.06));
   vertical-align: 1px;
 }
+
+/* 左下角的三管线运行指示。侧栏很窄，所以每行是「名字 + 状态词」，
+   名字用次级色、状态用主色；整体只在跑任务时出现。 */
+.pipe-list {
+  margin-top: 6px; padding-top: 6px;
+  border-top: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.pipe { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.pipe-n { color: var(--faint); min-width: 42px; }
+.pipe-s { color: var(--ink-2); white-space: normal; word-break: break-word; }

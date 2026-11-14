@@ -110,13 +110,13 @@ CHAIN = [
     # 它们缺了同样会让启动器起来，所以一并纳入模拟。
     "cf_tunnel", "chatllm_engine", "fa_aligner", "fa_segmenter",
     "postprocess", "processor_numpy",
-    # 2026-11：并行流水线与补对齐拆出的模块；漏收会让打包版缺文件而
+    # 2026-11：补对齐与语音分组的公共实现；漏收会让打包版缺文件而
     # 在用户机器上才炸（本地源码跑得好好的）。
-    "fa_pipeline", "vad_groups", "sysmem", "align_backfill",
+    "vad_groups", "sysmem", "align_backfill",
     # 2026-11：超長段切分（能量低谷）从两个引擎抽出的公共实现。
     "chunk_split",
-    # 2026-11：自適應窗口的 FA 攢批隊列（詞級對齊與 ASR 真正並行的關鍵）。
-    "fa_batch",
+    # 2026-11：两条独立管线的队列（识别只入队、后台自己解码）。
+    "fa_queue", "diar_queue",
 ]
 
 
