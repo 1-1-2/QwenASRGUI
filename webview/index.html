@@ -133,8 +133,16 @@
 
             <div class="ctrl-group">
               <div class="ctrl">
-                <span class="ctrl-t" data-i18n="file.align">詞級優化</span>
-                <label class="switch" data-i18n-title="file.alignHint"><input type="checkbox" id="sw-align" checked><span class="track"></span></label>
+                <!-- 小標題掛長說明（原生 title），開關本體掛量化短句（氣泡）：
+                     兩種說明不放在同一個元素上，hover 才不會同時跳出兩個。 -->
+                <span class="ctrl-t" data-i18n="file.align" data-i18n-title="file.alignHint">詞級優化</span>
+                <label class="switch" data-i18n-tip="file.alignTip"><input type="checkbox" id="sw-align" checked><span class="track"></span></label>
+              </div>
+              <div class="ctrl">
+                <!-- 「嘗試並行」是唯一的並行開關：識別頁控制 FA 與 ASR 重疊，
+                     批次頁控制補齊優先／尾段放行。兩處共用同一個設定值。 -->
+                <span class="ctrl-t" data-i18n="file.alignPar">嘗試並行</span>
+                <label class="switch" data-i18n-tip="file.alignParHint"><input type="checkbox" id="sw-align-par"><span class="track"></span></label>
               </div>
             </div>
 
@@ -313,6 +321,13 @@
           </button>
           <button class="btn btn-primary" id="btn-batch-run"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><span data-i18n="batch.run">全部開始</span></button>
           <button class="btn btn-ghost" id="btn-batch-clear"><span data-i18n="batch.clear">清除已完成</span></button>
+          <!-- 執行方式：勾選後允許佇列裡的「補做對齊」任務與識別任務錯峰執行，
+               只在可用記憶體足夠時生效；不足會自動降級並在佇列標題旁說明。 -->
+          <label class="switch batch-par" id="batch-par-wrap" data-i18n-title="batch.parHint">
+            <input type="checkbox" id="batch-align-par">
+            <span class="track"></span>
+            <span data-i18n="batch.par">嘗試並行</span>
+          </label>
           <div class="sp"></div>
           <!-- 與單檔頁同一顆：輸出資料夾是全域的，不屬於某一個任務，
                沒有「必須先有輸出」的前提。hover 說明 srt / rich.json 差別。 -->
@@ -368,7 +383,21 @@
         <div class="batch-queue-head">
           <span class="t" data-i18n="batch.queue">佇列</span>
           <span class="m" id="batch-queue-meta"></span>
+          <span class="chip chip-muted" id="batch-par-state" hidden></span>
           <span class="hint-badge" id="batch-move-hint" data-i18n="batch.moveHint" hidden>可拖曳列調整處理順序</span>
+          <div class="sp"></div>
+          <!-- 「補做對齊」抽屜：收起時只有一顆入口，展開後向左滑出
+               標記／開始對齊／取消選擇，佇列同時進入多選態。 -->
+          <div class="qh-actions">
+            <div class="align-drawer" id="align-drawer">
+              <button class="btn btn-ghost btn-sm" id="btn-align-mark" data-i18n="batch.alignMark">標記</button>
+              <button class="btn btn-primary btn-sm" id="btn-align-run" disabled data-i18n="batch.alignRun">開始對齊</button>
+              <button class="btn btn-ghost btn-sm" id="btn-align-cancel" data-i18n="batch.alignCancel">取消選擇</button>
+            </div>
+            <button class="btn btn-ghost btn-sm" id="btn-align-toggle" hidden>
+              <span data-i18n="batch.alignStart">補做對齊</span>
+            </button>
+          </div>
         </div>
         <div class="batch-list" id="batch-list"></div>
       </section>

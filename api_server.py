@@ -96,9 +96,29 @@ def _parse_srt(srt_text: str):
             start, end = _ts(a), _ts(b)
         except Exception:
             continue
-        text = " ".join(lines[ti + 1:]).strip()
+        text = _join_srt_lines(lines[ti + 1:]).strip()
         segs.append({"id": len(segs), "start": start, "end": end, "text": text})
     return segs
+
+
+def _join_srt_lines(parts: list[str]) -> str:
+    """把一條字幕的多行文本接成單行（兼容舊產物與外部 SRT）。
+
+    layout v4 之後本專案產出的字幕恆為單行，但歷史 rich.json 與外部輸入
+    仍可能帶換行，這裡統一還原成連續文本給 API 呼叫方；
+    但中文不該插空格（「…的 第一道題」很醜），英文詞之間又必須有空格。
+    只在「兩邊都是拉丁字母/數字」時補空格。
+    """
+    out = ""
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        if out and out[-1].isascii() and out[-1].isalnum() \
+                and p[0].isascii() and p[0].isalnum():
+            out += " "
+        out += p
+    return out
 
 
 def get_local_ip() -> str:

@@ -652,6 +652,95 @@ class WebViewServer:
                     if path == "/api/batch/cancel":
                         return self._json({"ok": True,
                                            "summary": server.batch_queue.cancel()})
+                    if path == "/api/batch/align/mark":
+                        # 只標記，不啟動：勾選的列改成「補做對齊」任務。
+                        body = self._read_json_body() or {}
+                        ids = [str(x) for x in (body.get("ids") or [])]
+                        n = server.batch_queue.mark_align(ids)
+                        return self._json({"ok": True, "marked": n,
+                                           "snapshot": server.batch_queue.snapshot()})
+                    if path == "/api/batch/align/unmark":
+                        body = self._read_json_body() or {}
+                        ids = body.get("ids")
+                        n = server.batch_queue.unmark_align(
+                            None if ids is None else [str(x) for x in ids])
+                        return self._json({"ok": True, "unmarked": n,
+                                           "snapshot": server.batch_queue.snapshot()})
+                    if path == "/api/batch/rebuild/srt":
+                        # 只重寫 SRT（用既有 rich.json），毫秒級；不跑對齊。
+                        body = self._read_json_body() or {}
+                        _id = str(body.get("id", ""))
+                        it = next((x for x in list(server.batch_queue.items)
+                                   if x.get("id") == _id), None)
+                        if it is None:
+                            return self._json({"ok": False,
+                                               "error": "找不到這一列"})
+                        try:
+                            r = server.backend.rebuild_srt_only(
+                                it.get("opts") or {"path": it.get("path"),
+                                                   "name": it.get("name")})
+                        except Exception as exc:
+                            return self._json({"ok": False, "error": str(exc)})
+                        return self._json(r)
+                    if path == "/api/batch/align/probe":
+                        # 兩段式：先回 L0/L2（毫秒級），L3 三窗試對齊丟背景，
+                        # 逐項以 SSE "alignprobe" 把黃標刷成綠/紅。
+                        import align_backfill
+                        import threading as _threading
+                        body = self._read_json_body() or {}
+                        want = {str(x) for x in (body.get("ids") or [])}
+                        out = []
+                        for it in list(server.batch_queue.items):
+                            if it.get("id") not in want:
+                                continue
+                            st = {"id": it["id"], "level": "blocked",
+                                  "segments": 0, "reason": ""}
+                            try:
+                                audio, srt = server.backend.align_paths(
+                                    it.get("opts") or {"path": it.get("path"),
+                                                       "name": it.get("name")})
+                            except Exception as exc:
+                                st["reason"] = str(exc)
+                                out.append(st)
+                                continue
+                            info = align_backfill.inspect(srt)
+                            if not info.get("ok"):
+                                st["reason"] = info.get("reason") or "缺產物"
+                                out.append(st)
+                                continue
+                            st["segments"] = info["segments"]
+                            dur = float(it.get("durationSec") or 0)
+                            if not dur:
+                                st["level"] = "unverified"
+                                st["reason"] = "音檔長度尚未探測，僅確認產物存在"
+                            else:
+                                delta = abs(dur - info["duration"])
+                                if delta <= max(10.0, info["duration"] * 0.001):
+                                    st["level"] = "lenient"
+                                    st["reason"] = f"長度一致（差 {delta:.1f}s），不保證同一檔案"
+                                else:
+                                    st["level"] = "blocked"
+                                    st["reason"] = f"時長不符（差 {delta:.0f}s）"
+                            out.append(st)
+
+                            def _bg(_id=it["id"], _a=audio, _s=srt):
+                                r = align_backfill.probe(_a, _s)
+                                try:
+                                    server.hub.publish("alignprobe",
+                                                       {"id": _id, **r})
+                                except Exception:
+                                    pass
+                            try:
+                                _threading.Thread(target=_bg, daemon=True,
+                                                  name=f"fa-probe-{it['id']}").start()
+                            except Exception:
+                                pass
+                        return self._json({"ok": True, "items": out})
+                    if path == "/api/batch/item/cancel":
+                        body = self._read_json_body() or {}
+                        return self._json({"ok": server.batch_queue.cancel_item(
+                            str(body.get("id", "")),
+                        ), "snapshot": server.batch_queue.snapshot()})
                     if path == "/api/batch/remove":
                         body = self._read_json_body()
                         return self._json({"ok": server.batch_queue.remove(
@@ -692,6 +781,8 @@ class WebViewServer:
                             "diarize": bool(body.get("diarize")),
                             "nSpeakers": body.get("nSpeakers") or "",
                             "align": bool(body.get("align", True)),
+                            # FA 流水线开关（識別頁的「嘗試並行」）
+                            "alignParallel": bool(body.get("alignParallel")),
                             "hint": body.get("hint") or "",
                             "trial": bool(body.get("trial")),
                             "vadThreshold": body.get("vadThreshold") or "",
@@ -948,6 +1039,21 @@ class WebViewServer:
                     self._cleanup_upload(tmp_dir)
 
             def _vad_preview(self):
+                # 與 /api/transcribe 一樣有兩種來源：
+                #  · JSON {path}  → 原生對話框選檔，直接引用本機路徑（零拷貝）
+                #  · multipart file → 拖放上傳的 File 物件
+                # 從前這裡只認 multipart，點「選擇檔案」時前端把
+                # {path, name} 這個普通物件塞進 FormData.append("file", …)，
+                # 瀏覽器直接拋 "parameter 2 is not of type 'Blob'" —— 那是
+                # 前端的錯，但要讓點選檔這條主路径可用，後端得先接住 JSON。
+                if "application/json" in self.headers.get("Content-Type", ""):
+                    body = self._read_json_body()
+                    opts = {
+                        "path": str(body.get("path", "") or ""),
+                        "name": body.get("name") or None,
+                        "vadThreshold": body.get("vadThreshold") or "",
+                    }
+                    return self._json(server.backend.vad_preview(opts))
                 tmp_dir, opts, err = self._receive_upload()
                 if err is not None:
                     return err

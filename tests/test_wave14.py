@@ -146,7 +146,8 @@ def test_resume_and_duration(r: Result):
             '"segments": max(0, next_index - 1)' in RUNNER)
     r.check("后端把 resumedFrom 透传", '"resumedFrom": int(result.get("resumeFrom") or 1)' in BACKEND)
     r.check("队列开始任务时不清零 progress",
-            'nxt["error"] = None\n                    nxt["resumedFrom"]' in QUEUE_SRC)
+            'nxt["error"] = None\n                    nxt["cancelFlag"] = False\n'
+            '                    nxt["resumedFrom"]' in QUEUE_SRC)
     r.check("队列完成后回写总段数与起点",
             'cur["totalSegments"] = result.get("totalSegments")' in QUEUE_SRC and
             'cur["resumedFrom"] = int(result.get("resumedFrom") or 1)' in QUEUE_SRC)

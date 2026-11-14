@@ -156,163 +156,22 @@ ALIGNER_MODEL_NAME = "Qwen3-ForcedAligner-0.6B"
 # ══════════════════════════════════════════════════════
 
 def _detect_speech_groups(audio: np.ndarray, vad_sess, max_group_sec: int = MAX_GROUP_SEC,
-                          stats: dict | None = None) -> list[tuple[float, float, np.ndarray]]:
-    """Silero VAD 分段，回傳 [(start_s, end_s, chunk), ...]
+                          stats: dict | None = None):
+    """兼容包装：实现在 ``vad_groups``，与 chatllm 核心共用同一份。
 
-    可傳入 stats dict，函式會填入 n_chunks / max_prob / mean_prob / threshold /
-    n_segments，供上層在「未偵測到人聲」時產生明確診斷（見 format_vad_diag）。
+    旧版这里有一份逐行相同的副本；两份一旦分叉，同一段音频在两个引擎上
+    会切出不同的组，进而整份时间轴都不一样。
     """
-    h  = np.zeros((2, 1, 64), dtype=np.float32)
-    c  = np.zeros((2, 1, 64), dtype=np.float32)
-    sr = np.array(SAMPLE_RATE, dtype=np.int64)
-    n  = len(audio) // VAD_CHUNK
-    probs = []
-    for i in range(n):
-        chunk = audio[i*VAD_CHUNK:(i+1)*VAD_CHUNK].astype(np.float32)[np.newaxis, :]
-        out, h, c = vad_sess.run(None, {"input": chunk, "h": h, "c": c, "sr": sr})
-        probs.append(float(out[0, 0]))
-    if stats is not None:
-        stats["n_chunks"]  = len(probs)
-        stats["max_prob"]  = max(probs) if probs else 0.0
-        stats["mean_prob"] = (sum(probs) / len(probs)) if probs else 0.0
-        stats["threshold"] = VAD_THRESHOLD
-    if not probs:
-        return [(0.0, len(audio) / SAMPLE_RATE, audio)]
-
-    MIN_CH = 16; PAD = 5; MERGE = 16
-    raw: list[tuple[int, int]] = []
-    in_sp = False; s0 = 0
-    for i, p in enumerate(probs):
-        if p >= VAD_THRESHOLD and not in_sp:
-            s0 = i; in_sp = True
-        elif p < VAD_THRESHOLD and in_sp:
-            if i - s0 >= MIN_CH:
-                raw.append((max(0, s0-PAD), min(n, i+PAD)))
-            in_sp = False
-    if in_sp and n - s0 >= MIN_CH:
-        raw.append((max(0, s0-PAD), n))
-    if stats is not None:
-        stats["n_segments"] = len(raw)
-    if not raw:
-        return []
-
-    merged = [list(raw[0])]
-    for s, e in raw[1:]:
-        if s - merged[-1][1] <= MERGE:
-            merged[-1][1] = e
-        else:
-            merged.append([s, e])
-
-    mx_samp = max_group_sec * SAMPLE_RATE
-    groups: list[tuple[int, int]] = []
-    gs = merged[0][0] * VAD_CHUNK
-    ge = merged[0][1] * VAD_CHUNK
-    for seg in merged[1:]:
-        s = seg[0] * VAD_CHUNK; e = seg[1] * VAD_CHUNK
-        if e - gs > mx_samp:
-            groups.append((gs, ge)); gs = s
-        ge = e
-    groups.append((gs, ge))
-
-    result = []
-    _tail = int(0.35 * SAMPLE_RATE)   # 多含尾段 0.35s：補捉 Silero 漏掉的句尾輕聲字（的/了/嗎）
-    for gs, ge in groups:
-        # 取完整語音段並多含一點尾巴；mel 會在 processor 補零到固定長度，整秒對齊
-        # 非必要。舊版 floor 會丟尾段近 1 秒；句尾輕聲字也常被 Silero 的 ge 排除。
-        ch = audio[gs: min(len(audio), ge + _tail)].astype(np.float32)
-        if len(ch) < SAMPLE_RATE // 2:      # 最小 0.5 秒
-            continue
-        result.append((gs / SAMPLE_RATE, ge / SAMPLE_RATE, ch))
-    return result
+    from vad_groups import detect_speech_groups
+    return detect_speech_groups(audio, vad_sess, max_group_sec=max_group_sec,
+                                stats=stats, threshold=VAD_THRESHOLD)
 
 
 def _split_to_lines(text: str) -> list[str]:
-    """以標點符號切分短句，移除標點，每句獨立成行。
-
-    斷句規則（英文/中文統一）：
-    1. 強標點（。？！；及英文 .!?;）→ 立即切行，標點不輸出
-    2. 弱標點（，，、：…—）→ 僅當當前緩衝 >= WEAK_MIN_CHARS 才切，
-       否則丟棄標點繼續累積（避免「呃，」「对吧，」這類碎片行）
-    3. 英文整字為最小單位，詞前補空格（詞界）
-    4. MAX_CHARS 保護：超限才強制換行，且優先回退到最近弱標點處切
-
-    2026-11 改：舊版「遇任何標點即切」是平均 8.7 字/行、17.6% 碎片行的
-    直接成因（真实 85680 字語料）。門檻 12 時行數 8827→4677、碎片→0。
+    """兼容包装：实现在 ``subtitle_lines.split_sentences``（三个引擎共用一份）。
     """
-    if "<asr_text>" in text:
-        text = text.split("<asr_text>", 1)[1]
-    text = text.strip()
-    if not text:
-        return []
-
-    PUNCT = frozenset('，。？！；：…—、.,!?;:')
-    WEAK_MIN_CHARS = 12
-    lines: list[str] = []
-    buf   = ""
-
-    i = 0
-    while i < len(text):
-        ch = text[i]
-
-        # ── 標點符號：強標點立即切，弱標點夠長才切 ───────────────────
-        if ch in PUNCT:
-            if ch in _STRONG_PUNCT:
-                if buf.strip():
-                    lines.append(buf.strip())
-                buf = ""
-            elif len(buf.strip()) >= WEAK_MIN_CHARS:
-                lines.append(buf.strip())
-                buf = ""
-            # 弱標點但緩衝不足 → 丟棄標點，繼續累積
-            i += 1
-            continue
-
-        # ── 英文單字：整字收集，詞前補空格（詞界）────────────────────
-        if ch.isalpha() and ord(ch) < 128:
-            j = i
-            while j < len(text) and text[j].isalpha() and ord(text[j]) < 128:
-                j += 1
-            word = text[i:j]
-            prefix = " " if buf and not buf.endswith(" ") else ""
-            if len(buf) + len(prefix) + len(word) > MAX_CHARS and buf.strip():
-                lines.append(buf.strip())
-                buf = word
-            else:
-                buf += prefix + word
-            i = j
-            continue
-
-        # ── 空格：保留分詞間距 ────────────────────────────────────────
-        if ch == " ":
-            if buf and not buf.endswith(" "):
-                buf += " "
-            i += 1
-            if len(buf.rstrip()) >= MAX_CHARS:
-                lines.append(buf.strip())
-                buf = ""
-            continue
-
-        # ── 中文/日文/數字等：逐字累積 ────────────────────────────────
-        buf += ch
-        i += 1
-        if len(buf) >= MAX_CHARS:
-            # 超限時優先回退到最近的弱標點處切，避免把詞硬切兩半
-            # （舊版直接切，是「基础的同」+「学」這類切斷的直接成因）
-            cut = -1
-            for k in range(len(buf) - 1, max(0, len(buf) - 8), -1):
-                if buf[k] in PUNCT:
-                    cut = k
-                    break
-            if cut > 0:
-                lines.append(buf[:cut].strip())
-                buf = buf[cut + 1:]
-            else:
-                lines.append(buf.strip())
-                buf = ""
-
-    if buf.strip():
-        lines.append(buf.strip())
-    return [l for l in lines if l.strip()]
+    from subtitle_lines import split_sentences
+    return split_sentences(text)
 
 
 
@@ -620,7 +479,7 @@ class ASREngine:
         self._compile_decoder(core, ov_dir, device, cpu_cfg)   # 0.6B stateful / 1.7B KV-cache
 
         _s("載入 Processor（純 numpy）…")
-        self.processor = LightProcessor(ov_dir)
+        self.processor = LightProcessor(ov_dir, max_secs=self.max_chunk_secs)
         self.pad_id    = self.processor.pad_id
         self.cc        = opencc.OpenCC(_opencc_config())
 
@@ -763,28 +622,18 @@ class ASREngine:
         self,
         groups: list[tuple[float, float, np.ndarray, "str | None"]],
     ) -> list[tuple[float, float, np.ndarray, "str | None"]]:
-        """將超過 max_chunk_secs 的音訊段落切分為等長子片段。
+        """將超過 max_chunk_secs 的音訊段落切開。
 
-        不論是說話者分離路徑或 VAD 單段路徑，都可能產生比模型
-        輸入長度（max_chunk_secs）更長的 chunk。若不切分，
-        _extract_mel() 會靜默截斷尾段，造成掉字。
+        不論是說話者分離路徑或 VAD 單段路徑，都可能產生比模型輸入長度
+        （max_chunk_secs）更長的 chunk。若不切分，_extract_mel() 會靜默
+        截斷尾段，造成掉字。
+
+        實作在 ``chunk_split``：刀口落在能量最低處（字間空隙、換氣點），
+        不是每 limit 一刀的等長硬切 ── 後者會把字劈成兩半，兩邊都辨識錯。
         """
-        max_samples = self.max_chunk_secs * SAMPLE_RATE
-        result = []
-        for t0, t1, chunk, spk in groups:
-            if len(chunk) <= max_samples:
-                result.append((t0, t1, chunk, spk))
-            else:
-                pos = 0
-                while pos < len(chunk):
-                    piece = chunk[pos: pos + max_samples]
-                    if len(piece) < SAMPLE_RATE:   # 不足 1 秒的殘餘片段跳過
-                        break
-                    piece_t0 = t0 + pos / SAMPLE_RATE
-                    piece_t1 = min(t1, piece_t0 + len(piece) / SAMPLE_RATE)
-                    result.append((piece_t0, piece_t1, piece, spk))
-                    pos += max_samples
-        return result
+        from chunk_split import split_oversized
+        return split_oversized(groups, self.max_chunk_secs,
+                               sample_rate=SAMPLE_RATE)
 
     def process_file(
         self,
@@ -922,7 +771,11 @@ class ASREngine:
                 # ── 比例估算 Fallback ──────────────────────────────────────
                 text = raw_text if _g_output_simplified else self.cc.convert(raw_text)
                 lines = _split_to_lines(text)
-                for s, e, line in _assign_ts(lines, g0, g1):
+                # 版面与其他路径一致：细行再按 ceil(字数/20) 均分（见 subtitle_lines）。
+                from subtitle_lines import balance_lines as _balance
+                for s, e, line in _balance(
+                        [(a, b, c, None)
+                         for (a, b, c) in _assign_ts(lines, g0, g1)]):
                     all_subs.append((s, e, line, spk))
                     all_rich.append({"start": s, "end": e, "text": line,
                                      "speaker": spk, "words": []})   # 無對齊 → 前端內插
@@ -965,7 +818,13 @@ class ASREngine1p7B(ASREngine):
     """
 
     _OV_SUBDIR     = "qwen3_asr_1p7b_kv_int8"
-    max_chunk_secs = 10   # audio_encoder 匯出固定 T=1000（10s）
+    # 每段上限。IR 全動態、encoder 實測 300 秒仍正常，真正的限制只有兩處：
+    # ① processor_numpy 的 _layout 夾緊（本值經 max_secs 傳入）
+    # ② 耗時 —— 實測 10s→4.11s、15s→8.61s、20s→12.48s（RTF 0.41→0.62）
+    # 20 秒是折中：600 秒真實課程錄音端到端實測，硬切刀口 33→12、最終段數
+    # 68→40，總耗時 391.9 → 396.9 秒（+1.3%）—— 動態 pad 與低谷切分把加長
+    # 的代價基本吃平了。30 秒只剩 5 個刀口，代價卻大得多，故不採用。
+    max_chunk_secs = 20
 
     def __init__(self):
         super().__init__()
@@ -1154,11 +1013,14 @@ class RealtimeManager:
                 buf.append(chunk); sil = 0
             elif buf:
                 buf.append(chunk); sil += 1
-                rt_max_buf = int(getattr(self.asr, "max_chunk_secs", 19) * SAMPLE_RATE / VAD_CHUNK)
+                # 實時緩衝區與離線的 max_chunk_secs 脫鉤：緩衝越大，出字延遲
+                # 越大。20 秒的緩衝等於最壞要等 20 秒才吐第一句，實時體驗
+                # 不可接受，故固定 10 秒；離線轉寫才用得到 20 秒。
+                rt_max_buf = int(10 * SAMPLE_RATE / VAD_CHUNK)
                 if sil >= RT_SILENCE_CHUNKS or len(buf) >= rt_max_buf:
                     audio = np.concatenate(buf)
-                    # 不裁切到整秒（processor 會補零到固定長度）；舊版 floor
-                    # 會丟掉尾段最多近 1 秒語音，造成句尾字消失。
+                    # 不裁切到整秒（processor 會按整秒補零，見 _layout）；
+                    # 舊版 floor 會丟掉尾段最多近 1 秒語音，造成句尾字消失。
                     _max_tok = 400 if self.language == "Japanese" else 300
                     try:
                         text = self.asr.transcribe(

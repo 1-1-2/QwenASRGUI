@@ -531,68 +531,10 @@ class _DLLASRRunner:
 
 def _detect_speech_groups(audio: np.ndarray, vad_sess, max_group_sec: int = MAX_GROUP_SEC,
                           stats: dict | None = None):
-    h  = np.zeros((2, 1, 64), dtype=np.float32)
-    c  = np.zeros((2, 1, 64), dtype=np.float32)
-    sr = np.array(SAMPLE_RATE, dtype=np.int64)
-    n  = len(audio) // VAD_CHUNK
-    probs = []
-    for i in range(n):
-        chunk = audio[i*VAD_CHUNK:(i+1)*VAD_CHUNK].astype(np.float32)[np.newaxis, :]
-        out, h, c = vad_sess.run(None, {"input": chunk, "h": h, "c": c, "sr": sr})
-        probs.append(float(out[0, 0]))
-    if stats is not None:
-        stats["n_chunks"]  = len(probs)
-        stats["max_prob"]  = max(probs) if probs else 0.0
-        stats["mean_prob"] = (sum(probs) / len(probs)) if probs else 0.0
-        stats["threshold"] = VAD_THRESHOLD
-    if not probs:
-        return [(0.0, len(audio) / SAMPLE_RATE, audio)]
-
-    MIN_CH = 16; PAD = 5; MERGE = 16
-    raw: list[tuple[int, int]] = []
-    in_sp = False; s0 = 0
-    for i, p in enumerate(probs):
-        if p >= VAD_THRESHOLD and not in_sp:
-            s0 = i; in_sp = True
-        elif p < VAD_THRESHOLD and in_sp:
-            if i - s0 >= MIN_CH:
-                raw.append((max(0, s0-PAD), min(n, i+PAD)))
-            in_sp = False
-    if in_sp and n - s0 >= MIN_CH:
-        raw.append((max(0, s0-PAD), n))
-    if stats is not None:
-        stats["n_segments"] = len(raw)
-    if not raw:
-        return []
-
-    merged = [list(raw[0])]
-    for s, e in raw[1:]:
-        if s - merged[-1][1] <= MERGE:
-            merged[-1][1] = e
-        else:
-            merged.append([s, e])
-
-    mx_samp = max_group_sec * SAMPLE_RATE
-    groups: list[tuple[int, int]] = []
-    gs = merged[0][0] * VAD_CHUNK
-    ge = merged[0][1] * VAD_CHUNK
-    for seg in merged[1:]:
-        s = seg[0] * VAD_CHUNK; e = seg[1] * VAD_CHUNK
-        if e - gs > mx_samp:
-            groups.append((gs, ge)); gs = s
-        ge = e
-    groups.append((gs, ge))
-
-    result = []
-    _tail = int(0.35 * SAMPLE_RATE)   # 多含尾段 0.35s：補捉 Silero 漏掉的句尾輕聲字（的/了/嗎）
-    for gs, ge in groups:
-        # 取完整語音段並多含一點尾巴（mel 會補零到固定長度）；舊版 floor 會丟尾段
-        # 近 1 秒，句尾輕聲字也常被 Silero 的 ge 排除，故補 0.35s 尾段。
-        ch = audio[gs: min(len(audio), ge + _tail)].astype(np.float32)
-        if len(ch) < SAMPLE_RATE // 2:      # 最小 0.5 秒
-            continue
-        result.append((gs / SAMPLE_RATE, ge / SAMPLE_RATE, ch))
-    return result
+    """兼容包装：实现在 ``vad_groups``，与桌面引擎共用同一份。"""
+    from vad_groups import detect_speech_groups
+    return detect_speech_groups(audio, vad_sess, max_group_sec=max_group_sec,
+                                stats=stats, threshold=VAD_THRESHOLD)
 
 
 def format_vad_diag(stats: dict) -> str:
@@ -642,19 +584,13 @@ def detect_degenerate_asr(text: str) -> str | None:
 
 
 def _split_to_lines(text: str) -> list[str]:
-    text = text.strip()
-    if not text:
-        return []
-    parts = re.split(r"[。！？，、；：…—,.!?;:]+", text)
-    lines = []
-    for p in parts:
-        p = p.strip()
-        if not p:
-            continue
-        while len(p) > MAX_CHARS:
-            lines.append(p[:MAX_CHARS]); p = p[MAX_CHARS:]
-        lines.append(p)
-    return [l for l in lines if l.strip()]
+    """兼容包装：实现在 ``subtitle_lines.split_sentences``。
+
+    旧版见标点就切并硬切 20 字，与桌面版规则不同；统一后同一段音频
+    在任何引擎上都切出同样的行。
+    """
+    from subtitle_lines import split_sentences
+    return split_sentences(text)
 
 
 def _srt_ts(s: float) -> str:
@@ -914,22 +850,14 @@ class ChatLLMASREngine:
         self,
         groups: list[tuple[float, float, np.ndarray, "str | None"]],
     ) -> list[tuple[float, float, np.ndarray, "str | None"]]:
-        max_samples = self.max_chunk_secs * SAMPLE_RATE
-        result = []
-        for t0, t1, chunk, spk in groups:
-            if len(chunk) <= max_samples:
-                result.append((t0, t1, chunk, spk))
-            else:
-                pos = 0
-                while pos < len(chunk):
-                    piece = chunk[pos: pos + max_samples]
-                    if len(piece) < SAMPLE_RATE:
-                        break
-                    piece_t0 = t0 + pos / SAMPLE_RATE
-                    piece_t1 = min(t1, piece_t0 + len(piece) / SAMPLE_RATE)
-                    result.append((piece_t0, piece_t1, piece, spk))
-                    pos += max_samples
-        return result
+        """超過 max_chunk_secs 的段落切開；實作在 ``chunk_split``。
+
+        與桌面引擎共用同一份刀口邏輯，否則兩個後端會切出不同段落，
+        字幕行數與時間軸對不上。
+        """
+        from chunk_split import split_oversized
+        return split_oversized(groups, self.max_chunk_secs,
+                               sample_rate=SAMPLE_RATE)
 
     # ── 音檔轉 SRT ─────────────────────────────────────────────────────
 
@@ -1057,7 +985,11 @@ class ChatLLMASREngine:
                 if self.cc and not _output_simplified:
                     text = self.cc.convert(raw_text)
                 lines = _split_to_lines(text)
-                for s, e, line in _assign_ts(lines, g0, g1):
+                # 版面与其他路径一致：细行再按 ceil(字数/20) 均分（见 subtitle_lines）。
+                from subtitle_lines import balance_lines as _balance
+                for s, e, line in _balance(
+                        [(a, b, c, None)
+                         for (a, b, c) in _assign_ts(lines, g0, g1)]):
                     all_subs.append((s, e, line, spk))
                     all_rich.append({"start": s, "end": e, "text": line,
                                      "speaker": spk, "words": []})   # 無對齊 → 前端內插

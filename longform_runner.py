@@ -19,8 +19,12 @@ What it changes
 
 Deliberate non-goals
 --------------------
-* No concurrency. ASREngine.transcribe() holds self._lock, so extra threads only
-  queue; extra processes each load their own IR and multiply memory peaks.
+* No parallel ASR. ``ASREngine.transcribe()`` holds ``self._lock``, so extra
+  threads only queue; extra processes each load their own IR and multiply
+  memory peaks. The one concurrency we do allow is ``fa_pipeline``: the
+  ForcedAligner runs in a **subprocess**, so it can overlap the next chunk's
+  ASR without touching the engine lock. Output order — and therefore the SRT —
+  is unaffected; see fa_pipeline.py.
 * No changes to OpenVINO thread policy (PERFORMANCE_HINT / INFERENCE_NUM_THREADS
   are controlled from the Model page and are a separate tuning axis).
 * The memory sawtooth is flattened by releasing at group boundaries and keeping
@@ -53,7 +57,7 @@ import numpy as np
 SR = 16000
 VAD_CHUNK = 512                  # Silero VAD 固定输入：32ms / 帧
 READ_BYTES = 64 * 1024          # 每次读 2.048s PCM，避免几十万次小 read
-DEFAULT_MAX_CHUNK_SECS = 30     # 0.6B 上限；1.7B 请传 10
+DEFAULT_MAX_CHUNK_SECS = 30     # 0.6B 上限；1.7B 请传 20
 
 # A five-minute sample is enough to judge both segmentation quality and
 # recognition accuracy, while being roughly twice as fast as a ten-minute one.
@@ -69,6 +73,7 @@ _MIN_CH = 16                    # 最短语音段（帧）≈ 0.5s
 _PAD_CH = 5                     # 段前后各补 5 帧 ≈ 0.16s
 _MERGE_CH = 16                  # 相邻间隔 ≤16 帧则合并
 _TAIL_SEC = 0.35                # 多含尾段，补捉句尾轻声字（与 app.py 一致）
+_APPEND_MIN_GAP = 0.04          # 流式写入时相邻两条的最小间隔（防跨 group 重叠）
 
 
 class Cancelled(Exception):
@@ -837,11 +842,15 @@ class LongformRunner:
                  vad_threshold: float = 0.5,
                  detail_cb=None, segment_cb=None, enhancer=None,
                  refine_punct: bool = False,
-                 fa_lines=None):
+                 fa_lines=None, fa_pipeline=None):
         """``fa_lines``：可选回调 ``(chunk_ndarray, text, t0, t1) -> lines | None``。
 
         提供时优先用它生成字幕行（FA 字级时间戳驱动，见 fa_segmenter.py），
         返回空/抛异常则回退 ``line_splitter``。默认 None = 行为与旧版完全一致。
+
+        ``fa_pipeline``：``fa_pipeline.FaPipeline``。提供时同一个回调改在后台
+        线程执行，与下一段 ASR 重叠；收取仍严格按提交顺序，输出与同步路径
+        逐字节相同。两者都为空 = 纯比例分配。
         """
         if vad_sess is None:
             raise ValueError("缺少 VAD session：请传入 engine.vad_sess")
@@ -884,6 +893,9 @@ class LongformRunner:
         self.refine_punct = refine_punct
         # FA 行生成回调（有则优先，失败回退 line_splitter）
         self.fa_lines = fa_lines
+        # 流水线模式下回调在后台跑；深度 0 = 同步（settle 立刻发生）
+        self.fa_pipeline = fa_pipeline
+        self._fa_depth = 1 if fa_pipeline is not None else 0
         self._seg_batch: list[dict] = []
         self._last_seg_flush = 0.0
         self._start_wall = time.monotonic()
@@ -1044,8 +1056,53 @@ class LongformRunner:
             self.out_srt.write_text("", encoding="utf-8")
             self.jsonl.write_text("", encoding="utf-8")
 
+    def _resume_last_end(self) -> float | None:
+        """上一條已寫出的 ``end``；續跑時從既有 SRT 末尾恢復。
+
+        續跑的第一行最容易壓在上一次最後一行身上（上一次的末行時間來自舊
+        group，本次的 t0 又從 VAD 段前 padding 開始）。讀回時間碼比記在
+        checkpoint 裡可靠：SRT 是唯一的寫出事實。
+        """
+        if getattr(self, "_last_end", None) is not None:
+            return self._last_end
+        self._last_end = None
+        try:
+            if self.out_srt.is_file():
+                size = self.out_srt.stat().st_size
+                if size:
+                    with open(self.out_srt, "rb") as f:
+                        f.seek(max(0, size - 512))
+                        tail = f.read().decode("utf-8", "ignore")
+                    hits = re.findall(r"-->\s*(\d+):(\d+):(\d+),(\d+)", tail)
+                    if hits:
+                        h, mi, s, ms = hits[-1]
+                        self._last_end = (int(h) * 3600 + int(mi) * 60
+                                          + int(s) + int(ms) / 1000)
+        except Exception:
+            self._last_end = None
+        return self._last_end
+
     def _append(self, index: int, start: float, end: float, text: str) -> int:
-        """Append one subtitle to SRT/JSONL immediately, then queue it for SSE."""
+        """Append one subtitle to SRT/JSONL immediately, then queue it for SSE.
+
+        跨 group 的時間重疊在這裡擋掉：VAD 的 speech group 之間本來就有
+        ``_TAIL_SEC`` 尾段 + ``_PAD_CH`` 前後 padding 造成的音訊重疊，而每個
+        group（及 group 內每個 chunk）各自呼叫 line_splitter、各自從自己的
+        t0 開始鋪時間，兩段一拼就是負間隔。實測 003 有 807 處（10.1%），
+        數值全是 ``GAP_SEC`` 的整數倍，最深 −4.88s。
+
+        流式寫入無法回頭改上一行，所以只能把當前行的 start 推後。這與
+        「起始時間要準」有衝突，取舍是**寧可晚一點，也不能兩條字幕同時在屏**。
+        """
+        start = float(start)
+        end = float(end)
+        last = self._resume_last_end()
+        if last is not None and start < last + _APPEND_MIN_GAP:
+            start = last + _APPEND_MIN_GAP
+        if end <= start:
+            end = start + 0.2
+        self._last_end = end
+
         with open(self.out_srt, "a", encoding="utf-8") as f:
             f.write(f"{index}\n{srt_ts(start)} --> {srt_ts(end)}\n{text}\n\n")
         with open(self.jsonl, "a", encoding="utf-8") as f:
@@ -1195,6 +1252,38 @@ class LongformRunner:
                 return g_b
             samples = carry[a:b]
             cur = 0
+            pending: collections.deque = collections.deque()
+
+            def _settle(item) -> None:
+                """把一段的结果落盘；FA 结果先收，取不到就回退比例切行器。
+
+                顺序不可换：SRT 序号与 ``_resume_last_end`` 的单调性都依赖
+                「按提交顺序收取」。流水线只是把等待挪到后台线程，不改顺序。
+                """
+                nonlocal seg_index, group_count
+                lines = item["lines"]
+                if lines is None and item["future"] is not None:
+                    lines = self.fa_pipeline.collect(item["future"])
+                if not lines:
+                    lines = (self.line_splitter(item["text"], item["t0"], item["t1"])
+                             if self.line_splitter
+                             else simple_lines(item["text"], item["t0"], item["t1"]))
+                # Enrich before the chunk leaves scope: aligner / embedding
+                # reuse this exact buffer, so there is no second decode pass.
+                if self.enhancer is not None:
+                    try:
+                        self.enhancer.on_group(item["chunk"], item["t0"], item["t1"],
+                                               item["text"], lines,
+                                               start_index=seg_index)
+                    except Exception:
+                        pass
+                for ln in lines:
+                    # 行可能是 (s, e, text)，也可能是 FA 路径的
+                    # (s, e, text, words)；words 只是附带的词级时间，落盘
+                    # 时不需要，取值时只认前三项。
+                    seg_index = self._append(seg_index, ln[0], ln[1], ln[2])
+                group_count += 1
+
             while cur < len(samples):
                 nxt = min(len(samples), cur + max_samples)
                 chunk = np.ascontiguousarray(samples[cur:nxt], dtype=np.float32)
@@ -1206,35 +1295,27 @@ class LongformRunner:
                 # FA 字级对齐优先：有字级时间戳时，行边界与时间轴都由声学
                 # 决定（强标点/弱标点够长/字间静默 三条信号），比按字数比例
                 # 硬分配准确得多。拿不到就静默回退到旧路径，字幕永不丢失。
-                lines = None
-                if self.fa_lines is not None:
+                item = {"chunk": chunk, "text": text, "t0": t0, "t1": t1,
+                        "future": None, "lines": None}
+                if self.fa_pipeline is not None:
+                    # 提交后立刻进入下一段 ASR —— 重叠就发生在这里
+                    item["future"] = self.fa_pipeline.submit(chunk, text, t0, t1)
+                elif self.fa_lines is not None:
                     try:
-                        fa_lines = self.fa_lines(chunk, text, t0, t1)
-                        if fa_lines:
-                            lines = fa_lines
+                        item["lines"] = self.fa_lines(chunk, text, t0, t1) or None
                     except Exception:
-                        lines = None      # 增强失败 → 回退，不影响出字幕
+                        item["lines"] = None   # 增强失败 → 回退，不影响出字幕
 
-                if not lines:
-                    lines = (self.line_splitter(text, t0, t1)
-                             if self.line_splitter
-                             else simple_lines(text, t0, t1))
-                # Enrich before the chunk leaves scope: aligner / embedding
-                # reuse this exact buffer, so there is no second decode pass.
-                if self.enhancer is not None:
-                    try:
-                        self.enhancer.on_group(chunk, t0, t1, text, lines,
-                                               start_index=seg_index)
-                    except Exception:
-                        pass
-                for s, e, line in lines:
-                    seg_index = self._append(seg_index, s, e, line)
-                group_count += 1
-                # 主动断开引用：大块张量在段边界归还，避免锯齿叠加
-                del chunk, text, lines
+                pending.append(item)
+                # 深度 1：手里最多压一段，超出的当场收取并落盘
+                while len(pending) > self._fa_depth:
+                    _settle(pending.popleft())
+                cur = nxt
                 if self.gc_every and group_count % self.gc_every == 0:
                     gc.collect()
-                cur = nxt
+
+            while pending:
+                _settle(pending.popleft())
             return g_b
 
         try:

@@ -276,6 +276,24 @@ button { font-family: inherit; }
   opacity: 1; visibility: visible;
 }
 
+/* 開關 hover 說明（data-tip）：與按鈕同一套氣泡。開關左側沒有可借的空間，
+   氣泡一律靠左展開；寬度只給 260px —— 這裡是「一句話講清代價」，不是文件。 */
+.switch[data-tip] { position: relative; }
+.switch[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute; left: 0; top: calc(100% + 8px); z-index: 70;
+  width: max-content; max-width: 260px; white-space: normal; text-align: left;
+  background: var(--panel); color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; font-size: 11.5px; font-weight: 400; line-height: 1.6;
+  box-shadow: var(--shadow-md); pointer-events: none;
+  opacity: 0; visibility: hidden; transition: opacity .12s;
+}
+/* focus-within：真正可聚焦的是裡面那個透明 checkbox，不是 label */
+.switch[data-tip]:hover::after, .switch[data-tip]:focus-within::after {
+  opacity: 1; visibility: visible;
+}
+
 /* 開關（toggle switch）*/
 .switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; font-size: 13px; color: var(--ink-2); user-select: none; }
 .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
@@ -655,7 +673,10 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .spk-1 { background: var(--accent-soft); color: var(--accent-strong); }
 .spk-2 { background: #EDEAF6; color: #5B4B9A; }
 .spk-3 { background: #F6EFE3; color: #8A6312; }
-.sub-card .txt { font-size: 13.5px; color: var(--ink); line-height: 1.6; }
+.sub-card .txt { font-size: 13.5px; color: var(--ink); line-height: 1.6;
+  /* layout v4 起一條字幕恆為單行；保留 pre-line 是為了兼容舊 rich.json
+     與外部輸入裡殘留的換行，避免預覽把它們連成一長串。 */
+  white-space: pre-line; }
 
 /* 說話者外框色：左側邊框依說話者著色（與 chip 同色系），快速辨識發言者 */
 .sub-card.spkc-1 { border-left-color: var(--accent); }
@@ -1227,4 +1248,40 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .bp-nodrop .nd-sub {
   margin-top: 5px; font-size: 11.5px; line-height: 1.55; color: var(--faint);
   max-width: 78ch;
+}
+
+/* ── 批次頁：執行方式勾選（清除已完成右側）───────────────────────── */
+.batch-par { font-size: 12.5px; color: var(--ink-2); }
+.batch-par .track { width: 34px; height: 20px; }
+.batch-par .track::after { width: 16px; height: 16px; }
+.batch-par input:checked + .track::after { transform: translateX(14px); }
+.batch-par.is-locked { opacity: .55; cursor: not-allowed; }
+
+/* ── 佇列標題右側：補做對齊抽屜 ──────────────────────────────────── */
+.batch-queue-head .qh-actions {
+  display: flex; align-items: center; gap: 6px; margin-left: auto;
+}
+.align-drawer {
+  display: flex; align-items: center; gap: 6px;
+  max-width: 0; opacity: 0; overflow: hidden;
+  transition: max-width .22s ease, opacity .18s ease;
+}
+.align-drawer.is-open { max-width: 340px; opacity: 1; }
+/* 「撤銷標記」與「紅標後再點一次」共用：同一個動作、兩種不可逆，
+   都用同一個警示色，讓眼睛先停一下。 */
+.align-drawer .btn.is-warn {
+  color: var(--danger, #c0392b);
+  border-color: currentColor;
+}
+.b-row.is-pick { cursor: pointer; }
+.b-row.is-pick:hover { background: var(--panel-2); }
+.b-row.is-picked { background: var(--accent-soft, var(--panel-2)); }
+.b-row .pick { display: inline-flex; align-items: center; justify-content: center; }
+.b-row .pick input { width: 14px; height: 14px; accent-color: var(--accent); }
+.kind-chip {
+  display: inline-block; margin-left: 6px; padding: 0 5px;
+  font-size: 10px; font-weight: 700; line-height: 15px;
+  border-radius: 4px; color: var(--accent);
+  background: var(--accent-soft, rgba(0,0,0,.06));
+  vertical-align: 1px;
 }

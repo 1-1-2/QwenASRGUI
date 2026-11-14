@@ -23,6 +23,11 @@ sounddevice>=0.4.6
 # 中文轉換（簡轉繁）
 opencc-python-reimplemented>=0.1.7
 
+# 中文分詞：字幕「一條 1~2 行」時決定兩行之間的切點。
+# 沒有它也能跑（退化為停頓 + 字數均衡，會把「內容」「具體」劈開）；
+# 有它才做得到「按詞邊界均衡」。純 Python + 內建詞典約 5 MB，不聯網。
+jieba>=0.42.1
+
 # ──────────────────────────────────────────────────────
 # 以下僅開發時需要（用於重新產生 prompt_template.json）
 # pip install qwen-asr transformers

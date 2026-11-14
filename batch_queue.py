@@ -54,7 +54,17 @@ _AUDIO_EXTS = {
 # trial（試跑前 5 分鐘）刻意不在此列：它只對單檔預覽有意義，
 # 對整條佇列套用會產出一堆被截斷的字幕。
 RUN_OPT_KEYS = ("language", "diarize", "nSpeakers", "align", "hint",
-                "vadThreshold", "chunkSecs")
+                "vadThreshold", "chunkSecs", "alignParallel")
+
+# item.kind：這條任務要跑什麼。
+#   transcribe 完整識別（VAD + ASR + 可選增強）
+#   align      只跑強制對齊，文字沿用既有 rich.json（不載入識別模型）
+KIND_TRANSCRIBE = "transcribe"
+KIND_ALIGN = "align"
+
+# 主 worker 的「策略要求先等」：與「真的沒活了」(None) 區分開，
+# 否則等待期間會誤判成佇列跑完而提前收網。
+_WAIT = object()
 
 
 def _now() -> str:
@@ -88,6 +98,8 @@ class BatchQueue:
         self.active_id: str | None = None
         self.cancel_requested = False
         self._worker: threading.Thread | None = None
+        # 「嘗試並行」時的第二條 worker：只吃對齊任務，與識別錯峰。
+        self._align_worker: threading.Thread | None = None
         # 本次佇列「開始」時鎖定的執行參數。舊版只在入隊時把
         # language/diarize/nSpeakers/align/hint 快照進 item.opts，
         # 而 vad/chunk 卻是每個檔開跑時現讀 settings —— 同一條佇列裡
@@ -115,6 +127,9 @@ class BatchQueue:
             for it in items:
                 if not isinstance(it, dict) or "id" not in it:
                     continue
+                # 舊版 state 沒有 kind / cancelFlag：一律視為識別任務。
+                it.setdefault("kind", KIND_TRANSCRIBE)
+                it.setdefault("cancelFlag", False)
                 # Wave 11 相容：舊版 state 沒有 ownedPath / localPath 欄位。
                 # 只要 path 仍在 upload_dir 內就視為「我們複製的副本」，
                 # 否則會被 _sweep_orphans 當孤兒刪掉，導致 retry 找不到檔。
@@ -280,6 +295,10 @@ class BatchQueue:
                 "localPath": True,    # UI 可標示「本機路徑」
                 "durationSec": None,  # Wave 14：入隊後背景探測並以 SSE 補上
                 "etaSec": None,
+                # 這條任務要做什麼：transcribe（完整識別）或 align（只補詞級對齊）。
+                "kind": KIND_TRANSCRIBE,
+                # 單項停止：只有佇列級的 cancel 會停整條，這裡是「只停這一條」。
+                "cancelFlag": False,
             }
             self.items.append(item)
             self._save()
@@ -317,16 +336,30 @@ class BatchQueue:
 
     def summary(self) -> dict:
         items = self.items
-        done = sum(1 for i in items if i.get("status") == _DONE)
-        failed = sum(1 for i in items if i.get("status") == _FAILED)
-        total = len(items)
-        avg = (sum(float(i.get("progress") or 0) for i in items) / total) if total else 0.0
+        # 詞級對齊任務與識別任務分開統計：對齊不該拉低「已完成 n/m」，
+        # 否則使用者看到 3/5 以為有兩個檔識別失敗。
+        trans = [i for i in items if (i.get("kind") or KIND_TRANSCRIBE) != KIND_ALIGN]
+        aligns = [i for i in items if (i.get("kind") or KIND_TRANSCRIBE) == KIND_ALIGN]
+        done = sum(1 for i in trans if i.get("status") == _DONE)
+        failed = sum(1 for i in trans if i.get("status") == _FAILED)
+        align_done = sum(1 for i in aligns if i.get("status") == _DONE)
+        total = len(trans)
+        avg = (sum(float(i.get("progress") or 0) for i in trans) / total) if total else 0.0
         # 佇列級耗時：從按下「開始」算起，跟單檔耗時是兩回事（舊版把單檔的
         # elapsedSec 拿來當佇列耗時，於是兩層顯示同一個數字）。
         elapsed = self.elapsed_sec
         if self.running and self.started_at:
             elapsed += time.time() - self.started_at
         return {"total": total, "done": done, "failed": failed,
+                "alignTotal": len(aligns), "alignDone": align_done,
+                "allTotal": len(items),
+                "parallelWanted": bool((self.run_opts or {}).get("alignParallel")),
+                "parallelActive": bool(self._align_worker
+                                       and self._align_worker.is_alive()),
+                # 還有幾個補齊文件在跑或待跑：前端據此顯示「等待補齊收尾」，
+                # 使用者才知道識別任務為什麼還沒動。
+                "alignBacklog": sum(1 for i in aligns
+                                    if i.get("status") in ("pending", "running")),
                 "active": self.active_id, "running": self.running,
                 "elapsedSec": round(elapsed, 1),
                 "progress": round(avg, 4)}
@@ -368,6 +401,10 @@ class BatchQueue:
                 "localPath": False,
                 "durationSec": None,  # Wave 14：入隊後背景探測並以 SSE 補上
                 "etaSec": None,
+                # 這條任務要做什麼：transcribe（完整識別）或 align（只補詞級對齊）。
+                "kind": KIND_TRANSCRIBE,
+                # 單項停止：只有佇列級的 cancel 會停整條，這裡是「只停這一條」。
+                "cancelFlag": False,
             }
             self.items.append(item)
             self._save()
@@ -401,6 +438,9 @@ class BatchQueue:
             self.running = True
             self._gen += 1
             gen = self._gen
+            # 先起對齊 worker 再起主 worker：反過來的話，主 worker 可能在
+            # 那一瞬間把對齊任務搶走，兩者就變成串行（實測會少一次並行）。
+            self._maybe_start_align_worker(gen)
             self._worker = threading.Thread(target=self._run, args=(gen,), daemon=True,
                                             name="batch-worker")
             self._worker.start()
@@ -541,10 +581,83 @@ class BatchQueue:
                     it["status"] = "pending"
                     it["progress"] = 0.0
                     it["error"] = None
+                    it["cancelFlag"] = False
                     self._save()
                     self._emit(it, "retry")
                     return True
         return False
+
+    # ── 詞級對齊任務（批次頁「補做對齊」抽屜）────────────────────────────
+    def mark_align(self, ids, kind: str = KIND_ALIGN) -> int:
+        """把勾選的列標成對齊任務。只標記，不啟動。
+
+        標記會把該列退回 pending：對齊任務的輸入是既有產物，
+        與它上一次是不是 done 無關；不退回的話「開始」永遠挑不到它。
+        """
+        sel = set(ids or [])
+        with self._lock:
+            n = 0
+            for it in self.items:
+                if it.get("id") not in sel:
+                    continue
+                if it.get("status") == "running":
+                    continue          # 跑中的不能就地改語義
+                it["kind"] = kind
+                it["status"] = "pending"
+                it["progress"] = 0.0
+                it["error"] = None
+                it["cancelFlag"] = False
+                n += 1
+            if n:
+                self._save()
+                self._broadcast()
+            return n
+
+    def unmark_align(self, ids=None) -> int:
+        """撤銷標記（ids=None 表示全部撤銷），恢復成識別任務。"""
+        sel = None if ids is None else set(ids)
+        with self._lock:
+            n = 0
+            for it in self.items:
+                if (it.get("kind") or KIND_TRANSCRIBE) != KIND_ALIGN:
+                    continue
+                if sel is not None and it.get("id") not in sel:
+                    continue
+                it["kind"] = KIND_TRANSCRIBE
+                n += 1
+            if n:
+                self._save()
+                self._broadcast()
+            return n
+
+    def cancel_item(self, item_id: str) -> bool:
+        """只停這一條（不影響佇列其他項）。
+
+        跑中的設 cancelFlag，由對齊模組逐窗檢查後收尾；
+        還沒開始的直接標成已取消，不必等 worker 走到它。
+        """
+        with self._lock:
+            it = next((i for i in self.items if i.get("id") == item_id), None)
+            if it is None:
+                return False
+            if it.get("status") == "running":
+                it["cancelFlag"] = True
+            elif it.get("status") == "pending":
+                it["status"] = _CANCELED
+                it["cancelFlag"] = False
+            else:
+                return False
+            self._save()
+            self._emit(it, "state")
+            return True
+
+    def _item_stopped(self, item_id: str, gen: int) -> bool:
+        """給對齊模組的 should_stop：整隊停止、換代、單項停止都算。"""
+        with self._lock:
+            if self.cancel_requested or self._gen != gen:
+                return True
+            it = next((i for i in self.items if i.get("id") == item_id), None)
+            return bool(it and it.get("cancelFlag"))
 
     def _broadcast(self):
         if self._on_event:
@@ -570,31 +683,198 @@ class BatchQueue:
             except Exception:
                 pass
 
-    # ── worker ─────────────────────────────────────────────────────────
-    def _run(self, gen: int):
+    def _maybe_start_align_worker(self, gen: int):
+        """「嘗試並行」：另起一條 worker 專跑對齊任務。
+
+        三個條件缺一不可：使用者勾選、佇列裡確實有對齊任務、可用記憶體
+        足夠（FA 峰值 2.9 GB + 識別餘裕）。不滿足就什麼都不做，
+        對齊任務照舊回到主 worker 串行執行——寧可慢，不要讓機器換頁。
+        """
+        if not (self.run_opts or {}).get("alignParallel"):
+            return
+        if self._align_worker is not None and self._align_worker.is_alive():
+            return                      # 已在跑，不要每次輪詢都再起一條
+        if not any((i.get("kind") or KIND_TRANSCRIBE) == KIND_ALIGN
+                   and i.get("status") == "pending" for i in self.items):
+            return
+        try:
+            import sysmem
+            ok, _avail = sysmem.can_run_parallel_with_asr()
+        except Exception:
+            ok = False
+        if not ok:
+            return
+        t = threading.Thread(target=self._run_align, args=(gen,), daemon=True,
+                             name="batch-align-worker")
+        self._align_worker = t
+        t.start()
+
+    def _run_align(self, gen: int):
+        """對齊任務專用 worker：只取 kind=align 的 pending，絕不碰識別任務。"""
         try:
             while True:
                 with self._lock:
                     if self.cancel_requested or self._gen != gen:
                         break
-                    nxt = next((i for i in self.items if i.get("status") == "pending"), None)
+                    nxt = next((i for i in self.items
+                                if i.get("status") == "pending"
+                                and (i.get("kind") or KIND_TRANSCRIBE) == KIND_ALIGN),
+                               None)
                     if nxt is None:
                         break
                     nxt["status"] = "running"
-                    # Wave 14／需求 3：**不清零** progress —— 斷點續傳時
-                    # 這個值代表上一輪已處理的百分比，續跑會從它往上走；
-                    # 真的從頭開始的情況由 backend 回報 resumedFrom=1 後
-                    # 在下方 _progress 裏以新值覆蓋。
                     nxt["error"] = None
+                    nxt["cancelFlag"] = False
                     nxt["resumedFrom"] = nxt.get("resumedFrom") or 1
-                    self.active_id = nxt["id"]
                     self._save()
                     item_id = nxt["id"]
-                    # 開始時鎖定的參數優先於入隊快照：同一條佇列的每個檔
-                    # 都用同一組值，且與使用者在音檔頁看到的一致。
                     opts = dict(nxt.get("opts") or {})
                     opts.update(self.run_opts or {})
                     self._emit(nxt, "start")
+
+                def _progress(pct, status, _id=item_id):
+                    with self._lock:
+                        cur = next((i for i in self.items if i["id"] == _id), None)
+                        if cur:
+                            cur["progress"] = max(0.0, min(1.0, float(pct) / 100.0))
+                            cur["statusText"] = status
+                            self._emit(cur, "progress")
+
+                fn = getattr(self.backend, "align_item", None)
+                try:
+                    if fn is None:
+                        raise RuntimeError("此版本不支援補做對齊")
+                    result = fn(
+                        opts, progress_cb=_progress,
+                        should_stop=lambda _id=item_id: self._item_stopped(_id, gen))
+                    with self._lock:
+                        if self._gen != gen:
+                            continue
+                        cur = next((i for i in self.items if i["id"] == item_id), None)
+                        if cur:
+                            if result.get("canceled"):
+                                cur["status"] = _CANCELED
+                                cur["cancelFlag"] = False
+                            else:
+                                cur["status"] = _DONE
+                                cur["progress"] = 1.0
+                                cur["srtPath"] = result.get("srtPath")
+                                cur["durationSec"] = (result.get("durationSec")
+                                                      or cur.get("durationSec"))
+                                cur["alignRatio"] = result.get("ratio")
+                                cur["alignLanes"] = result.get("lanes")
+                            self._save()
+                            self._emit(cur, "done")
+                except Exception as exc:
+                    with self._lock:
+                        if self._gen != gen:
+                            continue
+                        cur = next((i for i in self.items if i["id"] == item_id), None)
+                        if cur:
+                            _stopped = (self.cancel_requested
+                                        or bool(cur.get("cancelFlag")))
+                            cur["status"] = _CANCELED if _stopped else _FAILED
+                            cur["error"] = (None if _stopped
+                                            else str(exc).lstrip("⚠ ").strip()[:300])
+                            cur["cancelFlag"] = False
+                            self._save()
+                            self._emit(cur, "error")
+                    if not self.cancel_requested:
+                        traceback.print_exc()
+        finally:
+            with self._lock:
+                self._align_worker = None
+
+    # ── worker ─────────────────────────────────────────────────────────
+    def _align_backlog(self) -> int:
+        """還在跑或還沒跑的補齊文件數（呼叫方需持鎖）。"""
+        return sum(1 for i in self.items
+                   if (i.get("kind") or KIND_TRANSCRIBE) == KIND_ALIGN
+                   and i.get("status") in ("pending", "running"))
+
+    @staticmethod
+    def _parallel_mem_ok() -> bool:
+        """此刻能不能再起一路 FA 與識別並行。取不到記憶體資訊 → 當作不行。"""
+        try:
+            import sysmem
+            return sysmem.can_run_parallel_with_asr()[0]
+        except Exception:
+            return False
+
+    def _pick_next(self, gen: int):
+        """主 worker 的下一個任務：item / None（沒活了）/ _WAIT（先等）。
+
+        補齊優先。理由是記憶體：FA 每進程 2.9 GB，識別與補齊同時開跑會讓
+        兩邊都掉到換頁，總時間反而更長。所以規則是
+
+          1. 補齊積壓 > 1 個文件 → 識別一律不進場；
+          2. 只剩最後 1 個補齊文件 → 開「嘗試並行」且當下記憶體夠，才放識別；
+          3. 沒開「嘗試並行」→ 全部補齊跑完才輪到識別。
+
+        呼叫方需持鎖；本函式可能啟動並行 worker（內部會自行加鎖）。
+        """
+        backlog = self._align_backlog()
+        trans = next((i for i in self.items
+                      if i.get("status") == "pending"
+                      and (i.get("kind") or KIND_TRANSCRIBE) != KIND_ALIGN), None)
+        align = next((i for i in self.items
+                      if i.get("status") == "pending"
+                      and (i.get("kind") or KIND_TRANSCRIBE) == KIND_ALIGN), None)
+        if backlog <= 0:
+            return trans or align
+
+        parallel = bool((self.run_opts or {}).get("alignParallel"))
+        if not parallel or backlog > 1:
+            # 沒開並行，或補齊還有一堆：自己跑（沒 worker 時）或等它跑
+            return _WAIT if self._align_worker is not None else align
+
+        # 尾段：只剩 1 個補齊文件，看記憶體
+        if not self._parallel_mem_ok():
+            return _WAIT if self._align_worker is not None else align
+        if self._align_worker is None:
+            self._maybe_start_align_worker(gen)
+            if self._align_worker is None:
+                # 記憶體剛剛夠、但執行緒起不來 → 自己先把最後一份跑掉，
+                # 不能讓它永遠排在識別後面。
+                return align
+        return trans or align
+
+    def _run(self, gen: int):
+        try:
+            while True:
+                _wait = False
+                with self._lock:
+                    if self.cancel_requested or self._gen != gen:
+                        break
+                    nxt = self._pick_next(gen)
+                    if nxt is _WAIT:
+                        # 策略要求先等補齊：放掉鎖再睡，不能持鎖阻塞
+                        # 對齊 worker 更新狀態（否則它自己也進不來）。
+                        _wait = True
+                    elif nxt is None:
+                        break
+                    else:
+                        nxt["status"] = "running"
+                        # Wave 14／需求 3：**不清零** progress —— 斷點續傳時
+                        # 這個值代表上一輪已處理的百分比，續跑會從它往上走；
+                        # 真的從頭開始的情況由 backend 回報 resumedFrom=1 後
+                        # 在下方 _progress 裏以新值覆蓋。
+                        nxt["error"] = None
+                        nxt["cancelFlag"] = False     # 每次開跑都重新計
+                        nxt["resumedFrom"] = nxt.get("resumedFrom") or 1
+                        self.active_id = nxt["id"]
+                        self._save()
+                        item_id = nxt["id"]
+                        item_kind = nxt.get("kind") or KIND_TRANSCRIBE
+                        # 開始時鎖定的參數優先於入隊快照：同一條佇列的每個檔
+                        # 都用同一組值，且與使用者在音檔頁看到的一致。
+                        opts = dict(nxt.get("opts") or {})
+                        opts.update(self.run_opts or {})
+                        self._emit(nxt, "start")
+                if _wait:
+                    # 0.4s 一輪：取消能在半秒內回應，又不會把 CPU 打滿。
+                    time.sleep(0.4)
+                    continue
 
                 def _progress(pct, status, _id=item_id):
                     with self._lock:
@@ -609,7 +889,17 @@ class BatchQueue:
                         raise RuntimeError("已取消")
                     # Wave 11／問題 8：標記進度歸屬，前端才知道要畫在批次頁。
                     self._set_scope("batch")
-                    result = self.backend.transcribe(opts, progress_cb=_progress)
+                    if item_kind == KIND_ALIGN:
+                        # 只跑強制對齊：複用同一個 worker／進度／取消殼，
+                        # 但不碰 VAD 與 ASR（文字已經在 rich.json 裡）。
+                        fn = getattr(self.backend, "align_item", None)
+                        if fn is None:
+                            raise RuntimeError("此版本不支援補做對齊")
+                        result = fn(
+                            opts, progress_cb=_progress,
+                            should_stop=lambda _id=item_id: self._item_stopped(_id, gen))
+                    else:
+                        result = self.backend.transcribe(opts, progress_cb=_progress)
                     with self._lock:
                         # gen 已變 = 使用者按了「停止」或又按了「開始」，
                         # 這個舊 worker 的結果不能再寫回佇列。
@@ -617,12 +907,25 @@ class BatchQueue:
                             continue
                         cur = next((i for i in self.items if i["id"] == item_id), None)
                         if cur:
+                            if result.get("canceled"):
+                                # 單項停止：已落盤的窗口保留，SRT 尚未重建，
+                                # 所以標成 canceled 而不是 done（可續跑）。
+                                cur["status"] = _CANCELED
+                                cur["error"] = None
+                                cur["cancelFlag"] = False
+                                self._save()
+                                self._emit(cur, "state")
+                                continue
                             cur["status"] = _DONE
                             cur["progress"] = 1.0
                             cur["srtPath"] = result.get("srtPath") or result.get("srt")
                             cur["totalSegments"] = result.get("totalSegments")
                             cur["resumedFrom"] = int(result.get("resumedFrom") or 1)
                             cur["durationSec"] = result.get("durationSec") or cur.get("durationSec")
+                            if item_kind == KIND_ALIGN:
+                                # 對齊的品質資訊留在列上，免得只看到「完成」。
+                                cur["alignRatio"] = result.get("ratio")
+                                cur["alignLanes"] = result.get("lanes")
                             self._save()
                             self._emit(cur, "done")
                 except Exception as exc:
@@ -631,8 +934,11 @@ class BatchQueue:
                             continue          # 已被取消／取代，別覆寫新狀態
                         cur = next((i for i in self.items if i["id"] == item_id), None)
                         if cur:
-                            cur["status"] = _CANCELED if self.cancel_requested else _FAILED
-                            cur["error"] = str(exc).lstrip("⚠ ").strip()[:300]
+                            _stopped = self.cancel_requested or bool(cur.get("cancelFlag"))
+                            cur["status"] = _CANCELED if _stopped else _FAILED
+                            cur["error"] = (None if _stopped
+                                            else str(exc).lstrip("⚠ ").strip()[:300])
+                            cur["cancelFlag"] = False
                             self._save()
                             self._emit(cur, "error")
                     if not self.cancel_requested:
@@ -645,6 +951,15 @@ class BatchQueue:
             with self._lock:
                 # 只有「現任」worker 能收網；舊 worker 不能把新 worker 的
                 # running 改成 False，否則「停止後立刻再開始」會立刻顯示停了。
+                if self._gen == gen:
+                    aw = self._align_worker
+                else:
+                    aw = None
+            # 並行時，識別跑完不代表佇列跑完：對齊任務可能還在收尾。
+            # 等它結束再收網，否則介面顯示「已停止」但磁碟還在寫。
+            if aw is not None and aw.is_alive():
+                aw.join()
+            with self._lock:
                 if self._gen == gen:
                     self.running = False
                     self._freeze_elapsed()

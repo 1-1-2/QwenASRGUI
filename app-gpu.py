@@ -152,68 +152,13 @@ def _detect_speech_groups(audio: np.ndarray, vad_sess) -> list[tuple[float, floa
 
 
 def _split_to_lines(text: str) -> list[str]:
-    """語意優先斷句（ForcedAligner 不可用時的 fallback）。
+    """兼容包装：实现在 ``subtitle_lines.split_sentences``。
 
-    斷句規則（英文/中文統一）：
-    1. 所有標點（,.!?; 及中文，。？！）→ 立即切行，標點不輸出
-    2. 英文整字為最小單位，詞間保留空格
-    3. MAX_CHARS 保護：超限才強制換行
+    旧版这里见标点就切（含逗号），同一段音频切出的行数与桌面版不同；
+    现在统一到「强标点立即切、弱标点满 12 字才切」。
     """
-    if not text:
-        return []
-
-    _all_punct = _ZH_CLAUSE_END | _EN_SENT_END  # 含逗號
-    lines: list[str] = []
-    buf = ""
-
-    i = 0
-    while i < len(text):
-        ch = text[i]
-
-        # ── 標點符號：切行，標點不加入輸出（隱藏）────────────────────
-        if ch in _all_punct:
-            if buf.strip():
-                lines.append(buf.strip())
-            buf = ""
-            i += 1
-            continue
-
-        # ── 英文單字：整字收集，詞前補空格（詞界）────────────────────
-        if ch.isalpha() and ord(ch) < 128:
-            j = i
-            while j < len(text) and text[j].isalpha() and ord(text[j]) < 128:
-                j += 1
-            word = text[i:j]
-            # buf 非空且未以空格結尾 → 補一個分詞空格
-            prefix = " " if buf and not buf.endswith(" ") else ""
-            if len(buf) + len(prefix) + len(word) > MAX_CHARS and buf.strip():
-                lines.append(buf.strip())
-                buf = word
-            else:
-                buf += prefix + word
-            i = j
-            continue
-
-        # ── 空格：只在 buf 有內容且未以空格結尾時記錄 ────────────────
-        if ch == " ":
-            if buf and not buf.endswith(" "):
-                buf += " "
-            i += 1
-            if len(buf.rstrip()) >= MAX_CHARS:
-                lines.append(buf.strip())
-                buf = ""
-            continue
-
-        # ── 中文/日文/數字等：逐字累積 ────────────────────────────────
-        buf += ch
-        i += 1
-        if len(buf) >= MAX_CHARS:
-            lines.append(buf.strip())
-            buf = ""
-
-    if buf.strip():
-        lines.append(buf.strip())
-    return [l for l in lines if l.strip()]
+    from subtitle_lines import split_sentences
+    return split_sentences(text)
 
 
 
@@ -627,8 +572,12 @@ class GPUASREngine:
                 # ── 比例估算 Fallback ──────────────────────────────────────
                 text = raw_text if _g_output_simplified else self.cc.convert(raw_text)
                 lines = _split_to_lines(text)
+                # 版面与其他路径一致：细行再按 ceil(字数/20) 均分（见 subtitle_lines）。
+                from subtitle_lines import balance_lines as _balance
                 all_subs.extend(
-                    (s, e, line, spk) for s, e, line in _assign_ts(lines, g0, g1)
+                    (s, e, line, spk) for s, e, line in _balance(
+                        [(a, b, c, None)
+                         for (a, b, c) in _assign_ts(lines, g0, g1)])
                 )
 
         if not all_subs:

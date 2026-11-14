@@ -74,125 +74,18 @@ def _expand(items):
     return out
 
 
-def build_lines(
-    items,
-    raw_text: str,
-    *,
-    weak_min: int = WEAK_MIN_CHARS,
-    max_chars: int = MAX_CHARS,
-    gap_break: float = GAP_BREAK,
-    offset: float = 0.0,
-    word_bounds: set[int] | None = None,
-):
+def build_lines(items, raw_text: str, **kw):
     """字级时间戳 + 原文 → 字幕行 ``[(start, end, text), ...]``。
 
-    ``items``：``[(word, start_sec, end_sec), ...]``，时间相对音频起点。
-    ``raw_text``：该段 ASR 原文（含标点，标点只作切分信号、不进字幕）。
-    ``offset``：音频起点相对整段的偏移，加到输出时间上。
-    ``word_bounds``：可选的词边界集合（字符索引），用于硬切时避免把词劈开。
-        传 ``None`` 表示不启用（默认，行为与旧版一致）。
+    薄封装：切行逻辑只有一份，在 ``build_lines_marked``（它多留一个
+    hard_cut 标记给后续合并判断）。旧版把同一套逻辑抄了两份，改规则时
+    很容易只改到一半 —— 两份只在“是否保留标记”上不同。
 
-    返回 ``None`` 表示输入不可用（应由调用方回退旧路径）。
-
-    三条切行信号（按优先级）：
-      1. 强标点（。？！；）→ 立即切
-      2. 弱标点（，、：…—）且累积 >= ``weak_min`` 字 → 切
-      3. 字间间隔 >= ``gap_break`` 秒 → 强制切（**标点给不出的声学信号**）
-    外加兜底：累积达 ``max_chars`` 时切，但会先前瞻几个字——
-    若紧随其后就有标点，宁可多显示 1~2 个字也要等标点切，
-    避免把「十五页左右」切成「左」+「右，」。
+    参数与 ``build_lines_marked`` 完全一致（weak_min / max_chars /
+    gap_break / offset / word_bounds），返回 None 表示输入不可用。
     """
-    if not items or not raw_text or not raw_text.strip():
-        return None
-
-    # seq 保留标点（前瞻要看得到标点），chars 只用于词边界计数
-    seq = [c for c in raw_text if not c.isspace()]
-    expanded = _expand(items)
-
-    # 累计消费的「非标点字数」，用于把局部索引映射到全局词边界
-    consumed = 0
-
-    lines: list[tuple[float, float, str]] = []
-    buf: list[str] = []
-    start: float | None = None
-    end: float = 0.0
-    last_end: float | None = None
-    hard_cut = False
-    ci = 0
-
-    def emit(is_hard: bool = False) -> None:
-        nonlocal buf, start, end, last_end, hard_cut
-        if buf and start is not None:
-            text = "".join(buf).strip()
-            if text:
-                lines.append((start + offset,
-                              max(end, start + 1e-3) + offset, text, is_hard))
-        buf, start, end, last_end, hard_cut = [], None, 0.0, None, False
-
-    def hard_emit() -> None:
-        """达上限时切，优先切在词边界上（避免劈词）。"""
-        nonlocal buf, start, end, last_end, consumed
-        cut = len(buf)
-        if word_bounds:
-            local = {k - consumed for k in word_bounds}
-            n = len(buf)
-            after = [k for k in local if n <= k <= n + MAX_OVERFLOW]
-            before = [k for k in local if k <= max_chars]
-            if after:
-                cut = min(after)
-            elif before:
-                cut = max(before)
-        if 0 < cut < len(buf):
-            head, tail = buf[:cut], buf[cut:]
-            text = "".join(head).strip()
-            if text:
-                lines.append((start + offset, last_end + offset, text, True))
-            consumed += cut
-            buf = tail
-            start = last_end
-            end = last_end
-        else:
-            emit(True)
-
-    for idx, ch in enumerate(seq):
-        if ch in ALL_PUNCT:
-            if ch in STRONG_PUNCT:
-                emit()
-            elif len(buf) >= weak_min:
-                emit()
-            # 弱标点但不够长：丢弃，继续累积
-            continue
-
-        if ci < len(expanded):
-            _c, s, e = expanded[ci]
-            ci += 1
-        else:
-            # 原文比时间戳多（极少见）：沿用上一字的时间，保证不越界
-            s = e = last_end if last_end is not None else 0.0
-
-        # 声学间隔够大 → 断行。这是有没有标点都要断的硬信号。
-        if last_end is not None and (s - last_end) >= gap_break:
-            emit()
-
-        if start is None:
-            start = s
-        buf.append(ch)
-        end = max(end, e) if end else e
-        last_end = e
-
-        if len(buf) >= max_chars:
-            ahead = seq[idx + 1: idx + 1 + MAX_OVERFLOW + 1]
-            if len(buf) >= max_chars + MAX_OVERFLOW:
-                hard_emit()                      # 已经超太多，必须切
-            elif not any(c in ALL_PUNCT for c in ahead):
-                hard_emit()                      # 后面没标点，切
-            # 否则等标点来切（能保住完整的词/短句）
-
-    emit()
-    if not lines:
-        return None
-    consumed = sum(len(t) for _s, _e, t, _h in lines)
-    return [(s, e, t) for s, e, t, _h in lines]
+    rows = build_lines_marked(items, raw_text, **kw)
+    return [(s, e, t) for s, e, t, _hard in rows] if rows else None
 
 
 def build_lines_marked(

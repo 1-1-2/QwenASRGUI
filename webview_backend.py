@@ -868,8 +868,10 @@ class WebBackend:
         return int(m.group(1)) if m else 0
 
     # 每段最長秒數：使用者設定 → 套到當前引擎，但永遠夾到「模型天花板」。
-    # 天花板＝引擎類別的 max_chunk_secs（0.6B/chatllm 30、1.7B 10），由音訊
-    # 編碼器匯出長度寫死，超過會被靜默截斷掉字，故只允許往短調，絕不超過。
+    # 天花板＝引擎類別的 max_chunk_secs（0.6B/chatllm 30、1.7B 20），這個
+    # 值同時經 LightProcessor(max_secs=…) 傳進 processor 當補齊上限，
+    # 兩邊不可能對不上。IR 全動態，encoder 實測 300 秒仍正常；超長段落
+    # 是被 VAD 分組與 chunk_split 切開的，不是被模型拒絕的。
     # crispasr（無 max_chunk_secs 類別屬性）走自身視窗，不受此設定影響。
     _CHUNK_FLOOR = 5
     # Only the first N subtitles are sent to the WebView. Rendering every card
@@ -1147,6 +1149,91 @@ class WebBackend:
     # ── 轉錄 ────────────────────────────────────────────────
     # opts: {path, language, diarize, nSpeakers, align, hint}
     # progress_cb(pct:int, status:str)
+    def align_paths(self, opts: dict) -> tuple[Path, Path]:
+        """由佇列條目解析出（音檔, 對應 .srt）。找不到就拋錯，不做猜測。"""
+        audio = Path(str(opts.get("path") or ""))
+        if not audio.is_file():
+            raise RuntimeError(f"找不到音訊檔：{audio}")
+        name = str(opts.get("name") or audio.name)
+        srt_dir = Path(getattr(core, "SRT_DIR", BASE_DIR / "subtitles"))
+        stem = Path(name).stem
+        srt = srt_dir / f"{stem}.srt"
+        if not srt.exists():
+            # 同名策略可能把它存成「001 (1).srt」或「001-3f9c21.srt」，
+            # 取最近改動的那一份（試跑稿不參與）。
+            cands = [p for p in srt_dir.glob(f"{stem}*.srt")
+                     if p.is_file() and not p.name.endswith(".trial.srt")]
+            cands.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            if not cands:
+                raise RuntimeError("輸出資料夾裡沒有這支音檔的字幕，請先完成識別")
+            srt = cands[0]
+        return audio, srt
+
+    def align_item(self, opts: dict, progress_cb=None, should_stop=None) -> dict:
+        """補做詞級對齊：只跑 ForcedAligner，**不載入識別模型**。
+
+        刻意不走 transcribe()：那條路徑會 _begin_run() → 載入 1.7B 模型
+        （數 GB、十幾秒），而這裡連 VAD 都不需要——文字已經在 rich.json 裡，
+        重跑 ASR 只會得到一份可能不一样、且更慢的文本。
+
+        找不到對應產物時直接報錯（不做路徑猜測）：配錯音檔會靜默毀掉整份
+        對齊品質，寧可讓使用者補一次選擇。
+        """
+        import align_backfill
+
+        audio, srt = self.align_paths(opts)
+        if srt.name != Path(str(opts.get("name") or audio.name)).stem + ".srt":
+            self._emit("status", {"message": f"沿用既有產物：{srt.name}"})
+
+        lang = (opts.get("language") or "").strip()
+        if lang in ("", "auto", "自動偵測", "自動"):
+            lang = "Chinese"
+
+        self._emit("status", {"message": "詞級對齊：沿用既有文字，不載入識別模型"})
+        res = align_backfill.run(
+            audio, srt, language=lang,
+            progress_cb=progress_cb, should_stop=should_stop)
+        res["resumedFrom"] = 1
+        return res
+
+    def rebuild_srt_only(self, opts: dict) -> dict:
+        """只把 rich.json 的 segments 重寫成 SRT —— 不碰音檔、不跑 FA（秒級）。
+
+        存在的理由：文字與詞級時間早就都在 rich.json 裡了，改排版規則
+        （斷行、時間校正）後沒必要為了看新排版再對齊一次幾十分鐘。
+        """
+        import align_backfill
+
+        _audio, srt = self.align_paths(opts)
+        rich = srt.with_suffix(".rich.json")
+        if not rich.is_file():
+            raise RuntimeError("找不到詞級明細（.rich.json），無法重建字幕")
+        try:
+            data = json.loads(rich.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"詞級明細讀不出來：{exc}") from exc
+        segs = data.get("segments") or []
+        if not segs:
+            raise RuntimeError("詞級明細裡沒有字幕行")
+
+        # 重排冪等：rich.json 標了 layout=4 就代表已經是「一條一行、≤20 字、
+        # 顯示窗口已提前」，再排一次只會把時間重算一遍，版面不會變。
+        if int(data.get("layout") or 1) < 4:
+            segs = align_backfill.relayout(segs)
+            data["segments"] = segs
+            data["layout"] = 4
+            align_backfill._write_json(rich, segs, {
+                "notes": data.get("notes"), "align": data.get("align"),
+                "diarize": data.get("diarize"), "post": data.get("post"),
+                "source": data.get("source"), "layout": 4})
+
+        backup = align_backfill.snapshot(srt, rich, tag="rebuild")
+        align_backfill.rebuild_srt(srt, segs)
+        self._emit("status", {"message":
+            f"已重建字幕：{srt.name}（{len(segs)} 條）"})
+        return {"ok": True, "srtPath": str(srt), "richPath": str(rich),
+                "backupDir": str(backup), "segments": len(segs)}
+
     def transcribe(self, opts: dict, progress_cb=None) -> dict:
         """轉寫入口：懶載入 → 執行 → 收尾釋放（Wave 12／問題 1）。
 
@@ -1289,8 +1376,13 @@ class WebBackend:
                 from postprocess import StreamEnhancer, load_rich
 
                 def _splitter(text, t0, t1):
-                    # Reuse the original line splitting / timestamp logic.
-                    return core._assign_ts(core._split_to_lines(text), t0, t1)
+                    # Reuse the original line splitting / timestamp logic,
+                    # 再交给版面层按 ceil(字数/20) 均分成单行条目——
+                    # 不开词级对齐时走的就是这条路，两条路径的版面必须一致。
+                    from subtitle_lines import balance_lines, merge_tails
+                    raw_lines = core._assign_ts(core._split_to_lines(text), t0, t1)
+                    return merge_tails(balance_lines(
+                        [(s, e, t, None) for (s, e, t) in raw_lines]))
 
                 # FA 驱动的行生成（可选）。只有「启用了对齐」且 FA 模型就绪时
                 # 才注册；失败自动回退 _splitter，见 fa_segmenter 的降级契约。
@@ -1331,12 +1423,55 @@ class WebBackend:
                                                    merge=True)
                             if not lines:
                                 return None
+                            # 一次 FA 同时供两件事：上面已用它断行，这里再按
+                            # 字符偏移把词切给每一行。FA 的词序列与原文严格同序、
+                            # 一字一 token，所以行文本就是原文的连续切片；
+                            # 不能按「词中点落进哪行的区间」来归属 —— 行时间是
+                            # ASR 给的、词时间是 FA 给的，两把尺子在行边界处
+                            # 差几十到几百毫秒，必然丢字或串到下一行。
+                            words_ok = (len(items) == len(text)
+                                        and "".join(ln[2] for ln in lines) == text)
+                            if words_ok:
+                                off = 0
+                                buf = []
+                                for _s, _e, _t in lines:
+                                    buf.append([
+                                        {"word": str(w),
+                                         "start": round(float(t0) + float(a), 3),
+                                         "end": round(float(t0) + float(b), 3)}
+                                        for w, a, b in items[off:off + len(_t)]])
+                                    off += len(_t)
+                                # 先按字符偏移把詞切給細行，再交給版面層
+                                # 按 ceil(字数/20) 均分 —— 順序不能反：細行是
+                                # 「聲音在哪斷得開」的結論，均分是「這屏放幾個字」。
+                                from subtitle_lines import balance_lines, merge_tails
+                                _tmp = [(ln[0], ln[1], ln[2], None, buf[i])
+                                        for i, ln in enumerate(lines)]
+                                lines = [(s, e, t, w) for (s, e, t, _sp, w)
+                                         in merge_tails(balance_lines(_tmp))]
+                            else:
+                                # 字数对不上（英文整词 token、数字被拆、标点被吞）：
+                                # 不能按字符偏移切片，退到「词中点落在哪一行」。
+                                #
+                                # 不能指望增强器补这一步：它看到 4 元组就认为
+                                # 已经带了词级（carried），不会再跑 FA。旧注释
+                                # 说「交给增强器按旧路径处理」，实际从没执行过，
+                                # 结果是这些段永远没有 words（前端只能内插）。
+                                _w = [(str(w), float(t0) + float(a), float(t0) + float(b))
+                                      for w, a, b in items]
+                                lines = [
+                                    (s, e, tx,
+                                     [{"word": w, "start": round(ws, 3),
+                                       "end": round(we, 3)}
+                                      for w, ws, we in _w
+                                      if s <= (ws + we) / 2 < e])
+                                    for (s, e, tx) in lines]
                             # 跨 chunk：本段首行不早于上一段末行 + MIN_GAP
                             if _prev_end[0] is not None:
-                                s, e, t = lines[0]
+                                s, e, t = lines[0][0], lines[0][1], lines[0][2]
                                 floor = _prev_end[0] + MIN_GAP
                                 if s < floor - 1e-6 and e > floor + 0.12:
-                                    lines[0] = (floor, e, t)
+                                    lines[0] = (floor, e, t) + tuple(lines[0][3:])
                             _prev_end[0] = lines[-1][1]
                             return lines
                         except Exception as _exc:
@@ -1353,6 +1488,20 @@ class WebBackend:
                                     _os.unlink(path)
                                 except OSError:
                                     pass
+
+                # 「嘗試並行」是全鏈路唯一的並行開關：
+                #   識別頁＝FA 與 ASR 流水線重疊（本段）；
+                #   批次頁＝補齊任務與識別任務的調度順序（batch_queue）。
+                # 關掉就是逐段串行，行為與舊版一致。
+                _fa_pipe = None
+                if _fa_lines is not None and opts.get("alignParallel"):
+                    from fa_pipeline import open_pipeline
+                    _fa_pipe, _why = open_pipeline(_fa_lines)
+                    if _fa_pipe is None:
+                        self._emit("status", {"message":
+                            "内存不足，词级对齐改为串行（流水线未启用）"
+                            if _why == "lowmem" else
+                            "词级对齐流水线启动失败，已回退串行"})
 
                 # 身分來源：本機路徑（點選／批次）沿用 audio_path（影片會是抽出的
                 # wav）；拖放上傳用原本那個檔的內容身分 —— 臨時路徑每次不同，
@@ -1409,6 +1558,23 @@ class WebBackend:
                     out_srt = srt_dir / "transcript.srt"
 
                 rich_path = out_srt.with_suffix(".rich.json")
+                # 這一步會把舊的富集檔整個刪掉重建。若舊檔已經補好詞級時間、
+                # 而本次沒開「詞級優化」，那些 words 就再也回不來了（重跑 ASR
+                # 不會順便補對齊）。這種靜默丟失事後無法察覺，所以先講清楚。
+                _lost_words = 0
+                if rich_path.is_file() and not _align_active:
+                    try:
+                        _old = json.loads(rich_path.read_text(encoding="utf-8"))
+                        if _old.get("align"):
+                            _lost_words = sum(
+                                1 for s in (_old.get("segments") or [])
+                                if s.get("words"))
+                    except Exception:
+                        _lost_words = 0
+                if _lost_words:
+                    self._emit("status", {"message":
+                        f"注意：本次未開啟「詞級優化」，重新識別會清空"
+                        f"既有 {_lost_words} 行的詞級時間軸"})
                 # A stale enrichment file must never leak into a new run.
                 try:
                     rich_path.unlink(missing_ok=True)
@@ -1457,11 +1623,19 @@ class WebBackend:
                     refine_punct=False,
                     # FA 行生成（None = 用旧的比例分配路径，行为逐字节不变）
                     fa_lines=_fa_lines,
+                    # 非 None 时同一个回调改在后台跑，与下一段 ASR 重叠
+                    fa_pipeline=_fa_pipe,
                 )
-                result = runner.run(
-                    audio_path, total_sec=_duration,
-                    resume=not trial and bool(opts.get("longform_resume", True)),
-                    limit_sec=limit_sec)
+                try:
+                    result = runner.run(
+                        audio_path, total_sec=_duration,
+                        resume=not trial and bool(opts.get("longform_resume", True)),
+                        limit_sec=limit_sec)
+                finally:
+                    # 取消时 FA 子进程可能还在跑（subprocess timeout 45s），
+                    # close() 不等待，避免“停止”按钮被卡住。
+                    if _fa_pipe is not None:
+                        _fa_pipe.close()
 
                 def _discard_if_one_shot():
                     """試跑用完即清：每次都只跑前 5 分鐘，斷點永遠不會被續用。
@@ -1500,6 +1674,24 @@ class WebBackend:
                 # and the SRT has already been written line by line.
                 try:
                     enhancer.finalize(jsonl_path=runner.jsonl)
+                except Exception:
+                    pass
+                # 版面與顯示窗口收口：流式是「逐條 append」，每條的時間都是
+                # 各自估算的，條目也是邊掃邊切的舊式版面。這裡用最終的
+                # rich.json 統一做一次排列＋時間校正＋提前量，再重寫 SRT。
+                #
+                # 有詞級時間的行：start/end 直接取首/末詞（FA 毫秒級），
+                # 再提前 LEAD_SEC 出現 —— 這樣字幕一定在話出口之前就在。
+                # 沒有詞級時間的行：只做版面與提前，時間仍是估算的。
+                try:
+                    import align_backfill
+                    _rich = Path(str(srt)).with_suffix(".rich.json")
+                    _data = json.loads(_rich.read_text(encoding="utf-8"))
+                    if int(_data.get("layout") or 1) < 4:
+                        _laid = align_backfill.relayout(_data.get("segments") or [])
+                        align_backfill._write_json(_rich, _laid,
+                                                   {**_data, "layout": 4})
+                        align_backfill.rebuild_srt(Path(str(srt)), _laid)
                 except Exception:
                     pass
                 _discard_if_one_shot()
@@ -2637,6 +2829,9 @@ class WebBackend:
             "diarize": bool(s.get("diarize", True)),
             "nSpeakers": s.get("n_speakers", "auto"),
             "align": bool(s.get("align", True)),
+            # 「嘗試並行」是全鏈路唯一的並行開關（識別頁的 FA 流水線 +
+            # 批次頁的調度順序），兩處 UI 共用這一個值。
+            "alignParallel": bool(s.get("align_parallel", False)),
             "hint": s.get("hint", ""),
             "trial": bool(s.get("trial", False)),
             # 必須回「生效值」：GPU 後端下即使勾著也不會釋放。若回原始設定，
@@ -2675,6 +2870,7 @@ class WebBackend:
                    # Wave 4 (B3): transcription-page controls.
                    "language": "language", "diarize": "diarize",
                    "nSpeakers": "n_speakers", "align": "align", "hint": "hint",
+                   "alignParallel": "align_parallel",
                    "trial": "trial",
                    # Wave 12 (問題 1): model memory lifecycle.
                    "autoRelease": "auto_release_model",

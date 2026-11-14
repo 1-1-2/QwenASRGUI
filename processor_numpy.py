@@ -193,10 +193,13 @@ class LightProcessor:
         supported_languages : list[str]  ← 支援的語系名稱清單
     """
 
-    def __init__(self, model_dir: Path):
+    def __init__(self, model_dir: Path, max_secs: int | None = None):
         """
         model_dir : OV_DIR，含 vocab.json、prompt_template.json
         prompt_template.json 從 generate_prompt_template.py 產生。
+        max_secs  : 單段音訊上限（秒），由引擎的 max_chunk_secs 傳入。
+                    模板裡的 n_samples 只是「下載當時的預設值」，而段長上限
+                    屬於執行期設定 ── 換一份模型包不該把上限偷偷改回去。
         """
         # ── 預先載入 mel filters（避免 extract_mel 每次重找路徑）─────
         _load_mel_filters(model_dir)
@@ -220,9 +223,19 @@ class LightProcessor:
         self.eos_id:      int        = tpl["eos_id"]
         self.eot_id:      int        = tpl["eot_id"]
         self._special_ids: set[int]  = set(tpl["special_ids"])
-        # Mel 長度：從 template 讀取，允許各模型不同（0.6B: 480000/3000，1.7B: 160000/1000）
+        # Mel 長度：從 template 讀取，允許各模型不同（0.6B: 480000/3000，1.7B: 320000/2000）
+        # 這三個值是**天花板**，不是每次固定補滿的目標值：實際長度由 _layout() 按
+        # 音訊本身推導，只有整秒是模型的硬約束。
         self._n_samples: int = tpl.get("n_samples", _N_SAMPLES)
         self._nb_frames: int = tpl.get("nb_frames", _NB_FRAMES)
+
+        # 天花板換算成「每秒」的係數，用來推導任意秒數的長度。
+        # 係數必須由**模板自身**換算（10s/1000 幀/130 token → 100 幀/秒、13 token/秒），
+        # 不能用執行期覆寫後的上限去除，否則 1000/20 會算出 50 幀/秒。
+        tpl_secs = max(1, self._n_samples // _SR)
+        self._frames_per_sec: int = max(1, self._nb_frames // tpl_secs)
+        self._tokens_per_sec: int = max(1, self._n_audio // tpl_secs)
+        self._ceiling_secs: int = int(max_secs) if max_secs else tpl_secs
 
         # ── 語系相關（供 UI 顯示與強制語系功能）──────────────────────
         self._language_suffix_ids: dict[str, list[int]] = tpl.get("language_suffix_ids", {})
@@ -247,10 +260,7 @@ class LightProcessor:
             self._id2str[int(tok_id_str)] = info["content"]
 
         # 預先計算固定的 input_ids（prompt 不含音頻 pad 部分）
-        self._audio_pad_block = np.array(
-            [self.pad_id] * self._n_audio, dtype=np.int64
-        )
-
+        # 音頻長度改為逐次推導後，這一整塊不能再預先算好（見 prepare）。
         # BPE 編碼器：延遲初始化，僅在需要 context hint 時才載入
         self._bpe_tokenizer = None
 
@@ -288,18 +298,38 @@ class LightProcessor:
 
     # ── Mel 特徵提取（per-instance，使用自身 n_samples / nb_frames）────
 
+    def _layout(self, n_samples: int) -> tuple[int, int, int]:
+        """實際採樣數 → (補齊後採樣數, mel 幀數, 音頻 token 數)。
+
+        模型的硬約束只有一條：長度必須是整秒。mel 幀數若非
+        frames_per_sec 的整數倍，encoder 的 reshape 會直接失敗
+        （minusOneCount <= 1 && inputProduct == outputProduct）。
+
+        因此補齊目標 = ceil(實際秒數)，而不是固定補滿天花板。先前每段都
+        補到天花板，等於讓 3 秒的段落付 20 秒的算力。600 秒真實課程錄音
+        端到端實測：固定補齊 391.9 秒 → 按實際長度 381.2 秒（-2.7%）。
+        省得不多是因為這段音訊的 VAD 組本來就偏長（平均 8 秒），停頓密集的
+        素材收益會明顯更大（單段 cost 在 10 秒以內嚴格線性）。
+        """
+        secs = -(-int(n_samples) // _SR)              # 向上取整到整秒
+        secs = min(self._ceiling_secs, max(1, secs))  # 夾在 [1, 天花板] 之間
+        return (secs * _SR,
+                secs * self._frames_per_sec,
+                secs * self._tokens_per_sec)
+
     def _extract_mel(self, audio: np.ndarray) -> np.ndarray:
-        """輸出 [1, 128, nb_frames] float32 mel，長度由 prompt_template 決定。"""
+        """輸出 [1, 128, nb_frames] float32 mel，長度由 _layout 依實際音長決定。"""
         audio = audio.astype(np.float32)
-        if len(audio) > self._n_samples:
-            audio = audio[:self._n_samples]
-        if len(audio) < self._n_samples:
-            audio = np.pad(audio, (0, self._n_samples - len(audio)))
+        n_samples, nb_frames, _ = self._layout(len(audio))
+        if len(audio) > n_samples:
+            audio = audio[:n_samples]
+        if len(audio) < n_samples:
+            audio = np.pad(audio, (0, n_samples - len(audio)))
 
         half = _N_FFT // 2
         audio_c = np.pad(audio, half, mode="reflect")
         frames = np.lib.stride_tricks.sliding_window_view(audio_c, _N_FFT)[::_HOP]
-        frames = frames[:self._nb_frames].astype(np.float32)
+        frames = frames[:nb_frames].astype(np.float32)
         windowed = frames * _HANN_WINDOW
 
         stft  = np.fft.rfft(windowed, axis=1)
@@ -325,10 +355,11 @@ class LightProcessor:
             language : 強制語系名稱（如 "Chinese"、"English"），None 表示自動偵測
             context  : 辨識提示（歌詞、關鍵字等），放入 system message
         輸出：(mel, input_ids)
-            mel       : [1, 128, 3000] float32
-            input_ids : [1, L]         int64
+            mel       : [1, 128, 100×ceil(秒)] float32（長度隨音長變動）
+            input_ids : [1, L]                 int64
         """
         mel = self._extract_mel(audio)
+        _, _, n_tokens = self._layout(len(audio))
 
         # ── 組裝 prefix（含 context/hint）────────────────────────────
         if context and context.strip():
@@ -344,7 +375,7 @@ class LightProcessor:
             suffix_ids = self._suffix_ids
 
         ids = np.array(
-            prefix_ids + [self.pad_id] * self._n_audio + suffix_ids,
+            prefix_ids + [self.pad_id] * n_tokens + suffix_ids,
             dtype=np.int64,
         )[np.newaxis, :]
 

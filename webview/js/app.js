@@ -272,6 +272,14 @@
   let batchElapsed = 0;
   let batchDragId = null;          // 正在被拖動的項目 id（null = 沒在拖）
   let logExpanded = false;   // Wave 14：上傳通道已移除，不再有 batchUploadErrors
+  // 「補做對齊」抽屜：多選態、勾選集合、逐項校驗結果（校驗是非同步補上來的）。
+  let alignMode = false;
+  const alignSel = new Set();
+  const alignProbe = {};           // id -> {level, reason, ratio, ok}
+  // 有紅標（L3 試對齊未通過）時，「開始對齊」第一次只進入待確認態：
+  // 整批白跑的代價是幾十分鐘，誤點一下不該直接付這個代價。
+  let alignConfirmPending = false;
+  let batchSummaryData = {};       // 後端 summary 原樣留存（並行降級要看它）
   let lastBatchDetail = null;      // Wave 11：批次頁目前任務的進度明細
 
   function markBusy(scope, on) {
@@ -320,6 +328,16 @@
     const clear = $("#btn-batch-clear");
     if (clear) clear.disabled = busy || !batchItems.some(
       i => ["done", "failed", "canceled"].includes(i.status));
+    // 「嘗試並行」在佇列啟動後鎖定：值已經快照進 run_opts，
+    // 這時再改只會讓畫面與實際跑的參數對不上。
+    const parWrap = $("#batch-par-wrap"), parBox = $("#batch-align-par");
+    if (parBox) {
+      parBox.disabled = batchRunning || busy;
+      if (parWrap) parWrap.classList.toggle("is-locked", parBox.disabled);
+    }
+    // 識別頁的同一個開關：跑起來就鎖住，避免「畫面上改了、實際跑的是舊值」。
+    const parAudio = $("#sw-align-par");
+    if (parAudio) parAudio.disabled = UI_BUSY.has("transcribe");
     const batchRun = $("#btn-batch-run");
     if (batchRun) {
       batchRun.disabled = UI_BUSY.has("transcribe") || UI_BUSY.has("model");
@@ -433,6 +451,8 @@
         language: $("#sel-lang").value || null,
         ...diarOpts($("#sel-diar") ? $("#sel-diar").value : "off"),
         align: $("#sw-align").checked,
+        // FA 与识别重叠执行；关掉 = 逐段串行（旧行为）
+        alignParallel: alignParallelOn(),
         hint: $("#hint-box").value.trim(),
         trial: $("#sw-trial") ? $("#sw-trial").checked : false,
       });
@@ -514,6 +534,16 @@
       $("#seg-effective").textContent =
         (Number.isFinite(eff) ? eff + "s" : "—") +
         T("run.modelCeiling", null, { n: Number.isFinite(ceil) ? ceil : "—" });
+    }
+    // 滑桿上限跟隨模型天花板：1.7B 是 20 秒，拖到 30 只會被後端夾住，
+    // 控件本身應該表達真實可選範圍。0.6B 仍是 30，切換模型時會重新套用。
+    const chunkSlider = $("#seg-chunk");
+    if (chunkSlider && Number.isFinite(ceil) && ceil > 0) {
+      chunkSlider.max = ceil;
+      if (+chunkSlider.value > ceil) chunkSlider.value = ceil;
+      const chunkVal = $("#seg-chunk-val");
+      if (chunkVal) chunkVal.textContent = chunkSlider.value + "s";
+      syncSegSummary();
     }
     if ($("#seg-ram")) {
       $("#seg-ram").textContent = Number.isFinite(ram)
@@ -1230,6 +1260,8 @@
       // 不再讓每個檔開跑時現讀 settings —— 否則同一批會有兩套時間軸。
       vadThreshold: $("#seg-vad") ? Number($("#seg-vad").value) : null,
       chunkSecs: $("#seg-chunk") ? Number($("#seg-chunk").value) : null,
+      // 「嘗試並行」：允許對齊任務與識別任務錯峰執行（記憶體不足時後端會降級）。
+      alignParallel: alignParallelOn(),
     };
   }
 
@@ -1263,6 +1295,7 @@
     batchItems = snap.items.map(it => Object.assign({}, it, { file: null }));
     batchRunOpts = (snap && snap.runOpts) || {};
     batchRunning = !!(snap.summary && snap.summary.running);
+    if (snap.summary) batchSummaryData = snap.summary;
     if (snap.summary && snap.summary.elapsedSec != null)
       batchElapsed = Number(snap.summary.elapsedSec) || 0;
     renderBatch();
@@ -1291,7 +1324,10 @@
         updateBatchRow(k);
         batchSummary();
       }
-      if (payload.summary) batchRunning = !!payload.summary.running;
+      if (payload.summary) {
+        batchSummaryData = payload.summary;
+        batchRunning = !!payload.summary.running;
+      }
       syncActionButtons();
       return;
     } else if (payload.item) {
@@ -1307,7 +1343,10 @@
       if (idx >= 0) batchItems[idx] = Object.assign({}, batchItems[idx], payload.item);
       else batchItems.push(Object.assign({}, payload.item, { file: null }));
     }
-    if (payload.summary) batchRunning = !!payload.summary.running;
+    if (payload.summary) {
+      batchSummaryData = payload.summary;
+      batchRunning = !!payload.summary.running;
+    }
     else if (typeof payload.running === "boolean") batchRunning = payload.running;
     if (payload.summary && payload.summary.elapsedSec != null)
       batchElapsed = Number(payload.summary.elapsedSec) || 0;
@@ -1345,13 +1384,16 @@
   }
 
   function batchSummary() {
-    const total = batchItems.length;
-    const done = batchItems.filter(i => i.status === "done").length;
-    const failed = batchItems.filter(i => i.status === "failed").length;
-    const pending = batchItems.filter(i => i.status === "pending").length;
+    // 詞級對齊任務與識別分開算：混在一起會讓「完成 n/m」永遠差一截。
+    const trans = batchItems.filter(i => (i.kind || "transcribe") !== "align");
+    const aligns = batchItems.filter(i => (i.kind || "transcribe") === "align");
+    const total = trans.length;
+    const done = trans.filter(i => i.status === "done").length;
+    const failed = trans.filter(i => i.status === "failed").length;
+    const pending = trans.filter(i => i.status === "pending").length;
     const active = batchItems.find(i => i.status === "running");
     const avg = total
-      ? batchItems.reduce((a, b) => a + (b.progress || 0), 0) / total : 0;
+      ? trans.reduce((a, b) => a + (b.progress || 0), 0) / total : 0;
     const pct = Math.round(avg * 100);
 
     // ── 佇列級 ─────────────────────────────────────────────
@@ -1371,7 +1413,33 @@
     if (countEl) {
       let c = T("batch.progCount", null, { done, total });
       if (failed) c += " · " + T("batch.progFailed", null, { n: failed });
+      if (aligns.length) {
+        const ad = aligns.filter(i => i.status === "done").length;
+        c += " · " + T("batch.progAlign", null, { done: ad, total: aligns.length });
+      }
       countEl.textContent = c;
+    }
+    // 「嘗試並行」的實際狀態：勾了但記憶體不夠 → 後端不會起第二條 worker，
+    // 這裡要說清楚是「降級串行」而不是「沒生效」。
+    const parEl = $("#batch-par-state");
+    if (parEl) {
+      const s = batchSummaryData || {};
+      const wanted = s.parallelWanted != null
+        ? s.parallelWanted
+        : ($("#batch-align-par") ? $("#batch-align-par").checked : false);
+      const waiting = batchRunning && wanted && (s.alignBacklog || 0) > 1;
+      if (waiting) {
+        // 補齊還有 ≥2 個：識別依策略壓住不動，這不是「降級」而是正常排隊。
+        parEl.hidden = false;
+        parEl.textContent = T("batch.parWaiting");
+      } else if (batchRunning && wanted && !s.parallelActive) {
+        parEl.hidden = false;
+        parEl.textContent = T("batch.parDowngrade");
+      } else if (batchRunning && s.parallelActive) {        parEl.hidden = false;
+        parEl.textContent = T("batch.parActive");
+      } else {
+        parEl.hidden = true;
+      }
     }
     // 佇列級「已耗時」放 meta；「預計剩餘」放 detail 的尾端，兩者互不重複。
     const metaEl = $("#batch-prog-meta");
@@ -1443,6 +1511,11 @@
       [T("batch.cfgDiar", "說話者分離"), diar, false],
       [T("batch.cfgAlign", "詞級優化"),
        src.align ? T("batch.cfgOn", "開") : T("batch.cfgOff", "關"), false],
+      // 「嘗試並行」是本輪鎖定的執行方式，執行中改勾選不該影響已在跑的佇列，
+      // 所以在鏡像卡裡也列出實際生效值。
+      [T("batch.cfgPar", "對齊執行"),
+       src.alignParallel ? T("batch.cfgParOn", "嘗試並行")
+                         : T("batch.cfgParOff", "串行"), false],
       [T("batch.cfgHint", "辨識提示"),
        hintLen ? T("batch.cfgHintOn", null, { n: hintLen }) : T("batch.cfgNone", "無"), false],
       [T("batch.cfgVad", "VAD 靈敏度"), vad, false],
@@ -1477,9 +1550,11 @@
       box.style.cssText = "text-align:center;color:var(--muted);padding:28px";
       box.textContent = T("batch.empty");
       host.appendChild(box);
+      renderAlignControls();
       return;
     }
     batchItems.forEach((it, idx) => host.appendChild(batchRow(it, idx)));
+    renderAlignControls();
     // 「可拖曳」提示只在真的能拖时出现（≥2 个 pending），否则是噪音。
     const hint = $("#batch-move-hint");
     if (hint) hint.hidden = batchItems.filter(x => x.status === "pending").length < 2;
@@ -1532,6 +1607,8 @@
   }
 
   function bindBatchRowDrag(row, it, idx) {
+    // 多選態只處理勾選：拖動會與「整列點擊」互搶手勢。
+    if (alignMode) return;
     // 非 pending 也接 dragover：否則拖到已完成那列上方時不會有放置指示，
     // 使用者會以為整份列表都不能放。真正的擋下在 move() 裡。
     row.addEventListener("dragover", e => {
@@ -1583,6 +1660,14 @@
     const bits = [];
     if (it.localPath) bits.push(T("batch.localPath", "本機路徑 · 不複製"));
     if (it.statusText) bits.push(window.I18N ? I18N.L(it.statusText) : String(it.statusText));
+    // 補做對齊的校驗結果（L2 時長／L3 試對齊）：只講結論，細節在 hover。
+    const p = alignProbe[it.id];
+    if (p) {
+      if (p.level === "blocked") bits.push(T("batch.probeBlocked", null, { why: p.reason || "" }));
+      else if (p.level === "lenient") bits.push(T("batch.probeLenient", null, { why: p.reason || "" }));
+      else if (p.ok) bits.push(T("batch.probeOk"));
+      else if (p.level === "unverified") bits.push(T("batch.probeUnverified"));
+    }
     return bits.join(" · ");
   }
   /** Wave 13：每一列的時長／已用／剩餘，只填後端真的給過的數值。 */
@@ -1600,15 +1685,22 @@
   function batchRow(it, idx) {
     const [label, cls] = stLabel(it.status);
     const s = batchRowStats(it);
+    const isAlign = (it.kind || "transcribe") === "align";
+    const picked = alignSel.has(it.id);
     const row = document.createElement("div");
-    row.className = "b-row" + (s.isActive ? " is-active" : "");
+    row.className = "b-row" + (s.isActive ? " is-active" : "")
+      + (alignMode ? " is-pick" : "") + (picked ? " is-picked" : "");
     row.dataset.idx = idx;
     row.dataset.id = it.id || "";
     const sub = batchRowSub(it);
     const moreTitle = T("batch.menuTitle", "More actions");
+    const lead = alignMode
+      ? `<label class="pick"><input type="checkbox"${picked ? " checked" : ""}></label>`
+      : (s.isActive ? "▶" : "");
     row.innerHTML = `
-      <span class="ic">${s.isActive ? "▶" : ""}</span>
-      <div class="nm"><div class="f">${escapeHtml(it.name)}</div>
+      <span class="ic">${lead}</span>
+      <div class="nm"><div class="f">${escapeHtml(it.name)}${isAlign
+        ? `<span class="kind-chip">${escapeHtml(T("batch.kindAlign", "詞級"))}</span>` : ""}</div>
         ${sub ? `<div class="s ${it.localPath ? "local" : ""}">${escapeHtml(sub)}</div>` : ""}
         ${it.error ? `<div class="e">${escapeHtml(it.error)}</div>` : ""}</div>
       <span class="dur">${s.dur ? fmtDur(s.dur) : "—"}</span>
@@ -1624,8 +1716,78 @@
       e.stopPropagation();
       openBatchMenu(row.querySelector(".more"), it);
     });
+    if (alignMode) {
+      // 多選態：整列可點，只有「⋯」選單與勾選框本身不觸發（避免點一次跳兩下）。
+      row.addEventListener("click", e => {
+        if (e.target.closest(".more")) return;
+        toggleAlignPick(it.id);
+      });
+    }
     bindBatchRowDrag(row, it, idx);
     return row;
+  }
+
+  function toggleAlignPick(id) {
+    if (alignSel.has(id)) alignSel.delete(id); else alignSel.add(id);
+    alignConfirmPending = false;      // 選擇變了，上一次的「再點一次」失效
+    const row = $(`.b-row[data-id="${id}"]`);
+    if (row) {
+      const on = alignSel.has(id);
+      row.classList.toggle("is-picked", on);
+      const cb = row.querySelector(".pick input");
+      if (cb) cb.checked = on;
+    }
+    renderAlignControls();
+  }
+
+  /** 抽屜與入口按鈕的狀態。可見性規則是「無任務且未展開 → 隱藏」。*/
+  function renderAlignControls() {
+    const toggle = $("#btn-align-toggle");
+    const drawer = $("#align-drawer");
+    const runBtn = $("#btn-align-run");
+    const markBtn = $("#btn-align-mark");
+    if (!toggle || !drawer) return;
+    const hasItems = batchItems.length > 0;
+    toggle.hidden = !hasItems && !alignMode;
+    drawer.classList.toggle("is-open", alignMode);
+    if (!alignMode) return;
+    const marked = batchItems.filter(i => (i.kind || "transcribe") === "align");
+    const runningAlign = batchItems.find(
+      i => i.status === "running" && (i.kind || "transcribe") === "align");
+    // 選擇集全是被標記過的列 → 這顆按鈕就是「撤銷標記」。
+    // 混選時只提交還沒標記的那些，避免把已標記的列重新退回 pending。
+    const selItems = batchItems.filter(i => alignSel.has(i.id));
+    const allPickedMarked = selItems.length > 0 &&
+      selItems.every(i => (i.kind || "transcribe") === "align");
+    if (markBtn) {
+      markBtn.disabled = alignSel.size === 0 || batchRunning;
+      markBtn.textContent = allPickedMarked
+        ? T("batch.alignUnmark") : T("batch.alignMark");
+      markBtn.classList.toggle("is-warn", allPickedMarked);
+    }
+    // 未通過 L3 試對齊（紅標）的已標記項：起跑前要再點一次，避免整批白跑。
+    const blockedMarked = marked.filter(
+      i => alignProbe[i.id] && alignProbe[i.id].level === "blocked").length;
+    if (!blockedMarked) alignConfirmPending = false;
+    if (runBtn) {
+      // 跑起來之後同一顆按鈕變「停止對齊」，且只停這一條（不殺整條佇列）。
+      // 佇列正在跑識別時不能按：那時按下去既不能啟動（會撞上主 worker），
+      // 也不該去停別人的任務。
+      runBtn.disabled = runningAlign ? false
+        : (marked.length === 0 || batchRunning);
+      runBtn.title = (!runningAlign && batchRunning) ? T("batch.alignQueueBusy") : "";
+      if (runningAlign) {
+        runBtn.textContent = T("batch.alignStop");
+        runBtn.classList.remove("is-warn");
+      } else if (alignConfirmPending && blockedMarked) {
+        runBtn.textContent = T("batch.alignConfirm", null, { n: blockedMarked });
+        runBtn.classList.add("is-warn");
+      } else {
+        runBtn.textContent = marked.length
+          ? T("batch.alignRunN", null, { n: marked.length }) : T("batch.alignRun");
+        runBtn.classList.remove("is-warn");
+      }
+    }
   }
   function updateBatchRow(idx) {
     const it = batchItems[idx];
@@ -1685,6 +1847,15 @@
       acts.push(["menuPromote", T("batch.menuPromote"), () => promoteBatchItem(it.id)]);
     if (terminal && API.mode === "web")
       acts.push(["menuRetry", T("batch.menuRetry"), () => API.batchRetry(it.id)]);
+    // 只重建字幕：文字與詞級時間已在 rich.json，重寫 SRT 是毫秒級的事。
+    // 改過斷行規則、或 SRT 被別的剪輯軟體動過，都用這條，不必重跑對齊。
+    if (!running && API.mode === "web")
+      acts.push(["menuRebuildSrt", T("batch.menuRebuildSrt"), async () => {
+        const r = await API.batchRebuildSrt(it.id);
+        if (r && r.ok === false) logLine("✕ " + (r.error || ""));
+        else logLine("· " + T("batch.rebuildDone", null,
+                              { n: (r && r.segments) || 0 }));
+      }]);
     if (running && batchRunning && API.mode === "web") {
       acts.push(["menuSkip", T("batch.menuSkip"), async () => {
         await API.batchCancel();
@@ -1821,6 +1992,94 @@
   $("#btn-batch-clear") && $("#btn-batch-clear").addEventListener("click", async () => {
     if (API.mode === "web") { await API.batchClear(); await refreshBatch(); }
     else { batchItems = batchItems.filter(i => !["done", "failed", "canceled"].includes(i.status)); renderBatch(); }
+  });
+
+  /* ── 補做對齊抽屜 ─────────────────────────────────────────────────────
+     入口在佇列標題右側（不是全域按鈕）：它作用於「被勾選的列」。
+     標記只改語義、不啟動；「開始對齊」沿用既有的批次啟動與停止。 */
+  $("#btn-align-toggle") && $("#btn-align-toggle").addEventListener("click", () => {
+    alignMode = !alignMode;
+    alignConfirmPending = false;
+    if (!alignMode) alignSel.clear();
+    renderBatch();
+  });
+  $("#btn-align-cancel") && $("#btn-align-cancel").addEventListener("click", () => {
+    // 取消的是「選擇」本身；已標記的任務保留，抽屜不關（否則看不到開始）
+    alignSel.clear();
+    alignConfirmPending = false;
+    alignMode = false;
+    renderBatch();
+  });
+  $("#btn-align-mark") && $("#btn-align-mark").addEventListener("click", async () => {
+    const ids = Array.from(alignSel);
+    if (!ids.length) return;
+    if (API.mode !== "web") { logLine("· preview"); return; }
+    const selItems = batchItems.filter(i => alignSel.has(i.id));
+    const allMarked = selItems.length > 0 && selItems.every(
+      i => (i.kind || "transcribe") === "align");
+    try {
+      if (allMarked) {
+        // 撤銷：單項或多項都走這裡（選擇集就等於「要撤銷的那些」）。
+        await API.batchAlignUnmark(ids);
+        ids.forEach(id => { delete alignProbe[id]; });
+        alignConfirmPending = false;
+        await refreshBatch();
+        alignSel.clear();
+        renderBatch();
+        return;
+      }
+      // 混選時只提交還沒標記的，已標記的列維持原狀（不退回 pending）。
+      const toMark = selItems
+        .filter(i => (i.kind || "transcribe") !== "align").map(i => i.id);
+      if (toMark.length) {
+        await API.batchAlignMark(toMark);
+        await refreshBatch();
+        // L0/L2 立刻回來（毫秒級），L3 三窗試對齊在背景跑、逐項刷新。
+        const r = await API.batchAlignProbe(toMark);
+        (r && r.items || []).forEach(s => { alignProbe[s.id] = s; });
+      }
+      alignConfirmPending = false;
+      alignSel.clear();
+      renderBatch();
+    } catch (err) { logLine("✕ " + (err.message || err)); }
+  });
+  $("#btn-align-run") && $("#btn-align-run").addEventListener("click", async () => {
+    if (API.mode !== "web") return;
+    const running = batchItems.find(
+      i => i.status === "running" && (i.kind || "transcribe") === "align");
+    try {
+      if (running) {
+        await API.batchItemCancel(running.id);        // 只停這一條
+      } else if (batchRunning) {
+        // 佇列正在跑識別、但沒有對齊任務在跑：這裡**不能**按下去停整條，
+        // 否則「開始對齊」會變成「停止所有識別」。等佇列空了再來。
+        logLine("· " + T("batch.alignQueueBusy"));
+        return;
+      } else {
+        // 有紅標時第一次點只進入待確認態，第二次才真的開跑。
+        const blocked = batchItems.filter(i =>
+          (i.kind || "transcribe") === "align"
+          && alignProbe[i.id] && alignProbe[i.id].level === "blocked").length;
+        if (blocked && !alignConfirmPending) {
+          alignConfirmPending = true;
+          renderAlignControls();
+          setTimeout(() => {
+            if (alignConfirmPending) { alignConfirmPending = false; renderBatch(); }
+          }, 8000);
+          return;
+        }
+        alignConfirmPending = false;
+        await API.batchStart(currentBatchOpts());
+      }
+    } catch (err) { logLine("✕ " + (err.message || err)); }
+    await refreshBatch();
+  });
+  // L3 試對齊結果（背景完成一項推一項）：把黃標刷成綠/紅。
+  API.on("alignprobe", p => {
+    if (!p || !p.id) return;
+    alignProbe[p.id] = p;
+    const idx = batchItems.findIndex(i => i.id === p.id);
+    if (idx >= 0) updateBatchRow(idx);
   });
 
   async function runBatch() {
@@ -2427,6 +2686,7 @@
     }
     if ($("#sel-diar")) $("#sel-diar").value = diarValue(s);
     if ($("#sw-align")) $("#sw-align").checked = !!s.align;
+    syncAlignParallel(!!s.alignParallel, false);
     if ($("#hint-box") && s.hint != null) $("#hint-box").value = s.hint;
     if ($("#sw-trial")) $("#sw-trial").checked = !!s.trial;
     // 自動釋放已移到設定頁。顯示的是「生效值」：GPU 核心會強制關閉自動釋放
@@ -2482,6 +2742,24 @@
     }
   }
   bindPersisted("#sw-align", "align", el => !!el.checked);
+
+  // 「嘗試並行」：全鏈路唯一開關，識別頁與批次頁共用同一個值。
+  // 程式化設定 checked 不會觸發 change，所以兩邊不會互相回授。
+  function syncAlignParallel(on, persist) {
+    ["#sw-align-par", "#batch-align-par"].forEach(sel => {
+      const el = $(sel);
+      if (el) el.checked = !!on;
+    });
+    if (persist) { try { API.setSettings({ alignParallel: !!on }); } catch (e) {} }
+  }
+  function alignParallelOn() {
+    const el = $("#sw-align-par") || $("#batch-align-par");
+    return !!(el && el.checked);
+  }
+  ["#sw-align-par", "#batch-align-par"].forEach(sel => {
+    const el = $(sel);
+    if (el) el.addEventListener("change", () => syncAlignParallel(el.checked, true));
+  });
   bindPersisted("#sw-trial", "trial", el => !!el.checked);
   bindPersisted("#sw-auto-release", "autoRelease", el => !!el.checked);
 
@@ -2588,8 +2866,13 @@
     markBusy("preview", true); btn.dataset.label = btn.textContent;
     btn.textContent = T("split.prechecking", "預檢中…");
     try {
+      // 与「开始转换」完全对称：点选档（原生对话框）只有 {path,name}，
+      // 没有 File 对象，必须走 JSON 路径引用，不能塞进 FormData。
+      const byPath = !picked.file && !!picked.path;
       const r = await API.vadPreview({
-        file: picked.file || picked,
+        path: byPath ? picked.path : null,
+        name: picked.name,
+        file: byPath ? null : (picked.file || picked),
         vadThreshold: $("#seg-vad") ? $("#seg-vad").value : "",
       });
       renderPreviewStat(r);

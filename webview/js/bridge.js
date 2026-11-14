@@ -124,14 +124,32 @@
       return mockTranscribe(opts);
     },
     // Dry-run segmentation on the first 5 minutes. No ASR is executed.
+    // Two sources, mirroring transcribe(): a real File (drag & drop) goes as
+    // multipart; a native-picker path goes as JSON with zero copying.
     async vadPreview(opts) {
       if (MODE !== "web") return mockVadPreview(opts);
-      if (!opts || !opts.file) throw new Error("請先選擇檔案");
-      const fd = new FormData();
-      fd.append("file", opts.file, opts.file.name);
-      if (opts.vadThreshold) fd.append("vad_threshold", String(opts.vadThreshold));
+      // Never hand a plain {path,name} object to FormData.append — the browser
+      // throws "parameter 2 is not of type 'Blob'" and the preview dies before
+      // any request is made. Check the type, not just truthiness.
+      const hasFile = !!(opts && opts.file instanceof Blob);
+      if (!hasFile && !(opts && opts.path)) throw new Error("請先選擇檔案");
+      let body, headers;
+      if (!hasFile) {
+        body = JSON.stringify({
+          path: opts.path,
+          name: opts.name || null,
+          vadThreshold: opts.vadThreshold || "",
+        });
+        headers = authHeaders({ "Content-Type": "application/json" });
+      } else {
+        const fd = new FormData();
+        fd.append("file", opts.file, opts.file.name);
+        if (opts.vadThreshold) fd.append("vad_threshold", String(opts.vadThreshold));
+        body = fd;
+        headers = authHeaders();     // let the browser set the multipart boundary
+      }
       const r = await fetch(withKey("/api/vad-preview"), {
-        method: "POST", body: fd, headers: authHeaders(),
+        method: "POST", body, headers,
       });
       if (!r.ok) {
         let msg = "HTTP " + r.status;
@@ -311,6 +329,28 @@
     async batchPromote(id) {
       if (MODE !== "web") return { ok: true, mock: true };
       return apiPost("/api/batch/move", { id, promote: true });
+    },
+    // 補做對齊：標記 / 撤銷 / 試對齊（L3 結果由 SSE "alignprobe" 非同步補上）
+    async batchAlignMark(ids) {
+      if (MODE !== "web") return { ok: true, marked: (ids || []).length, mock: true };
+      return apiPost("/api/batch/align/mark", { ids: ids || [] });
+    },
+    async batchAlignUnmark(ids) {
+      if (MODE !== "web") return { ok: true, unmarked: 0, mock: true };
+      return apiPost("/api/batch/align/unmark", { ids });
+    },
+    async batchAlignProbe(ids) {
+      if (MODE !== "web") return { ok: true, items: [], mock: true };
+      return apiPost("/api/batch/align/probe", { ids: ids || [] });
+    },
+    async batchItemCancel(id) {
+      if (MODE !== "web") return { ok: true, mock: true };
+      return apiPost("/api/batch/item/cancel", { id });
+    },
+    // 只重建字幕（用既有 rich.json 重寫 SRT，不跑對齊，毫秒級）
+    async batchRebuildSrt(id) {
+      if (MODE !== "web") return { ok: true, mock: true };
+      return apiPost("/api/batch/rebuild/srt", { id });
     },
     async batchClear() {
       if (MODE !== "web") return { ok: true, removed: 0, mock: true };

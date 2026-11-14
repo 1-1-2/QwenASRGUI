@@ -16,10 +16,12 @@ Design rules (these are the whole point of this module):
 
 Word-level timing
 -----------------
-``engine._align_chunk(wav_path, ref_text, language)`` already exists and takes
-a small WAV plus the recognised text. The original ``process_file()`` path
-called it once per speech group; we call it at exactly the same granularity,
-writing the current chunk to a temporary WAV. No new dependency.
+The runner normally hands us lines that already carry ``words`` (they were
+produced by the FA line builder, on the same PCM chunk). In that case we do
+**not** re-run the aligner — see ``on_group``. ``_align`` remains as the
+fallback for callers whose line splitter cannot provide word times; it writes
+the chunk to a temporary WAV and calls ``engine._align_chunk``. No new
+dependency.
 
 Speaker diarization
 -------------------
@@ -104,23 +106,32 @@ class StreamEnhancer:
                  text: str, lines: list, start_index: int = 1) -> None:
         """Called once per speech group, before the chunk leaves scope.
 
-        ``lines`` is the list of ``(start, end, text)`` tuples the runner is
-        about to append; ``start_index`` is the 1-based SRT index of its first
-        line. Everything here is best-effort: on any failure the lines still
-        land in the SRT with empty ``words`` and no speaker.
+        ``lines`` is a list of ``(start, end, text)`` tuples the runner is
+        about to append — or ``(start, end, text, words)`` when the caller
+        already ran ForcedAligner to place the line breaks. In the latter
+        case ``words`` comes back with the lines and we do **not** run FA a
+        second time; that repeat call used to cost a full alignment pass per
+        chunk for nothing. ``start_index`` is the 1-based SRT index of the
+        first line. Everything here is best-effort: on any failure the lines
+        still land in the SRT with empty ``words`` and no speaker.
         """
-        for i, (s, e, line) in enumerate(lines):
-            self._by_index[start_index + i] = {"words": []}
+        carried = False
+        for i, ln in enumerate(lines):
+            words = ln[3] if len(ln) > 3 else None
+            if len(ln) > 3:
+                carried = True
+            self._by_index[start_index + i] = {"words": list(words or [])}
         if not self.active:
             return
 
-        if self.enable_align:
+        if self.enable_align and not carried:
             self._align(chunk, t0, text, lines, start_index)
         if self.enable_diar:
             self._embed(chunk, t0, t1)
 
     def _align(self, chunk, t0: float, text: str, lines: list,
                start_index: int) -> None:
+        """Fallback when the line splitter did not come with word times."""
         path = None
         try:
             fn = getattr(self.engine, "_align_chunk", None)
@@ -134,15 +145,33 @@ class StreamEnhancer:
             if not items:
                 return
             # align_chunk returns (word, local_start_s, local_end_s); shift to
-            # absolute audio time, then attach each word to the line whose
-            # interval contains its midpoint.
+            # absolute audio time.
             words = []
             for w, ws, we in items:
                 try:
                     words.append((str(w), t0 + float(ws), t0 + float(we)))
                 except (TypeError, ValueError):
                     continue
-            for i, (s, e, _line) in enumerate(lines):
+            # 优先按字符偏移切片：FA 的词序列与原文严格同序、一字一 token，
+            # 行文本就是原文的连续切片，归属是确定的。按时间中点归属会在
+            # 行边界处丢字/串行（行时间来自 ASR，词时间来自 FA，两把尺子）。
+            flat = "".join(str(ln[2]) for ln in lines).replace("\n", "")
+            flat_text = text.replace("\n", "")
+            if len(words) == len(flat_text) and flat == flat_text:
+                off = 0
+                for i, ln in enumerate(lines):
+                    n = len(str(ln[2]).replace("\n", ""))
+                    part = words[off:off + n]
+                    off += n
+                    rec = self._by_index.get(start_index + i)
+                    if rec is not None:
+                        rec["words"] = [{"word": w, "start": round(a, 3),
+                                         "end": round(b, 3)}
+                                        for w, a, b in part]
+                return
+            # 字数对不上（英文、数字、被吞掉的标点）→ 退回中点法。
+            for i, ln in enumerate(lines):
+                s, e = ln[0], ln[1]
                 picked = [{"word": w, "start": round(a, 3), "end": round(b, 3)}
                           for w, a, b in words if s <= (a + b) / 2 < e]
                 rec = self._by_index.get(start_index + i)
@@ -245,12 +274,32 @@ class StreamEnhancer:
                 if best is not None:
                     line["speaker"] = f"說話者{best}"
 
+        # 時間軸全局單調化：VAD group 之間本來就有 tail/padding 重疊，而每個
+        # group 各自分配時間，拼起來必然有負間隔。這裡是最後一道關口，
+        # rich.json 一經寫出就被 SRT 重建、對齊回填、匯出全部沿用。
+        try:
+            from subtitle_lines import fix_timeline
+
+            fixed = fix_timeline(
+                [(x["start"], x["end"], x["text"], x.get("speaker"),
+                  x.get("words") or []) for x in lines])
+            lines = [{"start": round(float(s), 3), "end": round(float(e), 3),
+                      "text": t, "words": w,
+                      **({"speaker": spk} if spk else {})}
+                     for (s, e, t, spk, w) in fixed]
+        except Exception as exc:
+            self._note(f"Timeline monotonic fix skipped: {exc}")
+
         try:
             self.rich_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.rich_path.with_suffix(self.rich_path.suffix + ".tmp")
             tmp.write_text(json.dumps(
                 {"segments": lines, "notes": self._notes,
-                 "align": self.enable_align, "diarize": self.enable_diar},
+                 "align": self.enable_align, "diarize": self.enable_diar,
+                 # 版面模型版本：3 = 一条一行、每條 ≤20 字、長句按 ceil(L/20)
+                 # 均分（不再出現「20 字 + 1 字尾巴」，也不再有多行條目）。
+                 # 「仅重建字幕」看到 3 就只重寫 SRT，不再重排一遍。
+                 "layout": 4},
                 ensure_ascii=False), encoding="utf-8")
             os.replace(str(tmp), str(self.rich_path))
         except Exception as exc:

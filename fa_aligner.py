@@ -228,7 +228,7 @@ class ChatLLMAligner:
             r = subprocess.run(
                 cmd, capture_output=True, stdin=subprocess.DEVNULL,
                 text=True, encoding="utf-8", errors="replace",
-                timeout=120, cwd=str(self._chatllm_dir),
+                timeout=45, cwd=str(self._chatllm_dir),
                 env=build_env(),
                 creationflags=_CREATE_NO_WINDOW | _priority_flag(),
                 startupinfo=_startup_info(),
