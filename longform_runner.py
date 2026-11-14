@@ -62,8 +62,10 @@ VAD_CHUNK = 512                  # Silero VAD 固定输入：32ms / 帧
 READ_BYTES = 64 * 1024          # 每次读 2.048s PCM，避免几十万次小 read
 DEFAULT_MAX_CHUNK_SECS = 30     # 0.6B 上限；1.7B 请传 20
 
-# A five-minute sample is enough to judge both segmentation quality and
-# recognition accuracy, while being roughly twice as fast as a ten-minute one.
+# 試跑與切分預檢共用同一個時長（設定項 ``trial_minutes``，預設 5 分鐘）：
+# 足以判斷切分品質與辨識準確度，又比 10 分鐘快將近一倍。
+# 這兩個常數只是「呼叫方沒傳值時」的預設；實際值由 WebBackend._trial_minutes()
+# 決定 —— 別在別處直接引用它們當成「固定 5 分鐘」。
 TRIAL_MINUTES = 5
 PREVIEW_MINUTES = 5
 WAVE_BINS = 200                  # waveform bars rendered by the frontend

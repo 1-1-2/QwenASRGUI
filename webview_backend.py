@@ -1881,12 +1881,16 @@ class WebBackend:
         }
 
     def vad_preview(self, opts: dict, progress_cb=None) -> dict:
-        """Dry-run segmentation on the first PREVIEW_MINUTES of the selected file.
+        """Dry-run segmentation on the first N minutes of the selected file.
 
         No ASR, no model weights needed beyond the VAD session. The result is a
         statistics dict the recognition page renders as red/yellow/green.
+
+        N 跟「試跑」共用同一個設定（``trial_minutes``）：使用者心裡只有一個
+        「前 N 分鐘」的概念，不該有兩個旋鈕。預檢不跑辨識，跟著試跑時長走
+        不會明顯變慢 —— 60 分鐘音檔的 VAD 分析也只要幾十秒。
         """
-        from longform_runner import vad_preview as _vp, PREVIEW_MINUTES
+        from longform_runner import vad_preview as _vp
 
         path = (opts or {}).get("path")
         if not path or not Path(path).exists():
@@ -1920,8 +1924,16 @@ class WebBackend:
             threshold = 0.5
         threshold = max(0.1, min(0.95, threshold))
 
+        # 預檢時長 = 試跑時長。前端可用 opts.minutes 覆寫（測試 / CLI 用）。
+        try:
+            _prev_mins = int(float((opts or {}).get("minutes")
+                                   or self._trial_minutes()))
+        except (TypeError, ValueError):
+            _prev_mins = self._trial_minutes()
+        _prev_mins = max(1, min(60, _prev_mins))
+
         self._emit("progress", {"pct": 0,
-                    "status": f"切分預檢：只分析前 {PREVIEW_MINUTES} 分鐘（不跑辨識）"})
+                    "status": f"切分預檢：只分析前 {_prev_mins} 分鐘（不跑辨識）"})
         cb = progress_cb or (lambda pct, status: self._emit(
             "progress", {"pct": pct, "status": status}))
         try:
@@ -1931,8 +1943,7 @@ class WebBackend:
                 ffmpeg=_ff,
                 threshold=threshold,
                 max_chunk_secs=effective,
-                minutes=int((opts or {}).get("minutes", PREVIEW_MINUTES) or
-                            PREVIEW_MINUTES),
+                minutes=_prev_mins,
                 progress_cb=cb,
                 cancel=self._cancel_event,
             )

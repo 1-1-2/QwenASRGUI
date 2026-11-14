@@ -42,14 +42,22 @@ def _make_backend(tmp: Path):
     fake_core._DEFAULT_MODEL_DIR = tmp / "ov_models"
     fake_core.SETTINGS_FILE = tmp / "settings.json"
     fake_core.SRT_DIR = tmp / "subtitles"
-    sys.modules.setdefault("app", fake_core)
+    # 用直接赋值而非 setdefault：第二次建 backend 時要讓 core.SETTINGS_FILE
+    # 指向新的臨時目錄，否則讀到的還是上一個（可能已刪除）的路徑。
+    sys.modules["app"] = fake_core
     fake_api = types.ModuleType("api_server")
     fake_api._VIDEO_HINT = set()
     fake_api._parse_srt = lambda text: []
-    sys.modules.setdefault("api_server", fake_api)
+    sys.modules["api_server"] = fake_api
 
     import webview_backend as wb
     wb.BASE_DIR = tmp
+    # webview_backend 在第一次 import 時就把 `core` 綁定到當時的假 app 模組，
+    # 之後再換 sys.modules["app"] 也改不動它。直接改 wb.core 上的路徑，
+    # 這樣第二次建 backend 才會讀到新的臨時目錄。
+    wb.core.SETTINGS_FILE = tmp / "settings.json"
+    if hasattr(wb.core, "SRT_DIR"):
+        wb.core.SRT_DIR = tmp / "subtitles"
     with mock.patch.object(wb.WebBackend, "_seed_defaults", lambda self: None), \
          mock.patch.object(wb.WebBackend, "_apply_runtime_prefs", lambda self: None):
         be = wb.WebBackend(on_event=None)
@@ -116,6 +124,58 @@ def main() -> int:
             "probe_duration, TRIAL_MINUTES" not in src)
     r.check("執行紀錄的分鐘數跟著設定",
             '_t.render("progress.trialPrefix", {"mins": trial_mins})' in src)
+
+    print("\n[7b] 切分預檢與試跑共用同一個時長")
+    # 使用者心裡只有一個「前 N 分鐘」，不該有兩個旋鈕。預檢不跑辨識，
+    # 跟著試跑時長走不會明顯變慢。
+    r.check("預檢讀 _trial_minutes()",
+            'or self._trial_minutes()' in src)
+    r.check("預檢提示文案用動態分鐘數",
+            "切分預檢：只分析前 {_prev_mins} 分鐘" in src)
+    r.check("不再直接引用 PREVIEW_MINUTES",
+            "import vad_preview as _vp, PREVIEW_MINUTES" not in src)
+    r.check("vad_preview 仍保留 minutes 參數（供覆寫）",
+            "minutes=_prev_mins" in src)
+    lr = (ROOT / "longform_runner.py").read_text(encoding="utf-8")
+    r.check("常數註釋說明只是預設值，非固定 5 分鐘",
+            "只是「呼叫方沒傳值時」的預設" in lr)
+
+    print("\n[7c] 預檢真的把設定值傳進 vad_preview（不是只改了文案）")
+    import threading
+    import longform_runner as lrmod
+    captured = {}
+
+    def fake_vp(**kw):
+        captured.update(kw)
+        return {"groupCount": 0, "groups": []}
+
+    # 這一段必須在 TemporaryDirectory 內：_trial_minutes() 讀的是
+    # core.SETTINGS_FILE，出了 with 塊那個路徑就沒了，只會拿到預設 5。
+    with tempfile.TemporaryDirectory() as td2:
+        tmp2 = Path(td2)
+        wb2, be2 = _make_backend(tmp2)
+        be2._emit = lambda e, p: None
+        wav = tmp2 / "probe.wav"
+        wav.write_bytes(b"RIFF")
+        with mock.patch.object(lrmod, "vad_preview", fake_vp):
+            be2._ensure_engine = lambda: None
+            be2.engine = types.SimpleNamespace(vad_sess=object(), max_chunk_secs=20)
+            be2._resolve_ffmpeg = lambda: "ffmpeg"
+            be2._cancel_event = threading.Event()
+            be2.set_settings({"trialMinutes": 18})
+            be2.vad_preview({"path": str(wav)})
+        r.check("minutes 跟隨 trial_minutes = 18",
+                captured.get("minutes") == 18, str(captured.get("minutes")))
+        captured.clear()
+        with mock.patch.object(lrmod, "vad_preview", fake_vp):
+            be2.vad_preview({"path": str(wav), "minutes": 3})
+        r.check("opts.minutes 仍可覆寫（CLI / 測試用）",
+                captured.get("minutes") == 3, str(captured.get("minutes")))
+        captured.clear()
+        with mock.patch.object(lrmod, "vad_preview", fake_vp):
+            be2.vad_preview({"path": str(wav), "minutes": 999})
+        r.check("opts.minutes=999 → 60", captured.get("minutes") == 60,
+                str(captured.get("minutes")))
 
     print("\n[8] 前端：就地編輯框在開關裡，且不進設定頁")
     html = (ROOT / "webview/index.html").read_text(encoding="utf-8")
