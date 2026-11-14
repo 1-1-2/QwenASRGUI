@@ -482,7 +482,7 @@
       if (res.previewTruncated) {
         logLine(I18N.t("file.previewTruncated").replace("%1", res.previewLimit) + " " + res.srtPath);
       }
-      if (res.trial) logLine(T("run.trialNote"));
+      if (res.trial) logLine(T("run.trialNote", null, { mins: _trialMins }));
       // 「開啟輸出資料夾」不需要等有輸出才亮：資料夾本來就在，
       // 使用者常常是先想確認上次的檔在哪才轉檔。
       $("#btn-save-sub").disabled = false;
@@ -1628,7 +1628,7 @@
        T(_outNaming === "overwrite" ? "set.nameOverwrite"
          : (_outNaming === "hash" ? "set.nameHash" : "set.nameSuffix")), false],
       // 試跑只對單檔有意義，明確標「不適用」而不是默默忽略。
-      [T("batch.cfgTrial", "試跑前 5 分鐘"), T("batch.cfgNa", "不適用"), true],
+      [T("batch.cfgTrial", null, { mins: _trialMins }), T("batch.cfgNa", "不適用"), true],
     ];
     const sig = JSON.stringify(rows);
     if (sig === _batchCfgSig) return;     // 佇列事件很密，值沒變就不重建 DOM
@@ -2794,6 +2794,11 @@
     syncAlignParallel(!!s.alignParallel, false);
     if ($("#hint-box") && s.hint != null) $("#hint-box").value = s.hint;
     if ($("#sw-trial")) $("#sw-trial").checked = !!s.trial;
+    // 試跑分鐘數：開關旁的就地編輯框。回填的是後端夾緊後的值，不是原字串。
+    if (s.trialMinutes != null) {
+      _trialMins = +s.trialMinutes || 5;
+      if ($("#trial-mins")) $("#trial-mins").value = _trialMins;
+    }
     // 自動釋放已移到設定頁。顯示的是「生效值」：GPU 核心會強制關閉自動釋放
     // （Vulkan context 刻意常駐），此時開關置灰並說明原因，而不是讓它顯示
     // 「開」卻永遠不作用。
@@ -2894,16 +2899,45 @@
     const chunk = $("#seg-chunk") ? $("#seg-chunk").value : "30";
     el.textContent = T("file.segSummary", null, { vad, chunk });
   }
+  // 試跑分鐘數：數字框嵌在「試跑前 __ 分鐘」中間，就地改、即時存。
+  // 徽章、執行紀錄、批量頁設定摘要都要跟著它變，所以集中在 _trialMins 一個來源。
+  let _trialMins = 5;
+  function trialMinsValue() {
+    const el = $("#trial-mins");
+    let v = el ? parseInt(el.value, 10) : _trialMins;
+    if (!isFinite(v)) v = 5;
+    return Math.max(1, Math.min(60, v));
+  }
   function syncTrialBadge() {
     const sw = $("#sw-trial"), badge = $("#trial-badge"), run = $("#btn-run");
     const on = !!(sw && sw.checked);
-    if (badge) badge.hidden = !on;
+    if (badge) {
+      badge.hidden = !on;
+      badge.textContent = T("file.trialBadge", null, { mins: _trialMins });
+    }
     if (run) run.classList.toggle("trial-on", on);
   }
   if ($("#sw-trial")) $("#sw-trial").addEventListener("change", syncTrialBadge);
+  if ($("#trial-mins")) {
+    const el = $("#trial-mins");
+    // 輸入框在 <label class="switch"> 裡，點它會冒泡到 label 把開關切掉。
+    // 擋掉 click / mousedown 兩層，否則使用者改個數字就順手關掉了試跑。
+    ["click", "mousedown", "pointerdown"].forEach(ev =>
+      el.addEventListener(ev, e => e.stopPropagation()));
+    el.addEventListener("change", async () => {
+      const v = trialMinsValue();
+      el.value = v;                 // 先正規化，避免畫面留著 999
+      _trialMins = v;
+      syncTrialBadge();
+      try { await API.setSettings({ trialMinutes: v }); }
+      catch (err) { logLine("✕ " + (err.message || err)); }
+    });
+    // 只打數字沒按 Enter 就切走：blur 時也要收斂，不然顯示與實際不一致。
+    el.addEventListener("blur", () => { el.value = trialMinsValue(); });
+  }
   if ($("#trial-badge")) {
     const badge = $("#trial-badge");
-    badge.title = T("file.trial", "試跑前 5 分鐘");
+    badge.title = T("file.trial", null, { mins: _trialMins });
     // 點徽章直接展開面板並聚焦開關：看得到提示，也能馬上改回來。
     badge.addEventListener("click", () => {
       const panel = $("#seg-panel"); if (panel) panel.open = true;

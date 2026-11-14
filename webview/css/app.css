@@ -308,6 +308,27 @@ button { font-family: inherit; }
   box-shadow: var(--shadow-sm); transition: transform .18s;
 }
 .switch input:checked + .track { background: var(--accent); }
+/* 試跑時長就地編輯：數字框嵌在「試跑前 __ 分鐘」中間。
+   1) .switch input 那條把 checkbox 藏成 0×0 絕對定位，特異性 (0,1,1) 比
+      單一類名 (0,1,0) 高 —— 必須用 .switch input.trial-mins 才蓋得回來，
+      否則數字框會整個消失（只剩「試跑前 分鐘」）；
+   2) .input 的 9px 內距與 width:100% 是給整行表單用的，這裡要壓成與
+      13px 文字齊高、固定 46px；
+   3) label 預設 cursor:pointer，只留給軌道與文字；
+   4) 去掉 number 的上下箭頭，46px 塞不下又容易誤觸。 */
+.trial-switch { cursor: default; }
+.trial-switch > .track,
+.trial-switch > span[data-i18n] { cursor: pointer; }
+.switch input.trial-mins {
+  position: static; opacity: 1; width: 46px; height: auto;
+  padding: 2px 4px; text-align: center;
+  font-size: 13px; border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+  appearance: textfield; -moz-appearance: textfield;
+}
+.switch input.trial-mins::-webkit-outer-spin-button,
+.switch input.trial-mins::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.switch input.trial-mins:focus { outline: none; border-color: var(--accent); }
 .switch input:checked + .track::after { transform: translateX(16px); }
 .switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
 

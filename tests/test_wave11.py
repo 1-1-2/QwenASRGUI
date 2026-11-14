@@ -155,8 +155,8 @@ def main() -> int:
             "function syncTrialBadge(" in app and
             'addEventListener("change", syncTrialBadge)' in app and
             "syncTrialBadge();" in app)
-    r.check("i18n 三語補齊 trialBadge",
-            '"file.trialBadge"' in i18n and "TRIAL · first 5 min only" in i18n)
+    r.check("i18n 三語補齊 trialBadge（分鐘數已參數化）",
+            '"file.trialBadge"' in i18n and "TRIAL · first {mins} min only" in i18n)
 
     print("\n[7] 即時輸出純文字逐行 + 時間戳")
     r.check("CSS 無卡片裝飾、單行不折行",

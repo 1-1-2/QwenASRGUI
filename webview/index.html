@@ -116,8 +116,9 @@
           </button>
           <!-- Wave 11：試跑勾選很容易被忘記（開關在下方摺疊面板裡），
                所以在「開始轉換」旁邊常駐一個醒目徽章，勾選時立刻出現。 -->
-          <span class="trial-badge" id="trial-badge" hidden
-                data-i18n="file.trialBadge">試跑前 5 分鐘 · 不會完整轉檔</span>
+          <!-- 文案含可變的分鐘數，所以不掛 data-i18n（靜態字典會蓋掉它），
+               由 syncTrialBadge() 依當前設定渲染。 -->
+          <span class="trial-badge" id="trial-badge" hidden>試跑前 5 分鐘 · 不會完整轉檔</span>
           <!-- 常亮：資料夾本來就存在，不該等「有輸出」才能開。
                hover 說明 .srt 與 .rich.json 的差別（data-i18n-tip）。 -->
           <button class="btn btn-ghost" id="btn-open-dir" data-i18n-tip="file.openDirTip">
@@ -205,7 +206,7 @@
           </div>
           <div class="seg-actions">
             <button class="btn btn-ghost btn-sm" id="btn-vad-preview" data-i18n="file.previewRun">切分預檢</button>
-            <label class="switch"><input type="checkbox" id="sw-trial"><span class="track"></span><span data-i18n="file.trial">試跑前 5 分鐘</span></label>
+            <label class="switch trial-switch"><input type="checkbox" id="sw-trial"><span class="track"></span><span data-i18n="file.trialPre">試跑前</span><input class="input trial-mins" id="trial-mins" type="number" min="1" max="60" step="1" value="5" data-i18n-aria="file.trialMinsAria"><span data-i18n="file.trialUnit">分鐘</span></label>
             <span class="seg-verdict" id="seg-verdict" data-i18n="file.previewEmpty">尚未預檢</span>
           </div>
           </div>

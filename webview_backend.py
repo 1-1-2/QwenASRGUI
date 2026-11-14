@@ -1327,12 +1327,14 @@ class WebBackend:
             # only at the end; keeping two frameworks meant two sets of limits
             # and a length-dependent memory spike. All entries (GUI / batch /
             # CLI / API) now share the streaming runner.
-            from longform_runner import probe_duration, TRIAL_MINUTES
+            from longform_runner import probe_duration
             _ff = str(self._resolve_ffmpeg() or "ffmpeg")
             self._emit("progress", {"pct": 0, "status": "正在探测音频时长…"})
             _duration = probe_duration(audio_path, _ff)
             trial = bool(opts.get("trial"))
-            limit_sec = TRIAL_MINUTES * 60 if trial else None
+            # 試跑分鐘數由使用者在音檔頁就地改，不在這裡寫死。
+            trial_mins = self._trial_minutes()
+            limit_sec = trial_mins * 60 if trial else None
 
             _st = self._settings_raw()
             # 本次執行的切分參數可被 opts 覆寫。批次佇列在「開始」那一刻把
@@ -1385,7 +1387,7 @@ class WebBackend:
             mins = (_duration or 0) / 60
             self._emit("progress", {"pct": 0, "status":
                 _t.msg("progress.runInfo",
-                       trial=(_t.render("progress.trialPrefix", {"mins": TRIAL_MINUTES})
+                       trial=(_t.render("progress.trialPrefix", {"mins": trial_mins})
                               if trial else ""),
                        mins=f"{mins:.0f}", chunk=_effective,
                        ram=f"{_ram_mb / 1024:.1f}")})
@@ -2926,6 +2928,22 @@ class WebBackend:
     # 低於此值開始換頁，FA 反而更慢。只提示不攔 —— 使用者的機器可能特殊。
     _FA_GATE_WARN_GB = 3.0
 
+    # 試跑時長（分鐘）。放在音檔頁「試跑」開關旁就地編輯，不進設定頁 ——
+    # 它是「這次想跑多遠」的臨時選擇，不是長期偏好。上限 60：再長就不叫
+    # 試跑了，直接完整轉檔更省事。
+    _TRIAL_MINUTES_RANGE = (1, 60)
+    _TRIAL_MINUTES_DEFAULT = 5
+
+    def _trial_minutes(self) -> int:
+        """試跑分鐘數（已夾到 1~60）。settings.json 可手改，所以要夾。"""
+        try:
+            v = int(float(self._settings_raw().get(
+                "trial_minutes", self._TRIAL_MINUTES_DEFAULT)))
+        except (TypeError, ValueError):
+            v = self._TRIAL_MINUTES_DEFAULT
+        lo, hi = self._TRIAL_MINUTES_RANGE
+        return max(lo, min(hi, v))
+
     @staticmethod
     def _fa_avail_gb() -> float | None:
         """當下可用實體記憶體（GB）。取不到回 None，前端改顯示「未知」。"""
@@ -2993,6 +3011,9 @@ class WebBackend:
             "alignParallel": bool(s.get("align_parallel", False)),
             "hint": s.get("hint", ""),
             "trial": bool(s.get("trial", False)),
+            # 試跑時長：音檔頁開關旁就地編輯，回填時要用夾緊後的實際值
+            "trialMinutes": self._trial_minutes(),
+            "trialMinutesRange": list(self._TRIAL_MINUTES_RANGE),
             # 必須回「生效值」：GPU 後端下即使勾著也不會釋放。若回原始設定，
             # 開關會顯示「開」但實際永不作用（與 accel 誤報同一類問題）。
             "autoRelease": self._auto_release_enabled(),
@@ -3042,6 +3063,8 @@ class WebBackend:
                    "nSpeakers": "n_speakers", "align": "align", "hint": "hint",
                    "alignParallel": "align_parallel",
                    "trial": "trial",
+                   # 試跑時長（分鐘）：音檔頁開關旁就地編輯
+                   "trialMinutes": "trial_minutes",
                    # Wave 12 (問題 1): model memory lifecycle.
                    "autoRelease": "auto_release_model",
                    # 同名檔案策略（suffix / overwrite / hash）
@@ -3082,6 +3105,14 @@ class WebBackend:
             cur["fa_window_sec"] = int(round(cur["fa_window_sec"]))
         if "fa_drain_sec" in cur:
             cur["fa_drain_sec"] = int(round(cur["fa_drain_sec"]))
+        # 試跑分鐘數同樣夾緊：0 會讓試跑等於什麼都不做，9999 等於完整轉檔。
+        if "trial_minutes" in cur:
+            try:
+                _lo, _hi = self._TRIAL_MINUTES_RANGE
+                cur["trial_minutes"] = max(
+                    _lo, min(_hi, int(round(float(cur["trial_minutes"])))))
+            except (TypeError, ValueError):
+                cur["trial_minutes"] = self._TRIAL_MINUTES_DEFAULT
         try:
             f.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
