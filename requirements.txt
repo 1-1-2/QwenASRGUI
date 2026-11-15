@@ -23,6 +23,20 @@ sounddevice>=0.4.6
 # 中文轉換（簡轉繁）
 opencc-python-reimplemented>=0.1.7
 
+# 分詞器：processor_numpy 的 hint 功能（BPE，純 Rust 實作）。
+# 延遲載入，缺了只影響 hint，不影響辨識；但打包時是 --collect-all，
+# 漏裝會讓 PyInstaller 直接失敗。
+tokenizers>=0.15.0
+
+# 說話人分離的 fbank 特徵（diarize.py）。
+kaldi-native-fbank>=1.20
+
+# 重採樣（audio_io.py），取代 librosa 的 resample。
+soxr>=0.3.7
+
+# 端點分享的 QR code（cf_tunnel.py）。
+segno>=1.5.0
+
 # 中文分詞：字幕「一條 1~2 行」時決定兩行之間的切點。
 # 沒有它也能跑（退化為停頓 + 字數均衡，會把「內容」「具體」劈開）；
 # 有它才做得到「按詞邊界均衡」。純 Python + 內建詞典約 5 MB，不聯網。

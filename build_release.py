@@ -294,11 +294,18 @@ def build_command(distpath: Path, resolve_deps: bool = True) -> list[str]:
     for mod in HIDDEN_IMPORTS:
         cmd += ["--hidden-import", mod]
     # 專案模組排除出 PYZ（見 PROJECT_MODULES 的說明）。
-    # 2026-11-15：先用環境變數控制，預設**關閉**。官方 Python 3.11.9 下
-    # 這組 --exclude-module 會讓 PyInstaller 的分析子進程超時（
-    # "Timed out while waiting for the child process to exit"）並以 1 退出。
-    # 關閉後仍能正常產出可用包，只是 _internal/*.py 不可替換、後端改動
-    # 必須整包重打。要重新嘗試時設 QWENASR_EXCLUDE_PROJECT_MODULES=1。
+    # 2026-11-15：先用環境變數控制，預設**關閉**。
+    #
+    # 歸因更正：當初以為這組 --exclude-module 導致建置失敗，其實不是。
+    # 真正的失敗原因是 PyInstaller 的 COLLECT 階段 / shutil.rmtree 要一次刪掉
+    # 上千個舊檔，被外部的「批次刪除保護」攔下，異常冒泡成 exit 1。日誌裡那句
+    # "Timed out while waiting for the child process to exit" 只是 PyInstaller
+    # 在非 strict 模式下對分析子進程收尾慢的 **warning**，不是失敗原因。
+    #
+    # 因此這組參數本身是好的，只是還沒在「舊目錄已改名」的前提下重新驗證。
+    # 想啟用時：先把 dist/webview/<APP> 與 release_pkg/<APP> 改名，再設
+    # QWENASR_EXCLUDE_PROJECT_MODULES=1 建置，並務必跑完整驗證清單
+    # （見 .workbuddy/memory/MEMORY.md 的「可用的構建命令」）。
     if os.environ.get("QWENASR_EXCLUDE_PROJECT_MODULES") == "1":
         for mod in PROJECT_MODULES:
             cmd += ["--exclude-module", mod]
