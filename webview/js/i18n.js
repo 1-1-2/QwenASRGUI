@@ -529,6 +529,11 @@
     "batch.retryHint": ["點擊重新排隊；已跑完的段落會從斷點續跑", "点击重新排队；已跑完的段落会从断点续跑", "Click to queue again; finished segments resume from the checkpoint"],
     "batch.retryQueued": ["已重新排隊：{name}（按「開始」繼續）", "已重新排队：{name}（按「开始」继续）", "Re-queued: {name} (press Start to continue)"],
     "batch.retryFailed": ["重試失敗", "重试失败", "Retry failed"],
+    // 佇列頭的一鍵重試（把所有 failed 退回 pending）
+    "batch.retryAll": ["重試失敗", "重试失败", "Retry failed"],
+    "batch.retryAllHint": ["有 {n} 條失敗，點擊全部重新排隊", "有 {n} 条失败，点击全部重新排队", "{n} failed item(s) - click to re-queue all"],
+    "batch.retryAllDone": ["已重新排隊 {n} 條（按「開始」繼續）", "已重新排队 {n} 条（按「开始」继续）", "Re-queued {n} item(s) - press Start to continue"],
+    "batch.retryAllPartial": ["已重排 {n} 條，{s} 條檔案遺失無法重試", "已重排 {n} 条，{s} 条文件丢失无法重试", "Re-queued {n}; {s} skipped because the file is gone"],
     "batch.seconds": ["{n} 秒", "{n} 秒", "{n}s"],
     "batch.uploading": ["上傳中 {i} / {n}…", "上传中 {i} / {n}…", "Uploading {i} / {n}…"],
     "batch.uploadFailed": ["上傳失敗：{err}", "上传失败：{err}", "Upload failed: {err}"],

@@ -611,6 +611,35 @@ class BatchQueue:
                     return True
         return False
 
+    def retry_all(self) -> dict:
+        """把所有 failed 退回 pending，回傳實際改動條數與被跳過的。
+
+        只處理 failed，不碰 canceled —— 後者是使用者主動停的，
+        一口氣重排會把他剛停下來的東西又推回去。
+
+        檔案已遺失的條目留在 failed 並保留原因：退回 pending 只會在
+        下一輪再失敗一次，而且錯誤訊息會被覆蓋成更模糊的版本。
+        """
+        with self._lock:
+            ok_ids: list[str] = []
+            skipped: list[str] = []
+            for it in self.items:
+                if it.get("status") != _FAILED:
+                    continue
+                if not Path(it.get("path", "")).exists():
+                    it["error"] = "上傳檔案已遺失，請重新加入"
+                    skipped.append(it.get("name") or it.get("id") or "")
+                    continue
+                it["status"] = "pending"
+                it["progress"] = 0.0
+                it["error"] = None
+                it["cancelFlag"] = False
+                ok_ids.append(it.get("id") or "")
+            if ok_ids:
+                self._save()
+                self._broadcast()
+            return {"retried": len(ok_ids), "skipped": skipped}
+
     # ── 詞級對齊任務（批次頁「補做對齊」抽屜）────────────────────────────
     def mark_align(self, ids, kind: str = KIND_ALIGN) -> int:
         """把勾選的列標成對齊任務。只標記，不啟動。

@@ -747,8 +747,13 @@ class WebViewServer:
                             str(body.get("id", "")))})
                     if path == "/api/batch/retry":
                         body = self._read_json_body()
-                        return self._json({"ok": server.batch_queue.retry(
-                            str(body.get("id", "")))})
+                        _id = str(body.get("id", "") or "")
+                        # id 为空 = 全部重试：队列头那颗「重試失敗」按钮走这条。
+                        if not _id:
+                            r = server.batch_queue.retry_all()
+                            return self._json({"ok": True, **r,
+                                               "snapshot": server.batch_queue.snapshot()})
+                        return self._json({"ok": server.batch_queue.retry(_id)})
                     if path == "/api/batch/move":
                         # 佇列排序：index 為目標位置；promote=true 時移到最前面
                         # 的 pending 之前（已執行中的那列不動）。

@@ -1829,7 +1829,11 @@
       <div class="nm"><div class="f">${escapeHtml(it.name)}${isAlign
         ? `<span class="kind-chip">${escapeHtml(T("batch.kindAlign", "詞級"))}</span>` : ""}</div>
         ${sub ? `<div class="s ${it.localPath ? "local" : ""}">${escapeHtml(sub)}</div>` : ""}
-        ${it.error ? `<div class="e">${escapeHtml(it.error)}</div>` : ""}</div>
+        ${it.error ? `<div class="e">${escapeHtml(it.error)}${it.status === "failed"
+          ? `<button class="retry-inline" data-retry="${it.id}"
+                     title="${escapeHtml(T("batch.retryHint", "點擊重新排隊；已跑完的段落會從斷點續跑"))}"
+                     >${escapeHtml(T("batch.retry", "重試"))}</button>`
+          : ""}</div>` : ""}</div>
       <span class="dur">${s.dur ? fmtDur(s.dur) : "—"}</span>
       ${it.status === "failed"
         // 失敗行：狀態 chip 直接變成重試按鈕。舊版只有「⋯」選單裡有「重試」，
@@ -1896,6 +1900,15 @@
     const drawer = $("#align-drawer");
     const runBtn = $("#btn-align-run");
     const markBtn = $("#btn-align-mark");
+    // 一鍵重試：只在真的有 failed 時出現。放在「補做對齊」左邊，
+    // 兩者都屬於「對整條佇列動手」，視覺上歸一組。
+    const retryAllBtn = $("#btn-retry-failed");
+    if (retryAllBtn) {
+      const failedN = batchItems.filter(i => i.status === "failed").length;
+      retryAllBtn.hidden = failedN === 0;
+      retryAllBtn.title = failedN
+        ? T("batch.retryAllHint", null, { n: failedN }) : "";
+    }
     if (!toggle || !drawer) return;
     const hasItems = batchItems.length > 0;
     toggle.hidden = !hasItems && !alignMode;
@@ -2147,6 +2160,26 @@
   /* ── 補做對齊抽屜 ─────────────────────────────────────────────────────
      入口在佇列標題右側（不是全域按鈕）：它作用於「被勾選的列」。
      標記只改語義、不啟動；「開始對齊」沿用既有的批次啟動與停止。 */
+  $("#btn-retry-failed") && $("#btn-retry-failed").addEventListener("click", async () => {
+    const btn = $("#btn-retry-failed");
+    btn.disabled = true;
+    try {
+      // 空 id = 全部重試（後端 /api/batch/retry 對空 id 走 retry_all）
+      const r = await API.batchRetry("");
+      const skipped = (r && r.skipped) || [];
+      if (skipped.length) {
+        logLine("· " + T("batch.retryAllPartial", null,
+                         { n: r.retried || 0, s: skipped.length }));
+      } else {
+        logLine("· " + T("batch.retryAllDone", null, { n: (r && r.retried) || 0 }));
+      }
+    } catch (e) {
+      logLine("✕ " + (e.message || e));
+    } finally {
+      btn.disabled = false;
+      renderAlignControls();
+    }
+  });
   $("#btn-align-toggle") && $("#btn-align-toggle").addEventListener("click", () => {
     alignMode = !alignMode;
     alignConfirmPending = false;

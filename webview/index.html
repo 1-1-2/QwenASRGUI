@@ -412,6 +412,11 @@
           <!-- 「補做對齊」抽屜：收起時只有一顆入口，展開後向左滑出
                標記／開始對齊／取消選擇，佇列同時進入多選態。 -->
           <div class="qh-actions">
+            <!-- 一鍵重試：只在佇列裡真的存在 failed 時出現，避免常駐一顆
+                 永遠沒作用的按鈕。點一下把所有 failed 退回 pending。 -->
+            <button class="btn btn-ghost btn-sm" id="btn-retry-failed" hidden>
+              <span data-i18n="batch.retryAll">重試失敗</span>
+            </button>
             <div class="align-drawer" id="align-drawer">
               <button class="btn btn-ghost btn-sm" id="btn-align-mark" data-i18n="batch.alignMark">標記</button>
               <button class="btn btn-primary btn-sm" id="btn-align-run" disabled data-i18n="batch.alignRun">開始對齊</button>

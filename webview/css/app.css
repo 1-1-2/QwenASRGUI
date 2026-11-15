@@ -945,6 +945,16 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .b-row .nm { grid-area: nm; min-width: 0; }
 .b-row .nm .f { font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .b-row .nm .e { font-size: 11.5px; color: var(--live); margin-top: 2px; line-height: 1.45; }
+/* 錯誤提示旁的行內重試：與 .e 同高，不撐高佇列列。 */
+.b-row .nm .e .retry-inline {
+  margin-left: 8px; padding: 0 6px;
+  font-family: var(--font-sans); font-size: 11px; line-height: 1.5;
+  border: 1px solid var(--warn-line, #ECDCB6);
+  background: var(--warn-bg, #FBF4E6);
+  color: var(--warn-fg, #8A6312);
+  border-radius: 5px; cursor: pointer; vertical-align: 1px;
+}
+.b-row .nm .e .retry-inline:hover { border-color: currentColor; }
 .b-row .nm .s {
   font-size: 11px; color: var(--muted); margin-top: 2px;
   font-family: var(--font-mono);

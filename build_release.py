@@ -187,24 +187,36 @@ def slim_openvino(internal: Path) -> dict:
     return result
 
 HIDDEN_IMPORTS = [
-    "certifi", "proxy_tools", "bottle", "app", "webview_backend", "webview_server",
+    "certifi", "proxy_tools", "bottle",
     "openvino", "openvino.runtime", "onnxruntime", "opencc",
     "sounddevice", "soxr", "soundfile", "kaldi_native_fbank",
     # SciPy 已整体移除（2026-11）：说话人聚类改用 cluster_core.py（自带
     # average-linkage，与 scipy 输出逐位对齐），重采样改用频域低通。
     # 这两处一改，69 MB 的 scipy/ + scipy.libs/ 就彻底不必进包了。
-    "cluster_core",
+    "segno",
+]
+# 專案內模組**不進 PYZ**，只靠 py_sources() 的 --add-data 放進 _internal。
+#
+# 這是 2026-11-15 實測推翻的舊假設：原註釋說「.py 當資料檔放進 _internal，
+# 出問題能直接替換」。但 PyInstaller 的 FrozenImporter 掛在 sys.meta_path
+# 最前面，只要同名模組在 PYZ 裡，_internal/*.py 就永遠是死文件 —— 實測把
+# _internal/webview_backend.py 改名後程式照常運行，改內容也完全不生效。
+# 後果是所有後端改動都必須整包重打，而使用者看到的仍是舊行為。
+#
+# 修法：把專案模組排除出 PYZ。onedir 下 sys.path[0] 就是 _internal，
+# 排除後 import 走 PathFinder 從檔案加載 —— 複製檔案即生效，
+# 「替換單一模組急救」也才成立。
+PROJECT_MODULES = [
+    "app", "webview_backend", "webview_server", "cluster_core",
     "crisp_engine", "subtitle_lines", "cli_mode", "version", "updater",
-    "fa_aligner", "api_server", "segno", "cf_tunnel",
-    "proc_guard", "diarize", "audio_io", "processor_numpy", "downloader",
-    "ffmpeg_utils", "model_catalog", "longform_runner", "app_paths",
-    "batch_queue", "single_instance", "run_log", "subtitle_extras",
-    "release_manifest",
-    # 2026-11 啟動崩潰（TypeError: 'NoneType' object is not callable）之後補齊：
-    # 這些是專案內模組，過去只靠「靜態可追蹤」被收進包裡，任何一個漏收都會讓
-    # webview_backend 的匯入鏈斷掉，而斷點在 app_webview 的 except 裡被吞成
-    # WebViewServer = None。逐一明列，讓打包結果不再取決於可追蹤性。
+    "fa_aligner", "api_server", "cf_tunnel", "proc_guard", "diarize",
+    "audio_io", "processor_numpy", "downloader", "ffmpeg_utils",
+    "model_catalog", "longform_runner", "app_paths", "batch_queue",
+    "single_instance", "run_log", "subtitle_extras", "release_manifest",
     "ui_text", "postprocess", "chatllm_engine",
+    # Wave 12/13 的管線模組；漏了任何一個，PYZ 與檔案就會各跑一套。
+    "fa_queue", "diar_queue", "chunk_split", "vad_groups", "sysmem",
+    "align_backfill", "proc_utils",
 ]
 # customtkinter was removed from HIDDEN_IMPORTS on purpose (Wave 7): the WebView
 # UI is HTML, and `app.py` now guards its Tk GUI behind QWENASR_WEBVIEW_BUILD.
@@ -281,6 +293,10 @@ def build_command(distpath: Path, resolve_deps: bool = True) -> list[str]:
         cmd += ["--collect-data", mod]
     for mod in HIDDEN_IMPORTS:
         cmd += ["--hidden-import", mod]
+    # 專案模組排除出 PYZ（見 PROJECT_MODULES 的說明）。同時 --add-data
+    # 已經把它們放進 _internal，所以運行時 PathFinder 仍找得到。
+    for mod in PROJECT_MODULES:
+        cmd += ["--exclude-module", mod]
     for mod in EXCLUDE_MODULES:
         cmd += ["--exclude-module", mod]
 
