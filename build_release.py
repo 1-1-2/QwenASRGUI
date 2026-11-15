@@ -82,7 +82,12 @@ STATIC_DATA = [
 # the MOTW failure mode that forced the onefile build.
 COLLECT_DIRS = ["opencc", "openvino", "kaldi_native_fbank"]
 COLLECT_ALL = ["tokenizers"]
-COLLECT_DATA = ["certifi"]
+# jieba 的词典（dict.txt / idf.txt / posseg/*.p / lac_small/*，约 29.5 MB）是
+# 数据文件，PyInstaller 不会自动收。只有 subtitle_lines 延迟 import 它，
+# 而 subtitle_lines 在 PROJECT_MODULES 里被排除出 PYZ —— 一旦启用
+# QWENASR_EXCLUDE_PROJECT_MODULES=1，依赖分析就看不到 jieba，数据文件全丢，
+# 表现为「字幕分行退化成按字数硬切」。必须显式 --collect-data。
+COLLECT_DATA = ["certifi", "jieba"]
 
 # ══════════════════════════════════════════════════════════════════════════
 # 体积精简（Wave 7）：删掉确定用不到的 OpenVINO 组件
@@ -194,6 +199,11 @@ HIDDEN_IMPORTS = [
     # average-linkage，与 scipy 输出逐位对齐），重采样改用频域低通。
     # 这两处一改，69 MB 的 scipy/ + scipy.libs/ 就彻底不必进包了。
     "segno",
+    # sqlite3：longform_runner / webview_backend / webview_server 都 import 它，
+    # 而这三个模块全在 PROJECT_MODULES 里被排除出 PYZ。启用 exclude 后
+    # PyInstaller 不再分析它们，_sqlite3.pyd 与 sqlite3.dll 就收不进来，
+    # 运行时报 No module named 'sqlite3'（2026-11-15 实测踩到）。
+    "sqlite3",
 ]
 # 專案內模組**不進 PYZ**，只靠 py_sources() 的 --add-data 放進 _internal。
 #
@@ -294,18 +304,30 @@ def build_command(distpath: Path, resolve_deps: bool = True) -> list[str]:
     for mod in HIDDEN_IMPORTS:
         cmd += ["--hidden-import", mod]
     # 專案模組排除出 PYZ（見 PROJECT_MODULES 的說明）。
-    # 2026-11-15：先用環境變數控制，預設**關閉**。
+    # 2026-11-15 實測結論：**不要啟用**，保持預設關閉。
     #
-    # 歸因更正：當初以為這組 --exclude-module 導致建置失敗，其實不是。
-    # 真正的失敗原因是 PyInstaller 的 COLLECT 階段 / shutil.rmtree 要一次刪掉
-    # 上千個舊檔，被外部的「批次刪除保護」攔下，異常冒泡成 exit 1。日誌裡那句
-    # "Timed out while waiting for the child process to exit" 只是 PyInstaller
-    # 在非 strict 模式下對分析子進程收尾慢的 **warning**，不是失敗原因。
+    # 歸因更正（兩次）：這組參數既不是當初建置失敗的原因，也不是無害的最佳化。
     #
-    # 因此這組參數本身是好的，只是還沒在「舊目錄已改名」的前提下重新驗證。
-    # 想啟用時：先把 dist/webview/<APP> 與 release_pkg/<APP> 改名，再設
-    # QWENASR_EXCLUDE_PROJECT_MODULES=1 建置，並務必跑完整驗證清單
-    # （見 .workbuddy/memory/MEMORY.md 的「可用的構建命令」）。
+    # 1) 建置失敗的真凶是「批次刪除保護」：PyInstaller 的 COLLECT 階段與
+    #    shutil.rmtree 要一次刪掉上千個舊檔，被攔後異常冒泡成 exit 1。
+    #    日誌裡那句 "Timed out while waiting for the child process to exit"
+    #    只是非 strict 模式下的 warning。把舊目錄改名後，帶這組參數也能建置成功。
+    #
+    # 2) 但建置成功 ≠ 可用。排除專案模組後，PyInstaller 不再分析它們的 import，
+    #    依賴鏈被切斷，只被這些模組使用的依賴不會進包：
+    #      - sqlite3  → longform_runner / webview_backend / webview_server 用它
+    #                   → 執行時 No module named 'sqlite3'
+    #      - wave     → longform_runner 用它
+    #                   → 補上 sqlite3 後緊接著 No module named 'wave'
+    #    而且 base_library.zip 只有 155 條目，不含這兩個，救不回來。
+    #    靜態掃描顯示還有 40+ 個標準庫依賴同樣處於「可能漏收」狀態，逐個補
+    #    hidden-import 不可維護，且每次都要靠真實推理才能發現漏了哪個。
+    #
+    # 收益只有「改後端不必整包重打」，而整包重打實測約 45 秒 —— 不值得為此
+    # 承擔執行期才暴露的缺依賴風險。
+    #
+    # 保留這個開關是為了留下證據與復現路徑；真要啟用，必須先補齊 HIDDEN_IMPORTS
+    # 並跑完整驗證（見 .workbuddy/memory/MEMORY.md 的「可用的構建命令」）。
     if os.environ.get("QWENASR_EXCLUDE_PROJECT_MODULES") == "1":
         for mod in PROJECT_MODULES:
             cmd += ["--exclude-module", mod]
