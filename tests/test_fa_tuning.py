@@ -166,9 +166,10 @@ def main() -> int:
             "_fa_tune = self._fa_tuning()" in src)
     r.check("舊的 _st.get(\"fa_gate_gb\") 直讀已移除（避免繞過夾緊）",
             '_st.get("fa_gate_gb"' not in src)
-    r.check("_close_queues 用的是實例值",
-            "timeout=self.drain_timeout" in
-            (ROOT / "longform_runner.py").read_text(encoding="utf-8"))
+    # 收尾上限改成「實例值 + drain 開關」：停止時傳 0 不跑積壓。
+    lr_src = (ROOT / "longform_runner.py").read_text(encoding="utf-8")
+    r.check("_close_queues 用實例值且支援 drain=False",
+            "timeout = self.drain_timeout if drain else 0.0" in lr_src)
 
     print("\n" + "=" * 56)
     print(f"通過 {r.pass_} / 失敗 {r.fail}")

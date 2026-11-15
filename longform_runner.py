@@ -1301,19 +1301,26 @@ class LongformRunner:
                     time.sleep(0.5)
         raise RuntimeError("内存重试次数耗尽")   # pragma: no cover
 
-    def _close_queues(self) -> None:
+    def _close_queues(self, drain: bool = True) -> None:
         """把两条后台管线的剩余工作跑完再收线程；重复调用安全。
 
         收尾时识别已停，内存最宽松 —— 这正是把积压补齐的最佳时机。
+
+        ``drain=False`` 用于「使用者主动停止」：这时不该再补齐。``close()``
+        的语义是把队列跑完，停止却继续在后台连续起 FA 子进程（每窗一个
+        ffmpeg + 一个 main.exe），画面上就是黑窗反覆闪烁、任务管理器里
+        main.exe 不断启停 —— 看起来像程序没停下来。已完成的窗口结果早就
+        按行写进 jsonl，丢弃 pending 不损失任何已落盘的内容。
         """
+        timeout = self.drain_timeout if drain else 0.0
         if self.align_queue is not None:
             try:
-                self.align_queue.close(timeout=self.drain_timeout)
+                self.align_queue.close(timeout=timeout)
             except Exception:
                 pass
         if self.diar_queue is not None:
             try:
-                self.diar_queue.close(timeout=60.0)
+                self.diar_queue.close(timeout=(60.0 if drain else 0.0))
             except Exception:
                 pass
 
@@ -1638,7 +1645,8 @@ class LongformRunner:
                         "totalSec": round(total_sec or 0, 1),
                         "groups": group_count, "phase": "paused"})
             self._flush_segments(force=True)
-            self._close_queues()
+            # 停止 ≠ 收尾：不要把對齊積壓跑完（見 _close_queues 的說明）。
+            self._close_queues(drain=False)
             return {"status": "paused", "srt": str(self.out_srt),
                     "segments": seg_index - 1, "next_frame": resume_frame,
                     "groups": group_count, "frames": frame,

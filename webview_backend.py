@@ -1504,7 +1504,10 @@ class WebBackend:
                            "-ss", f"{float(t0):.3f}", "-t", f"{dur:.3f}",
                            "-i", str(src), "-ar", "16000", "-ac", "1",
                            "-c:a", "pcm_s16le", str(dst)]
-                    subprocess.run(cmd, capture_output=True, timeout=180)
+                    # 必須走 run_hidden：對齊每解一窗就起一次 ffmpeg，收尾
+                    # drain 時連續十幾次，沒隱藏就是「黑窗反覆閃爍」。
+                    from proc_utils import run_hidden
+                    run_hidden(cmd, capture_output=True, timeout=180)
 
                 def _align_window(src, t0, t1, text, lang):
                     """整窗对齐：自己解码 → FA → **绝对音频时间**的词序列。"""

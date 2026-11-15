@@ -105,8 +105,10 @@ def _extract(ff: str, audio: Path, t0: float, dur: float, dst: Path) -> bool:
            "-i", str(audio), "-ar", "16000", "-ac", "1",
            "-c:a", "pcm_s16le", str(dst)]
     try:
-        r = subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL,
-                           timeout=180)
+        # 同樣要隱藏窗口：補做對齊會連續解很多窗，漏掉就是黑窗閃爍。
+        from proc_utils import run_hidden
+        r = run_hidden(cmd, capture_output=True, stdin=subprocess.DEVNULL,
+                       timeout=180)
         return r.returncode == 0 and dst.exists() and dst.stat().st_size > 1024
     except Exception:
         return False

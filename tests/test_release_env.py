@@ -117,6 +117,8 @@ CHAIN = [
     "chunk_split",
     # 2026-11：两条独立管线的队列（识别只入队、后台自己解码）。
     "fa_queue", "diar_queue",
+    # 2026-11：统一「子进程不弹黑窗」的启动参数（ffmpeg / main.exe 都走它）。
+    "proc_utils",
 ]
 
 

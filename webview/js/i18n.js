@@ -525,6 +525,10 @@
     "batch.remove": ["移除", "移除", "Remove"],
     "batch.openOut": ["開啟輸出資料夾", "打开输出文件夹", "Open output folder"],
     "batch.retry": ["重試", "重试", "Retry"],
+    // 失敗列的狀態 chip 直接可點重試，不必翻「⋯」選單
+    "batch.retryHint": ["點擊重新排隊；已跑完的段落會從斷點續跑", "点击重新排队；已跑完的段落会从断点续跑", "Click to queue again; finished segments resume from the checkpoint"],
+    "batch.retryQueued": ["已重新排隊：{name}（按「開始」繼續）", "已重新排队：{name}（按「开始」继续）", "Re-queued: {name} (press Start to continue)"],
+    "batch.retryFailed": ["重試失敗", "重试失败", "Retry failed"],
     "batch.seconds": ["{n} 秒", "{n} 秒", "{n}s"],
     "batch.uploading": ["上傳中 {i} / {n}…", "上传中 {i} / {n}…", "Uploading {i} / {n}…"],
     "batch.uploadFailed": ["上傳失敗：{err}", "上传失败：{err}", "Upload failed: {err}"],

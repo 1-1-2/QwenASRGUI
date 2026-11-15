@@ -1831,7 +1831,13 @@
         ${sub ? `<div class="s ${it.localPath ? "local" : ""}">${escapeHtml(sub)}</div>` : ""}
         ${it.error ? `<div class="e">${escapeHtml(it.error)}</div>` : ""}</div>
       <span class="dur">${s.dur ? fmtDur(s.dur) : "—"}</span>
-      <span class="st chip ${cls}">${label}${s.isActive ? " " + s.pct + "%" : ""}</span>
+      ${it.status === "failed"
+        // 失敗行：狀態 chip 直接變成重試按鈕。舊版只有「⋯」選單裡有「重試」，
+        // 使用者看到「失敗」卻找不到怎麼再跑一次，以為本次執行會自動重試。
+        ? `<button class="st chip chip-retry" data-retry="${it.id}"
+                   title="${escapeHtml(T("batch.retryHint", "點擊重新排隊；已跑完的段落會從斷點續跑"))}"
+                   >${escapeHtml(T("batch.retry", "重試"))} ↻</button>`
+        : `<span class="st chip ${cls}">${label}${s.isActive ? " " + s.pct + "%" : ""}</span>`}
       <span class="used">${s.isActive && s.used > 0
         ? T("batch.used", null, { t: fmtDur(s.used) }) : "—"}</span>
       <span class="left">${s.isActive && s.left != null
@@ -1842,6 +1848,23 @@
     row.querySelector(".more").addEventListener("click", e => {
       e.stopPropagation();
       openBatchMenu(row.querySelector(".more"), it);
+    });
+    const retryBtn = row.querySelector("[data-retry]");
+    if (retryBtn) retryBtn.addEventListener("click", async e => {
+      e.stopPropagation();
+      retryBtn.disabled = true;
+      try {
+        const r = await API.batchRetry(it.id);
+        if (r && r.ok === false) {
+          logLine("✕ " + (r.error || T("batch.retryFailed", "重試失敗")));
+        } else {
+          logLine("· " + T("batch.retryQueued", null, { name: it.name }));
+        }
+      } catch (err) {
+        logLine("✕ " + (err.message || err));
+      } finally {
+        retryBtn.disabled = false;
+      }
     });
     if (alignMode) {
       // 多選態：整列可點，只有「⋯」選單與勾選框本身不觸發（避免點一次跳兩下）。
