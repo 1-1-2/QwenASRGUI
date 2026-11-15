@@ -682,30 +682,12 @@ class WebViewServer:
                         except Exception as exc:
                             return self._json({"ok": False, "error": str(exc)})
                         return self._json(r)
-                    if path == "/api/batch/drop-checkpoint":
-                        # 刪掉這一列的斷點，下次從頭跑。只刪斷點，SRT 不動。
+                    if path == "/api/checkpoints/drop":
+                        # 設定頁的斷點清單：刪單條（DB 行 + JSON 鏡像 + 逐段 jsonl）。
                         body = self._read_json_body() or {}
-                        _id = str(body.get("id", ""))
-                        it = next((x for x in list(server.batch_queue.items)
-                                   if x.get("id") == _id), None)
-                        if it is None:
-                            return self._json({"ok": False,
-                                               "error": "找不到這一列"})
-                        # 這一列還在跑（含取消後的收尾）時拒絕：worker 退出前
-                        # 會把斷點再寫一次，刪了也會立刻回來，使用者會以為沒生效。
-                        if (str(getattr(server.backend, "_batch_item_id", "") or "") == _id
-                                and int(getattr(server.backend, "_running", 0) or 0) > 0):
-                            return self._json({"ok": False,
-                                               "error": "這一列還在跑或收尾中，請等它停下來再刪"})
-                        try:
-                            r = server.backend.drop_checkpoint(
-                                it.get("path"), it.get("name") or "",
-                                # 上傳副本用內容身分、本地引用用路徑身分，
-                                # 與當初入隊時一致才刪得到真正的斷點。
-                                upload=not bool(it.get("localPath")))
-                        except Exception as exc:
-                            return self._json({"ok": False, "error": str(exc)})
-                        return self._json(r)
+                        return self._json(
+                            server.backend.drop_checkpoint_by_task(
+                                str(body.get("task") or "")))
                     if path == "/api/batch/align/probe":
                         # 兩段式：先回 L0/L2（毫秒級），L3 三窗試對齊丟背景，
                         # 逐項以 SSE "alignprobe" 把黃標刷成綠/紅。

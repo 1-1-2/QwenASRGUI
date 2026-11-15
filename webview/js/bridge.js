@@ -183,6 +183,11 @@
       if (MODE !== "web") return { removed: 0, freed: 0, failed: 0, mock: true };
       return apiPost("/api/checkpoints/clear", {});
     },
+    // 刪單條斷點（設定頁的斷點清單用）。task 是清單裡那一行的 task_id。
+    async dropCheckpoint(task) {
+      if (MODE !== "web") return { ok: true, had: true, freed: 0, mock: true };
+      return apiPost("/api/checkpoints/drop", { task });
+    },
     async checkUpdate() {
       if (MODE === "web") { try { return await apiPost("/api/check-update", {}); } catch {} }
       window.open("https://github.com/1-1-2/QwenASRGUI/releases/latest", "_blank");
@@ -351,11 +356,6 @@
     async batchRebuildSrt(id) {
       if (MODE !== "web") return { ok: true, mock: true };
       return apiPost("/api/batch/rebuild/srt", { id });
-    },
-    // 刪掉這一列的斷點，讓下次從頭跑（不動已生成的 SRT）
-    async batchDropCheckpoint(id) {
-      if (MODE !== "web") return { ok: true, mock: true, had: true };
-      return apiPost("/api/batch/drop-checkpoint", { id });
     },
     async batchClear() {
       if (MODE !== "web") return { ok: true, removed: 0, mock: true };

@@ -634,32 +634,36 @@ class WebBackend:
             except Exception:
                 pass
 
-    def drop_checkpoint(self, path: str, name: str = "",
-                        upload: bool = False) -> dict:
-        """刪掉某個檔案的斷點，讓下次從頭跑。
+    def drop_checkpoint_by_task(self, task_id: str) -> dict:
+        """按 task_id 刪掉單條斷點：DB 行 + JSON 鏡像 + 逐段 jsonl。
 
-        **只刪斷點**（checkpoints.db 裡的那一行 + JSON 鏡像）。已寫出的 SRT /
-        rich.json 是產出，不動 —— 使用者可能是想重跑一遍拿新參數的結果，
-        舊產出留著才有對比。真要重來，runner 的「輸出檔落後於斷點」檢查
-        會自己從頭寫，不會把新內容接到舊檔尾。
-
-        ``upload`` 要與當初入隊時一致：拖放副本用內容身分，本地引用用路徑身分，
-        算出來的 task_id 不同，搞錯就刪不到真正的斷點。
+        設定頁的斷點清單用這個（清單裡拿到的就是 task_id）。與
+        clear_checkpoints 的差別只在於範圍：這裡只動一條，別的任務不受影響。
+        同樣**不動 subtitles/ 裡已產出的字幕** —— 那是使用者的成品。
         """
+        tid = str(task_id or "").strip()
+        if not tid:
+            return {"ok": False, "error": "缺少 task_id"}
+        d = self.state_dir()
+        res = {"ok": True, "task": tid, "freed": 0, "had": False}
         try:
             from longform_runner import Checkpoint
-            task_id, _src = self._source_identity(path, name, upload=upload)
-            db = BASE_DIR / "longform_state" / "checkpoints.db"
-            ck = Checkpoint(db, task_id)
+            ck = Checkpoint(d / "checkpoints.db", tid)
             _f, _i, status = ck.load()
-            # Checkpoint 用 "new" 當「沒有斷點」的哨兵值（見 _json_load 的
-            # 回退分支），所以不能只判真假 —— 否則永遠回報「有斷點」，
-            # 明明沒有也提示「已刪除」，使用者會以為按鈕在騙人。
-            had = bool(status) and str(status) != "new"
+            # Checkpoint 用 "new" 當「沒有斷點」的哨兵值（見 _json_load 的回退
+            # 分支），不能只判真假，否則孤兒 jsonl 也會回報「有斷點」。
+            res["had"] = bool(status) and str(status) != "new"
             ck.delete()
-            return {"ok": True, "taskId": task_id, "had": had}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+        jf = d / f"{tid}.segments.jsonl"
+        try:
+            if jf.is_file():
+                res["freed"] = jf.stat().st_size
+                jf.unlink()
+        except OSError:
+            pass
+        return res
 
     def _emit_inner(self, event: str, payload: dict):
         # Wave 11：只對進度類事件加 scope，其餘事件契約完全不變。

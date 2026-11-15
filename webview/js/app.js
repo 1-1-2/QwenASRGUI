@@ -1926,13 +1926,6 @@
             ? `<span class="asr">${escapeHtml(T("batch.asrPct", null, { p: s.pct }))}</span>
                <span class="fa">${escapeHtml(T("batch.faPct", null, { p: s.pctFa }))}</span>`
             : `<span class="chip ${cls}">${label}</span>`}
-        ${!s.isActive && API.mode === "web"
-          // 行內刪斷點：灰字帶底線，hover 轉紅；點一次變紅「確認」，再點才真的刪。
-          // 兩段式而不是彈 confirm()：Edge --app 的原生對話框樣式突兀且會阻塞。
-          ? `<button class="ckpt-drop" data-ckpt="${it.id}"
-                     title="${escapeHtml(T("batch.dropCkptHint", "下次從頭跑；已生成的 SRT 保留"))}"
-                     >${escapeHtml(T("batch.dropCkpt", "刪除斷點"))}</button>`
-          : ""}
       </span>
       <span class="used">${s.isActive && s.used > 0
         ? T("batch.used", null, { t: fmtDur(s.used) }) : "—"}</span>
@@ -1944,35 +1937,6 @@
         <div class="bar fa"><i style="width:${s.pctFa}%"></i></div>
       </div>
       <button class="more" title="${moreTitle}" aria-label="${moreTitle}">⋯</button>`;
-    // 行內刪斷點：第一次點變紅「確認」，3 秒內再點才執行；逾時自動復原。
-    const ckptBtn = row.querySelector(".ckpt-drop");
-    if (ckptBtn) {
-      ckptBtn.addEventListener("click", async e => {
-        e.stopPropagation();
-        if (!ckptBtn.classList.contains("is-confirm")) {
-          ckptBtn.classList.add("is-confirm");
-          ckptBtn.textContent = T("batch.dropCkptConfirm", "確認");
-          clearTimeout(ckptBtn._reset);
-          ckptBtn._reset = setTimeout(() => {
-            ckptBtn.classList.remove("is-confirm");
-            ckptBtn.textContent = T("batch.dropCkpt", "刪除斷點");
-          }, 3000);
-          return;
-        }
-        clearTimeout(ckptBtn._reset);
-        ckptBtn.disabled = true;
-        try {
-          const r = await API.batchDropCheckpoint(it.id);
-          if (r && r.ok === false) logLine("✕ " + (r.error || ""));
-          else logLine("· " + (r && r.had
-            ? T("batch.dropCkptDone") : T("batch.dropCkptNone")));
-        } finally {
-          ckptBtn.disabled = false;
-          ckptBtn.classList.remove("is-confirm");
-          ckptBtn.textContent = T("batch.dropCkpt", "刪除斷點");
-        }
-      });
-    }
     row.querySelector(".more").addEventListener("click", e => {
       e.stopPropagation();
       openBatchMenu(row.querySelector(".more"), it);
@@ -3342,18 +3306,54 @@
       + `<span>${esc(T("set.ckptColTask", "任務／輸出檔"))}</span>`
       + `<span>${esc(T("set.ckptColState", "狀態"))}</span>`
       + `<span>${esc(T("set.ckptColTime", "最後活動"))}</span>`
-      + `<span class="ck-num">${esc(T("set.ckptColSize", "占用"))}</span></div>`;
+      + `<span class="ck-num">${esc(T("set.ckptColSize", "占用"))}</span>`
+      + `<span class="ck-act"></span></div>`;
     const rows = (r.items || []).map(it => {
       const name = it.name || it.task;
-      return `<div class="ck-row">`
+      return `<div class="ck-row" data-task="${esc(it.task)}">`
         + `<span class="ck-name" title="${esc(name)}">${esc(name)}</span>`
         + `<span>${esc(ckStateLabel(it.status))}</span>`
         + `<span>${esc(ckWhen(it.updatedAt))}</span>`
-        + `<span class="ck-num">${esc(it.bytes ? fmtBytes(it.bytes) : "—")}</span></div>`;
+        + `<span class="ck-num">${esc(it.bytes ? fmtBytes(it.bytes) : "—")}</span>`
+        + `<span class="ck-act"><button class="ck-drop" data-task="${esc(it.task)}"`
+        + ` title="${esc(T("set.ckptDropHint", "下次從頭跑；已生成的 SRT 保留"))}"`
+        + `>${esc(T("set.ckptDrop", "刪除"))}</button></span></div>`;
     }).join("");
     const extra = (r.total || 0) - (r.items || []).length;
     list.innerHTML = head + rows + (extra > 0
       ? `<div class="ck-more">${esc(T("set.ckptMore", null, { n: extra }))}</div>` : "");
+    // 兩段式刪除：灰字 → hover 紅 → 點一次變紅「確認」（3 秒逾時復原）→ 再點才刪。
+    // 不用 confirm()：Edge --app 的原生對話框樣式突兀且會阻塞。
+    list.querySelectorAll(".ck-drop").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (!btn.classList.contains("is-confirm")) {
+          btn.classList.add("is-confirm");
+          btn.textContent = T("set.ckptDropConfirm", "確認");
+          clearTimeout(btn._reset);
+          btn._reset = setTimeout(() => {
+            btn.classList.remove("is-confirm");
+            btn.textContent = T("set.ckptDrop", "刪除");
+          }, 3000);
+          return;
+        }
+        clearTimeout(btn._reset);
+        btn.disabled = true;
+        try {
+          const res = await API.dropCheckpoint(btn.dataset.task);
+          if (res && res.ok === false) {
+            logLine("✕ " + (res.error || ""));
+            btn.disabled = false;
+            btn.classList.remove("is-confirm");
+            btn.textContent = T("set.ckptDrop", "刪除");
+            return;
+          }
+          await refreshCheckpoints();     // 條數、占用、清單一起更新
+        } catch (e) {
+          logLine("✕ " + (e.message || e));
+          btn.disabled = false;
+        }
+      });
+    });
   }
   // ── 對齊管線旋鈕（設定頁「對齊與記憶體」）───────────────
   // 三個值只影響「對齊」這條後台管線，不影響識別本身。存檔後即時生效：
