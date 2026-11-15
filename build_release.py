@@ -188,7 +188,7 @@ def slim_openvino(internal: Path) -> dict:
 
 HIDDEN_IMPORTS = [
     "certifi", "proxy_tools", "bottle",
-    "openvino", "openvino.runtime", "onnxruntime", "opencc",
+    "openvino", "onnxruntime", "opencc",
     "sounddevice", "soxr", "soundfile", "kaldi_native_fbank",
     # SciPy 已整体移除（2026-11）：说话人聚类改用 cluster_core.py（自带
     # average-linkage，与 scipy 输出逐位对齐），重采样改用频域低通。
@@ -293,10 +293,15 @@ def build_command(distpath: Path, resolve_deps: bool = True) -> list[str]:
         cmd += ["--collect-data", mod]
     for mod in HIDDEN_IMPORTS:
         cmd += ["--hidden-import", mod]
-    # 專案模組排除出 PYZ（見 PROJECT_MODULES 的說明）。同時 --add-data
-    # 已經把它們放進 _internal，所以運行時 PathFinder 仍找得到。
-    for mod in PROJECT_MODULES:
-        cmd += ["--exclude-module", mod]
+    # 專案模組排除出 PYZ（見 PROJECT_MODULES 的說明）。
+    # 2026-11-15：先用環境變數控制，預設**關閉**。官方 Python 3.11.9 下
+    # 這組 --exclude-module 會讓 PyInstaller 的分析子進程超時（
+    # "Timed out while waiting for the child process to exit"）並以 1 退出。
+    # 關閉後仍能正常產出可用包，只是 _internal/*.py 不可替換、後端改動
+    # 必須整包重打。要重新嘗試時設 QWENASR_EXCLUDE_PROJECT_MODULES=1。
+    if os.environ.get("QWENASR_EXCLUDE_PROJECT_MODULES") == "1":
+        for mod in PROJECT_MODULES:
+            cmd += ["--exclude-module", mod]
     for mod in EXCLUDE_MODULES:
         cmd += ["--exclude-module", mod]
 
