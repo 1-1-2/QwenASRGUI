@@ -239,15 +239,17 @@
     // 這裡補一次重繪，值沒變時 renderBatchConfig 自己會跳過重建。
     try { renderBatchConfig(); } catch (e) {}
     const el = $("#model-status");
-    // 收尾中：按了停止、模型釋放已登記，但 transcribe() 還沒返回。
-    // 這時識別看起來停了，後台其實還在收尾 —— 必須讓使用者看見，否則會以為按鈕沒反應。
-    const draining = !s.modelReady && !s.loading && !!s.releasing;
+    // 收尾中：按了停止，但 transcribe() 還沒返回（當前 chunk 在跑完）。
+    // 判據只看 releasing —— 不能加 !modelReady：收尾期間模型還載入著
+    // （modelReady 仍是 true），加了就永遠判不出來，狀態欄會一直顯示「就緒」。
+    const draining = !!s.releasing;
     el.classList.toggle("loading", !!s.loading);
     el.classList.toggle("draining", draining);
     // 已釋放（就緒但沒載入）用灰點；載入中／收尾中用黃點；就緒用綠點。
     el.classList.toggle("off", !s.modelReady && !s.loading && !draining);
-    $(".t", el).textContent = s.modelReady ? T("status.ready", "模型已就緒")
-      : draining ? T("status.draining", "收尾中…\n等待釋放記憶體")
+    // 判斷順序：draining 必須排在 modelReady 前面，否則收尾永遠顯示就緒。
+    $(".t", el).textContent = draining ? T("status.draining", "收尾中…\n释放内存")
+      : s.modelReady ? T("status.ready", "模型已就緒")
       : (s.loading ? T("status.loading", "載入模型中…") : T("status.needModel", "就绪 · 模型未载入内存（已释放）"));
     // 三条管线：只有跑任务时才显示，静默时整块隐藏（侧栏太窄，别常驻噪音）。
     const pipes = s.pipelines || null;
@@ -1532,12 +1534,27 @@
     const avg = total
       ? trans.reduce((a, b) => a + (b.progress || 0), 0) / total : 0;
     const pct = Math.round(avg * 100);
+    // 對齊進度：每個檔案「已對齊音訊秒 ÷ 自身總時長」，再對所有檔案取平均。
+    // 與識別進度同一個分母口徑，所以總進度條的下面那條永遠不會超過上面。
+    const faRatio = (it) => {
+      const dur = Number(it.durationSec) || 0;
+      const ap = it.alignProgress;
+      if (!ap || dur <= 0) return 0;
+      return Math.min(1, (Number(ap.audioSec) || 0) / dur);
+    };
+    const avgFa = total ? trans.reduce((a, b) => a + faRatio(b), 0) / total : 0;
+    const pctFa = Math.round(avgFa * 100);
 
     // ── 佇列級 ─────────────────────────────────────────────
-    const bar = $("#batch-prog-bar"), pctEl = $("#batch-prog-pct"),
-          statusEl = $("#batch-prog-status"), countEl = $("#batch-prog-count");
+    const bar = $("#batch-prog-bar"), barFa = $("#batch-prog-bar-fa"),
+          pctEl = $("#batch-prog-pct"),
+          statusEl = $("#batch-prog-status"), countEl = $("#batch-prog-count"),
+          asrEl = $("#batch-prog-asr"), faEl = $("#batch-prog-fa");
     if (bar) bar.style.width = pct + "%";
+    if (barFa) barFa.style.width = pctFa + "%";
     if (pctEl) pctEl.textContent = pct + "%";
+    if (asrEl) asrEl.textContent = T("batch.asrPct", null, { p: pct });
+    if (faEl) faEl.textContent = T("batch.faPct", null, { p: pctFa });
     if (statusEl) {
       // 狀態只講「處於什麼狀態」，檔案名交給下面的檔案級區塊，避免同一句
       // 話在兩層各說一遍（舊版 status 與 active 都帶 name）。
@@ -1818,8 +1835,24 @@
   /** Wave 11：每一列自己的進度文字 —— 本機路徑標記 + 後端 statusText。 */
   function batchRowSub(it) {
     const bits = [];
-    if (it.localPath) bits.push(T("batch.localPath", "本機路徑 · 不複製"));
-    if (it.statusText) bits.push(window.I18N ? I18N.L(it.statusText) : String(it.statusText));
+    if (it.localPath) bits.push(T("batch.localPath", "直读本地文件"));
+    // 進度文字用後端給的結構化數字自己拼。statusText 是後端硬編碼的簡體
+    // 中文（"已处理 X 分钟 · N 段"），繁體／英文介面會直接漏出簡體。
+    // 續跑時 segCount 已是「含前次」的累計（斷點存的就是這個值），
+    // 額外註明前次貢獻了多少，使用者才不會疑惑「一開始就 28 分鐘」。
+    if (it.status === "running" && lastBatchDetail) {
+      const d = lastBatchDetail;
+      const mins = (Number(d.doneSec) || 0) / 60;
+      const segs = Number(d.segCount) || 0;
+      if (mins > 0 || segs > 0) {
+        let line = T("batch.segAsr", null, { m: mins.toFixed(1), n: segs });
+        const prevSegs = Math.max(0, (Number(it.resumedFrom) || 1) - 1);
+        if (prevSegs > 0) line += T("batch.segPrev", null, { n: prevSegs });
+        bits.push(line);
+      }
+    } else if (it.statusText) {
+      bits.push(window.I18N ? I18N.L(it.statusText) : String(it.statusText));
+    }
     // 補做對齊的校驗結果（L2 時長／L3 試對齊）：只講結論，細節在 hover。
     const p = alignProbe[it.id];
     if (p) {
@@ -1834,12 +1867,24 @@
   function batchRowStats(it) {
     const isActive = it.status === "running";
     const d = isActive ? lastBatchDetail : null;
+    const total = Number(it.durationSec) || (d && Number(d.totalSec)) || 0;
+    const pctAsr = Math.round((it.progress || 0) * 100);
+    // 對齊進度用「已對齊音訊秒 ÷ 總時長」——與識別同一個分母。
+    // 若改用「已完成行 ÷ 已提交行」，識別只提交一半時對齊就會顯示 100%，
+    // 下面的條會比上面的長，層次就亂了。
+    const ap = it.alignProgress || null;
+    const faSec = ap ? Number(ap.audioSec) || 0 : 0;
+    const pctFa = total > 0 ? Math.round(Math.min(1, faSec / total) * 100) : 0;
     return {
       isActive,
-      dur: Number(it.durationSec) || (d && Number(d.totalSec)) || 0,
+      dur: total,
       used: d ? batchElapsedSec(d) : 0,
       left: d && d.etaSec != null ? Number(d.etaSec) : null,
-      pct: Math.round((it.progress || 0) * 100),
+      pct: pctAsr,
+      pctFa,
+      doneSec: d ? Number(d.doneSec) || 0 : 0,
+      segCount: d ? Number(d.segCount) || 0 : 0,
+      segPrev: Math.max(1, Number(it.resumedFrom) || 1),
     };
   }
   function batchRow(it, idx) {
@@ -1874,13 +1919,23 @@
         ? `<button class="st chip chip-retry" data-retry="${it.id}"
                    title="${escapeHtml(T("batch.retryHint", "點擊重新排隊；已跑完的段落會從斷點續跑"))}"
                    >${escapeHtml(T("batch.retry", "重試"))} ↻</button>`
-        : `<span class="st chip ${cls}">${label}${s.isActive ? " " + s.pct + "%" : ""}</span>`}
+        : s.isActive
+          // 跑起來之後，狀態欄換成兩行百分比（識別 / 對齊），顏色與下面
+          // 兩條進度條一一對應。待處理／完成等狀態仍用原來的 chip。
+          ? `<span class="st st-pcts">
+               <span class="asr">${escapeHtml(T("batch.asrPct", null, { p: s.pct }))}</span>
+               <span class="fa">${escapeHtml(T("batch.faPct", null, { p: s.pctFa }))}</span>
+             </span>`
+          : `<span class="st chip ${cls}">${label}</span>`}
       <span class="used">${s.isActive && s.used > 0
         ? T("batch.used", null, { t: fmtDur(s.used) }) : "—"}</span>
       <span class="left">${s.isActive && s.left != null
         ? T("batch.left", null, { t: fmtDur(s.left) })
         : (it.status === "pending" ? T("batch.etaPending", "ETA —") : "—")}</span>
-      <div class="pbar"><div class="bar"><i style="width:${s.pct}%"></i></div></div>
+      <div class="bar-stack">
+        <div class="bar asr"><i style="width:${s.pct}%"></i></div>
+        <div class="bar fa"><i style="width:${s.pctFa}%"></i></div>
+      </div>
       <button class="more" title="${moreTitle}" aria-label="${moreTitle}">⋯</button>`;
     row.querySelector(".more").addEventListener("click", e => {
       e.stopPropagation();

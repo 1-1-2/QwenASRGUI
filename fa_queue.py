@@ -39,6 +39,10 @@ class AlignSeg:
     t1: float
     text: str
     lines: list = field(default_factory=list)   # [(start, end, text), ...]
+    # 归属的队列项 id。空串 = 单檔任務或舊呼叫端，不參與 per-owner 統計。
+    # 佇列可能同時有多個檔案在跑（重試、排序後並存），沒有這個欄位就只能
+    # 報「全域對齊了多少」，前端畫不出「這個檔案對齊到哪」。
+    owner: str = ""
 
 
 def _default_avail() -> float:
@@ -99,22 +103,41 @@ class AlignQueue:
         # 双进度用：已提交的行数 / 已写出的行数
         self._lines_total = 0
         self._lines_done = 0
+        # 按 owner（佇列項 id）分組的同一組數字。前端每個檔案畫兩條進度條，
+        # 分母統一用「總時長」，所以這裡除了行數還要記已對齊的音訊秒數 ——
+        # 用行數當分子會出現「對齊 100% 但識別只有 50%」（分母不同）。
+        self._owner_total: dict[str, int] = {}
+        self._owner_done: dict[str, int] = {}
+        self._owner_audio: dict[str, float] = {}
 
-    # ── 生产者侧 ────────────────────────────────────────────────
+    # ── 生產者側 ────────────────────────────────────────────────
     def submit(self, t0: float, t1: float, text: str, lines: list,
-               index: int) -> int:
+               index: int, owner: str = "") -> int:
         """入队一段；返回段序号。O(1)，不等待任何东西。"""
         with self._cv:
             self._seg_no += 1
             seg = AlignSeg(seg=self._seg_no, index=int(index),
                            t0=float(t0), t1=float(t1),
-                           text=str(text or ""), lines=list(lines or []))
+                           text=str(text or ""), lines=list(lines or []),
+                           owner=str(owner or ""))
             self._pending.append(seg)
             self._last_index = max(self._last_index, int(index) + len(lines) - 1)
             self._lines_total += len(lines)
+            if seg.owner:
+                self._owner_total[seg.owner] = (
+                    self._owner_total.get(seg.owner, 0) + len(lines))
             self._ensure_thread()
             self._cv.notify_all()
             return seg.seg
+
+    def drop_owner(self, owner: str) -> None:
+        """任務結束時清掉它的統計，避免 byOwner 無限長大。"""
+        if not owner:
+            return
+        with self._cv:
+            self._owner_total.pop(owner, None)
+            self._owner_done.pop(owner, None)
+            self._owner_audio.pop(owner, None)
 
     def _ensure_thread(self) -> None:
         if self._thread is not None:
@@ -147,18 +170,30 @@ class AlignQueue:
             return len(self._pending)
 
     def stats(self) -> dict:
-        return {
-            "windows": self._windows,
-            "failures": self._failures,
-            "dropped": self._dropped,
-            "windowSec": round(self.window_sec, 2),
-            "faSec": round(self._fa_sec, 2),
-            "audioSec": round(self._audio_sec, 1),
-            "pending": self.pending_count(),
-            "thresholdGb": self.threshold_gb,
-            "linesTotal": self._lines_total,
-            "linesDone": self._lines_done,
-        }
+        with self._cv:
+            owners = set(self._owner_total) | set(self._owner_done) | set(self._owner_audio)
+            by_owner = {
+                k: {"total": int(self._owner_total.get(k, 0)),
+                    "done": int(self._owner_done.get(k, 0)),
+                    "audioSec": round(float(self._owner_audio.get(k, 0.0)), 1)}
+                for k in owners
+            }
+            return {
+                "windows": self._windows,
+                "failures": self._failures,
+                "dropped": self._dropped,
+                "windowSec": round(self.window_sec, 2),
+                "faSec": round(self._fa_sec, 2),
+                "audioSec": round(self._audio_sec, 1),
+                # 已持鎖，直接讀長度，不再進 pending_count() 拿一次鎖。
+                "pending": len(self._pending),
+                "thresholdGb": self.threshold_gb,
+                "linesTotal": self._lines_total,
+                "linesDone": self._lines_done,
+                # 每個佇列項各自的對齊量；audioSec 是「已對齊的音訊秒」，
+                # 與識別進度同一個分母（總時長），兩條進度條才可比。
+                "byOwner": by_owner,
+            }
 
     # ── worker ──────────────────────────────────────────────────
     def _loop(self) -> None:
@@ -245,6 +280,13 @@ class AlignQueue:
         finally:
             self._fa_sec += time.perf_counter() - started
             self._audio_sec += max(0.0, t1 - t0)
+            # 按 owner 精確累加（逐段算，不用窗口跨度）：一個窗口可能跨到
+            # 另一個檔案的段，用窗口跨度會把時間記到錯的任務上。
+            for _s in win:
+                if _s.owner:
+                    span = max(0.0, _s.t1 - _s.t0)
+                    self._owner_audio[_s.owner] = (
+                        self._owner_audio.get(_s.owner, 0.0) + span)
             self._running = False
         if not words:
             self._failures += 1
@@ -291,6 +333,10 @@ class AlignQueue:
         lines = [(seg.index + i, ln) for seg in win
                  for i, ln in enumerate(seg.lines)]
         self._lines_done += len(lines)
+        for _s in win:
+            if _s.owner:
+                self._owner_done[_s.owner] = (
+                    self._owner_done.get(_s.owner, 0) + len(_s.lines))
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
         with self.out_path.open("a", encoding="utf-8") as f:
             for idx, _ln in lines:

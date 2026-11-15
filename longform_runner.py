@@ -890,6 +890,7 @@ class LongformRunner:
                  refine_punct: bool = False,
                  align_queue=None, diar_queue=None,
                  fa_path=None, diar_path=None,
+                 owner: str = "",
                  drain_timeout: float = DRAIN_TIMEOUT_SEC):
         """``align_queue``：``fa_queue.AlignQueue``。词级对齐的独立管线。
 
@@ -952,6 +953,9 @@ class LongformRunner:
         # 独立管线：识别只入队，不等任何东西。
         self.align_queue = align_queue
         self.diar_queue = diar_queue
+        # 歸屬的佇列項 id（空 = 單檔任務）。對齊隊列靠它把「已對齊音訊秒」
+        # 記到正確的檔案上，前端才能畫出每個檔案自己的對齊進度條。
+        self.owner = str(owner or "")
         self.fa_path = Path(fa_path) if fa_path else None
         self.diar_path = Path(diar_path) if diar_path else None
         self._seg_batch: list[dict] = []
@@ -1508,7 +1512,8 @@ class LongformRunner:
                 # 交给独立管线：O(1) 入队，不等任何东西。
                 if self.align_queue is not None and text:
                     try:
-                        self.align_queue.submit(t0, t1, text, lines, first_index)
+                        self.align_queue.submit(t0, t1, text, lines, first_index,
+                                                owner=self.owner)
                     except Exception:
                         pass
                 if self.diar_queue is not None:
@@ -1587,6 +1592,10 @@ class LongformRunner:
                                {"doneSec": round(done_sec, 1),
                                 "totalSec": round(total_sec or 0, 1),
                                 "groups": group_count,
+                                # 累計已寫出的字幕行數（seg_index 是「下一條的行號」）。
+                                # 續跑時它是「含前次」的總量 —— 斷點存的就是這個值，
+                                # 前端據此顯示「N 段（含前次 M 段）」。
+                                "segCount": max(0, int(seg_index) - 1),
                                 "etaSec": self._eta_sec(done_sec, total_sec or 0),
                                 "phase": "running"})
                     # 断点只在「段完成」时写（见上面的 _ckpt_at）。这里不再
@@ -1603,6 +1612,10 @@ class LongformRunner:
                                {"doneSec": round(done_sec, 1),
                                 "totalSec": round(total_sec or 0, 1),
                                 "groups": group_count,
+                                # 累計已寫出的字幕行數（seg_index 是「下一條的行號」）。
+                                # 續跑時它是「含前次」的總量 —— 斷點存的就是這個值，
+                                # 前端據此顯示「N 段（含前次 M 段）」。
+                                "segCount": max(0, int(seg_index) - 1),
                                 "etaSec": self._eta_sec(done_sec, total_sec or 0),
                                 "phase": "running"})
 

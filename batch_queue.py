@@ -381,6 +381,13 @@ class BatchQueue:
                 "progress": round(avg, 4)}
 
     def snapshot(self) -> dict:
+        # 對齊統計先取（它要拿 fa_queue 的鎖），再進自己的鎖 —— 避免在持有
+        # 佇列鎖的時候去等另一把鎖，順序固定成「先 fa 後 batch」。
+        try:
+            _fa = getattr(self.backend, "fa_status", None)
+            by_owner = (_fa() or {}).get("alignByOwner") or {} if callable(_fa) else {}
+        except Exception:
+            by_owner = {}
         with self._lock:
             items = []
             for i in self.items:
@@ -389,6 +396,15 @@ class BatchQueue:
                 # 这里按状态给一个保守值：失败项一律允许「继续」，真没断点
                 # 时重跑一遍也是正确结果（只是不省时间）。
                 d["resumable"] = (d.get("status") == _FAILED)
+                # 這個檔案自己的對齊量。audioSec 是「已對齊的音訊秒」，
+                # 與識別進度共用「總時長」當分母，兩條進度條才可比。
+                _ap = by_owner.get(str(d.get("id") or "")) or {}
+                if _ap:
+                    d["alignProgress"] = {
+                        "audioSec": float(_ap.get("audioSec") or 0.0),
+                        "lines": int(_ap.get("done") or 0),
+                        "linesTotal": int(_ap.get("total") or 0),
+                    }
                 items.append(d)
             return {"summary": self.summary(),
                     "runOpts": dict(self.run_opts or {}),
@@ -913,6 +929,15 @@ class BatchQueue:
                         self._save()
                         item_id = nxt["id"]
                         item_kind = nxt.get("kind") or KIND_TRANSCRIBE
+                        # 從頭重跑才清對齊統計：續跑時已對齊的音訊秒仍有效，
+                        # 清掉會讓下面那條進度條從 0 重新長，看起來像退步。
+                        if int(nxt.get("resumedFrom") or 1) <= 1:
+                            _rst = getattr(self.backend, "reset_align_owner", None)
+                            if callable(_rst):
+                                try:
+                                    _rst(item_id)
+                                except Exception:
+                                    pass
                         # 開始時鎖定的參數優先於入隊快照：同一條佇列的每個檔
                         # 都用同一組值，且與使用者在音檔頁看到的一致。
                         opts = dict(nxt.get("opts") or {})

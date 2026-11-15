@@ -23,6 +23,12 @@
   --accent-soft:  #E3F4F0;   /* 強調淡底 */
   --accent-tint:  #F0F8F6;
 
+  /* 對齊進度條：與主色（色相 170° 湖綠）互補的玫紅，夾角 154°。
+     3px 細條上必須同時靠色相與明度區分 —— 同色系深淺在這種粗細下會糊成一片。
+     文字用比條深一檔的 #A82478：條 #C24A8E 對白只有 4.49:1，差 0.01 夠不上 AA。 */
+  --fa:           #C24A8E;
+  --fa-fg:        #A82478;
+
   --live:         #E5484D;   /* 錄製紅（僅即時錄製態）*/
   --live-soft:    #FCEBEC;
   --ok:           #1C8C5A;   /* 成功 / 完成 */
@@ -76,6 +82,10 @@
   --accent-strong:#13917D;
   --accent-soft:  #14322D;
   --accent-tint:  #122220;
+
+  /* 暗底上玫紅要提亮：#C24A8E 在 #1A1B20 上只有約 3:1，看不清。 */
+  --fa:           #E86AAE;
+  --fa-fg:        #E86AAE;
 
   --live:         #FF5C61;
   --live-soft:    #3A1F21;
@@ -633,6 +643,25 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .bar > i { display: block; height: 100%; width: 0; border-radius: 5px;
   background: linear-gradient(90deg, var(--accent), var(--accent-strong)); transition: width .3s ease; }
 
+/* ── 雙進度條 ────────────────────────────────────────────────────
+   容器定高、兩條 flex 均分：佇列行 7px → 各 3px；總進度 8px → 各 3.5px。
+   上面一條識別（主色湖綠），下面一條對齊（互補玫紅）。
+   對齊的分子是「已對齊音訊秒」，與識別共用「總時長」當分母，
+   所以下面那條永遠不會超過上面 —— 這是層次正確的前提。 */
+.bar-stack {
+  display: flex; flex-direction: column; gap: 1px;
+  overflow: hidden; border-radius: 5px;
+}
+.bar-stack > .bar {
+  flex: 1 1 0; min-height: 0; height: auto;
+  border-radius: 0; background: var(--line); overflow: hidden;
+}
+.bar-stack > .bar > i {
+  display: block; height: 100%; width: 0; border-radius: 0;
+  background: var(--accent); transition: width .3s ease;
+}
+.bar-stack > .bar.fa > i { background: var(--fa); }
+
 /* 即時字幕行：時間與正文用 baseline 對齊，且不再畫分隔線。
    舊版是 flex 預設的 stretch，兩段文字各自按自己的 font ascent 排基線
    （時間 11px、正文 13px），時間會比中文高約 1.6px —— 不是字體問題，
@@ -829,11 +858,16 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
   font-weight: 700; font-size: 15px; flex: 0 0 auto;
 }
 .batch-progress > .bar { height: 8px; }
+/* 總進度：容器 8px，兩條各 3.5px —— 比佇列行（7px/3px）略粗，
+   汇总层比明细层粗，层级关系反而更清楚。 */
+.batch-progress > .bar-stack { height: 8px; }
 .batch-progress .detail {
   display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px;
   font-size: 11.5px; color: var(--muted); font-family: var(--font-mono);
 }
 .batch-progress .detail #batch-prog-active { color: var(--ink-2); }
+.batch-progress .detail #batch-prog-asr { color: var(--accent-strong); }
+.batch-progress .detail #batch-prog-fa  { color: var(--fa-fg); }
 
 /* 層級標籤：佇列級在上、檔案級縮排在左側豎線裡，一眼看出誰屬於誰。 */
 .lv {
@@ -932,7 +966,9 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
   grid-template-areas: "ic nm dur st used left more"
                        "tr tr tr tr tr tr tr";
   align-items: center; gap: 8px 12px;
-  padding: 10px 14px; border: 1px solid var(--line);
+  /* 進度條從 3px 變成 7px（要放兩條），上下 padding 各減 2px 抵回來，
+     整列高度與改動前一致。 */
+  padding: 8px 14px; border: 1px solid var(--line);
   border-radius: 10px; background: var(--panel);
 }
 .b-row.is-active { border-color: var(--accent); background: var(--accent-soft); }
@@ -980,9 +1016,18 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .b-row .used { grid-area: used; text-align: right; }
 .b-row .left { grid-area: left; text-align: right; }
 .b-row .st { grid-area: st; justify-self: end; }
-.b-row .pbar { grid-area: tr; display: flex; align-items: center; width: 100%; }
-.b-row .pbar .bar { flex: 1; height: 3px; }
-.b-row:not(.is-active) .pbar { opacity: .55; }
+/* 執行中：狀態欄換成兩行百分比，顏色與下面兩條進度條一一對應。
+   非執行中仍用 .chip，所以只覆蓋 .st-pcts 這一支。 */
+.b-row .st-pcts {
+  display: flex; flex-direction: column; gap: 1px;
+  font-size: 11px; line-height: 1.35; text-align: right;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.b-row .st-pcts .asr { color: var(--accent-strong); }
+.b-row .st-pcts .fa  { color: var(--fa-fg); }
+/* 佇列行：容器 7px（原本 3px，為放兩條而加高，行高由 padding 抵回）。 */
+.b-row .bar-stack { grid-area: tr; height: 7px; }
+.b-row:not(.is-active) .bar-stack { opacity: .55; }
 .b-row .more {
   grid-area: more; width: 28px; height: 28px; border-radius: 7px;
   border: 1px solid var(--line); background: var(--panel);

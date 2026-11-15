@@ -602,7 +602,8 @@ class WebBackend:
         """当前对齐管线的实时状态；给队列摘要与左下角状态用。"""
         empty = {"faRunning": False, "faEverRan": False,
                  "faBlockReason": "empty", "alignLinesDone": 0,
-                 "alignLinesTotal": 0, "alignPendingSec": 0.0}
+                 "alignLinesTotal": 0, "alignPendingSec": 0.0,
+                 "alignByOwner": {}}
         q = getattr(self, "_align_live", None)
         if q is None:
             return empty
@@ -613,9 +614,25 @@ class WebBackend:
                     "faBlockReason": q.block_reason() or "",
                     "alignLinesDone": int(st.get("linesDone") or 0),
                     "alignLinesTotal": int(st.get("linesTotal") or 0),
-                    "alignPendingSec": round(q.pending_sec(), 1)}
+                    "alignPendingSec": round(q.pending_sec(), 1),
+                    # 每個佇列項各自的已對齊音訊秒 / 行數。前端用它畫每列
+                    # 第二條進度條；audioSec 與識別進度同分母（總時長）。
+                    "alignByOwner": st.get("byOwner") or {}}
         except Exception:
             return empty
+
+    def reset_align_owner(self, owner: str) -> None:
+        """清掉某個佇列項上一輪的對齊統計。
+
+        同一個檔案「從頭重跑」時，若不清理，submit() 會把新的行數累加到舊值上，
+        對齊進度會算到超過 100%。續跑則**不能**清 —— 已對齊的音訊秒仍然有效。
+        """
+        q = getattr(self, "_align_live", None)
+        if q is not None and owner:
+            try:
+                q.drop_owner(owner)
+            except Exception:
+                pass
 
     def _emit_inner(self, event: str, payload: dict):
         # Wave 11：只對進度類事件加 scope，其餘事件契約完全不變。
@@ -1096,9 +1113,16 @@ class WebBackend:
         return {
             "modelReady": bool(getattr(self.engine, "ready", False)),
             "loading": self._loading,
-            # 收尾中：已登記「本輪結束後釋放模型」，但 transcribe() 還沒返回。
-            # 前端據此顯示「收尾中，等待釋放記憶體」，讓使用者知道停止不是沒反應。
-            "releasing": bool(getattr(self, "_release_pending", False)),
+            # 收尾中：已按停止，但 transcribe() 還沒返回（當前 chunk 在跑完）。
+            # 判據用 _cancel + _running，**不是** _release_pending：
+            #   - _release_pending 只在「轉檔後自動釋放」開啟時才會被設；
+            #     關掉之後按停止，它一直是 False，狀態欄就不會提示收尾。
+            #   - 收尾期間模型還載入著（modelReady=True），所以前端不能用
+            #     !modelReady 判斷，必須靠這個旗標。
+            # _running > 0 保證只在「確實還有 transcribe 在跑」時報收尾，
+            # 避免 transcribe 結束後 _cancel 殘留到下一輪開始前造成誤報。
+            "releasing": bool(getattr(self, "_cancel", False)
+                              and int(getattr(self, "_running", 0) or 0) > 0),
             # 當下可用實體記憶體（GB）。設定頁的「目前可用」靠這個定期刷新；
             # 放在 status 而非 settings，是因為 status 更輕（settings 要讀檔 + 序列化 32 鍵）。
             "memAvailGb": self._fa_avail_gb(),
@@ -1686,6 +1710,10 @@ class WebBackend:
                     context=_hint or None,
                     line_splitter=_splitter,
                     task_id=task_id,
+                    # 佇列項 id：對齊隊列靠它把「已對齊音訊秒」記到這個檔案上。
+                    # batch_queue 在呼叫 transcribe() 前會設 _batch_item_id；
+                    # 單檔任務沒有這個屬性，傳空字串（不參與 per-owner 統計）。
+                    owner=getattr(self, "_batch_item_id", None) or "",
                     fingerprint=fingerprint,
                     max_chunk_secs=int(getattr(self.engine, "max_chunk_secs", 30)),
                     vad_threshold=float(_st.get("vad_threshold", 0.5) or 0.5),
