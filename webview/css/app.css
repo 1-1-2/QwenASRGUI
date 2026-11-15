@@ -181,21 +181,30 @@ button { font-family: inherit; }
 
 .side-foot { margin-top: auto; padding: 10px 6px 2px; }
 .status-dot {
-  display: flex; align-items: center; gap: 7px; justify-content: center;
-  font-size: 11px; color: var(--muted);
-  /* The label used to wrap and spill outside the sidebar as soon as the
-     language produced a longer string ("模型已就緖" in a narrow column).
-     Keep it on one line and clip instead of overflowing. */
-  max-width: 100%; min-width: 0;
+  /* 圓點絕對定位在左上角，文字獨佔整行寬度。
+     舊版用 flex 橫排 + nowrap/ellipsis：側欄 104px、文字可用只剩約 61px，
+     「就緒 · 模型未載入記憶體（已釋放）」16 字只能顯示成「就緒 · 模…」。
+     改成這樣之後文字可用約 62px，「模型已就緒」剛好一行，
+     長文案自動換行，圓點仍對齊第一行。 */
+  position: relative;
+  padding-left: 14px;
+  font-size: 11px; line-height: 1.45;
+  color: var(--muted); text-align: left;
+  max-width: 100%;
 }
 .status-dot .dot {
-  width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+  position: absolute; left: 0; top: 4px;
+  width: 8px; height: 8px; border-radius: 50%;
   background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft);
 }
 .status-dot .t {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: block;
+  /* pre-line：保留 i18n 文案裡的 \n（「收尾中…」/「等待釋放記憶體」要分兩行），
+     同時仍允許自動折行。normal 會把 \n 當空格吃掉。 */
+  white-space: pre-line; word-break: break-word; overflow-wrap: anywhere;
 }
 .status-dot.loading .dot { background: var(--warn-fg); box-shadow: 0 0 0 3px var(--warn-bg); }
+.status-dot.draining .dot { background: var(--warn-fg); box-shadow: 0 0 0 3px var(--warn-bg); }
 .status-dot.off .dot { background: var(--faint); box-shadow: 0 0 0 3px var(--line); }
 
 /* ── 主區 ─────────────────────────────────── */
@@ -393,7 +402,9 @@ button { font-family: inherit; }
 .row.is-last { border-bottom: 0; }
 .row .label { flex: 1; }
 .row .label .t { font-size: 13.5px; font-weight: 500; color: var(--ink); }
-.row .label .d { font-size: 12px; color: var(--muted); margin-top: 1px; }
+/* 說明文字與標題之間留 3px（原 1px 太貼），行距放到 1.55 —— 這兩句常常兩三行，
+   1px + 預設行距會擠成一團。 */
+.row .label .d { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.55; }
 /* 標題旁的小圖示（14px 圓形）：跟著文字基線微調，避免浮太高。 */
 .row .label .t .hi-info { margin-left: 6px; vertical-align: -2px; }
 
@@ -1228,8 +1239,10 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 /* 「使用中 / 12.6 GB 可用」與裝置名之間補一個分隔點，否則會黏成一長串。 */
 .ms-devices .dev .vram::before { content: "·"; margin-right: 6px; opacity: .6; }
 
-.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.card-head .card-title { font-size: 13.5px; font-weight: 700; color: var(--ink); }
+.card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.card-head .card-title {
+  font-size: 14px; font-weight: 700; color: var(--ink); letter-spacing: .2px;
+}
 .inline-state { font-size: 12px; color: var(--muted); }
 .inline-state b { color: var(--ink-2); font-weight: 600; }
 
@@ -1270,12 +1283,21 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .hi-info.wide::after {
   max-width: 420px; white-space: pre-line; line-height: 1.6;
 }
-/* 「目前可用 3.8 GB」貼齊卡片右緣，與下面三個輸入框的右邊界對齊。 */
-#fa-mem-state { margin-left: auto; }
+/* 「目前可用 3.8 GB」貼齊卡片右緣，與下面三個輸入框的右邊界對齊。
+   可點：點一下立刻重新查一次（不用等 3 秒的自動刷新）。 */
+#fa-mem-state {
+  margin-left: auto; cursor: pointer;
+  padding: 2px 6px; border-radius: 6px;
+  transition: background .15s, color .15s;
+}
+#fa-mem-state:hover { background: var(--panel-2); color: var(--ink-2); }
+#fa-mem-state:active { background: var(--line); }
 /* 設定頁的即時警告（門控閾值低於建議值）。只提示不攔 —— 使用者的機器
-   可能真的特殊，硬改他填的值比讓他看到風險更糟。 */
+   可能真的特殊，硬改他填的值比讓他看到風險更糟。
+   這裡原本是 margin-top:-4px，負邊距把文字往上拉，正好壓在上一行 .row 的
+   border-bottom 上，看起來像「黃字壓住了分隔線」。改成正邊距後與線脫開。 */
 .hint-warn {
-  font-size: 12px; line-height: 1.55; margin: -4px 2px 10px;
+  font-size: 12px; line-height: 1.55; margin: 8px 2px 12px;
   color: var(--warn-fg);
 }
 .hint-warn[hidden] { display: none; }

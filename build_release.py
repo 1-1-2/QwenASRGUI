@@ -6,11 +6,16 @@
 ----------------------------------
 原脚本把路径写死在 ``F:\\AIStudio\\QwenASR`` 与本机 venv，GitHub Actions 上
 无法执行；更关键的是它手工列举 --add-data，遗漏了本次新增的
-``longform_runner.py``。本项目大量模块是**函数内动态 import**（downloader、
-longform_runner、ffmpeg_utils……），PyInstaller 静态分析抓不到，只能靠
-``--hidden-import`` 或把 .py 当数据文件一起放进去，运行时由标准 PathFinder 加载。
-一旦漏列，EXE 启动时不会报错，点到对应功能才 ImportError —— 长音频模式就会
-这样静默失效。因此本脚本**自动扫描根目录所有 .py**，从结构上杜绝漏列。
+``longform_runner.py``。漏列的后果很隐蔽：EXE 启动不报错，点到对应功能才
+ImportError —— 长音频模式就这样静默失效。因此本脚本**自动扫描根目录所有
+.py**，从结构上杜绝漏列。
+
+（2026-11-15 实测修正：原注释说「本项目大量模块是函数内动态 import，
+PyInstaller 静态分析抓不到」——**这个说法不准确**。PyInstaller 做的是 AST
+遍历，函数体内的普通 ``import xxx`` / ``from xxx import yyy`` 一样能追踪。
+真正抓不到的只有 ``importlib.import_module("字符串")`` 这种，全项目仅
+``webview_backend.py`` 一处，加载的是 chatllm_engine / crisp_engine；而这两个
+模块另有静态 import 路径，所以 PYZ 里 700 个模块一个不缺。）
 
 为什么从 onefile 改成 onedir（Wave 3 / G2）
 ------------------------------------------
@@ -26,10 +31,17 @@ onefile 每次启动都要把约 200 MB 解压到 ``%TEMP%``，且每次更新�
 icon、prompt_template.json）放进 ``_internal/``。两者的区别由 ``app.py`` 的
 ``resource_path()`` 统一表达，见 tests/test_layout.py。
 
-仍用 ``--add-data`` 把 .py 放进去而没有改用 ``--hidden-import`` 的原因：数据文件
-在 onedir 下是**实际文件**，出问题时能在 ``_internal/`` 里直接看到、比对、替换；
-``--hidden-import`` 进的是 PYZ，只能靠 pyi-archive_viewer 间接确认。代价是包里
-多存一份源码（约 1 MB），换来可自证。
+仍用 ``--add-data`` 把 .py 放进去而没有改用 ``--hidden-import`` 的原因：这些
+文件在 onedir 下是**实际文件**，出问题时能在 ``_internal/`` 里直接看到、比对；
+它同时是「PYZ 万一漏收某个模块」时的最后退路 —— 那种情况下 PathFinder 会从
+``sys.path``（含 ``_internal``）找到这些 .py 并加载。代价是包里多存一份源码
+（约 1.2 MB）。
+
+**但不要指望用它热替换。** PyInstaller 的 FrozenImporter 挂在 ``sys.meta_path``
+最前面，只要同名模块在 PYZ 里，``_internal/*.py`` 就永远不会被加载。实测
+（2026-11-15）：把 ``_internal/webview_backend.py`` 改名，程序照常启动、API
+全部 200；往里面塞一个标记字段，``/api/settings`` 完全不返回它。
+结论：**改后端只能整包重打**，前端（``webview_assets/``）不受此限，替换即生效。
 
 用法
 ----

@@ -652,9 +652,13 @@ class WebBackend:
             if msg:
                 level = "warn" if event in ("warning",) else "info"
                 self.run_log.add(_t.plain(msg), level=level, source=event)
-        if self._on_event:
+        # getattr 而非直取：測試與少量工具路徑用 object.__new__ 繞過 __init__
+        # 建構後端（例如 test_wave14 只驗狀態機），那些實例沒有 _on_event。
+        # _emit 是基礎設施，不該因為少了個可選回呼就整條路徑炸掉。
+        on_event = getattr(self, "_on_event", None)
+        if on_event:
             try:
-                self._on_event(event, payload)
+                on_event(event, payload)
             except Exception:
                 pass
 
@@ -770,6 +774,9 @@ class WebBackend:
             return {"ok": False, "released": False, "reason": "skipped"}
         if self._running > 0:
             # 還在跑：交給 _end_run() 收尾，這裡不阻塞呼叫端（cancel 是 UI 同步路徑）。
+            # 同時推一個 status，讓左下角立刻切成「收尾中，等待釋放記憶體」——
+            # 否則使用者按了停止、看到識別已停，卻不知道後台還在收尾。
+            self._emit("status", {"releasing": True})
             return {"ok": True, "released": False, "reason": "deferred"}
         self._release_pending = False
         return self.release_model(reason=reason)
@@ -817,7 +824,12 @@ class WebBackend:
         # 的另一個來源。
         self._drop_run_cache()
         gc.collect()
-        if busy or not self._auto_release_enabled():
+        if busy:
+            return
+        if not self._auto_release_enabled():
+            # 不釋放就把登記清掉。留著會讓 get_status 的 releasing 永遠為 True，
+            # 左下角一直顯示「收尾中」，使用者以為程式卡住了。
+            self._release_pending = False
             return
         # Wave 14／需求 17、18：舊版額外要求 _batch_running 為 False 才釋放，
         # 但取消佇列後這個旗標會殘留 True，導致取消後模型一直掛在記憶體裡，
@@ -1084,6 +1096,12 @@ class WebBackend:
         return {
             "modelReady": bool(getattr(self.engine, "ready", False)),
             "loading": self._loading,
+            # 收尾中：已登記「本輪結束後釋放模型」，但 transcribe() 還沒返回。
+            # 前端據此顯示「收尾中，等待釋放記憶體」，讓使用者知道停止不是沒反應。
+            "releasing": bool(getattr(self, "_release_pending", False)),
+            # 當下可用實體記憶體（GB）。設定頁的「目前可用」靠這個定期刷新；
+            # 放在 status 而非 settings，是因為 status 更輕（settings 要讀檔 + 序列化 32 鍵）。
+            "memAvailGb": self._fa_avail_gb(),
             "error": self._load_err,
             "backend": self._backend_label(active, _t.render("status.backendCpu")),
             "backendKey": self._persisted_backend(),       # 已記住的核心選擇

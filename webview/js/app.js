@@ -28,8 +28,34 @@
     if (name === "batch") renderBatch();
     if (name === "model") { renderModel(); renderDownloadCenter(); }
     // 設定頁的斷點條數會隨任務變化，每次進來重讀一次，避免顯示開機當下的舊值。
-    if (name === "settings") refreshCheckpoints();
+    // 可用記憶體同理，而且它一直在變，所以要定期刷新（離開設定頁就停）。
+    if (name === "settings") { refreshCheckpoints(); startMemPoll(); }
+    else stopMemPoll();
     if (name === "record") { enumerateMics(); refreshMicPerm(); }   // 列舉裝置 + 麥克風權限狀態
+  }
+
+  /* ── 設定頁「目前可用記憶體」──────────────────────────────────
+     faAvailGb 由後端每次現查，但前端原本只在啟動時 loadSettings() 取一次，
+     進了設定頁看到的還是開機那一刻的數字。
+     現在：進設定頁後每 3 秒問一次 /api/status（比 /api/settings 輕 ——
+     不必讀檔、不必序列化 32 個鍵），離開就停；點文字也能立刻刷新一次。 */
+  let _memTimer = null;
+  async function refreshMemAvail() {
+    try {
+      const s = await API.getStatus();
+      if (s && typeof s.memAvailGb === "number") {
+        _faTune.avail = s.memAvailGb;
+        refreshFaTuneLabels();
+      }
+    } catch (e) { /* 取不到就維持原值，下一拍再試 */ }
+  }
+  function startMemPoll() {
+    stopMemPoll();
+    refreshMemAvail();
+    _memTimer = setInterval(refreshMemAvail, 3000);
+  }
+  function stopMemPoll() {
+    if (_memTimer) { clearInterval(_memTimer); _memTimer = null; }
   }
 
   /* ── Download center ──────────────────────────────────────────────────
@@ -213,8 +239,15 @@
     // 這裡補一次重繪，值沒變時 renderBatchConfig 自己會跳過重建。
     try { renderBatchConfig(); } catch (e) {}
     const el = $("#model-status");
-    el.classList.toggle("loading", !s.modelReady);
+    // 收尾中：按了停止、模型釋放已登記，但 transcribe() 還沒返回。
+    // 這時識別看起來停了，後台其實還在收尾 —— 必須讓使用者看見，否則會以為按鈕沒反應。
+    const draining = !s.modelReady && !s.loading && !!s.releasing;
+    el.classList.toggle("loading", !!s.loading);
+    el.classList.toggle("draining", draining);
+    // 已釋放（就緒但沒載入）用灰點；載入中／收尾中用黃點；就緒用綠點。
+    el.classList.toggle("off", !s.modelReady && !s.loading && !draining);
     $(".t", el).textContent = s.modelReady ? T("status.ready", "模型已就緒")
+      : draining ? T("status.draining", "收尾中…\n等待釋放記憶體")
       : (s.loading ? T("status.loading", "載入模型中…") : T("status.needModel", "就绪 · 模型未载入内存（已释放）"));
     // 三条管线：只有跑任务时才显示，静默时整块隐藏（侧栏太窄，别常驻噪音）。
     const pipes = s.pipelines || null;
@@ -3247,6 +3280,8 @@
       // 直接標成警示色，免得他跑完才發現沒有詞級時間軸。
       ms.classList.toggle("is-low",
         _faTune.avail != null && _faTune.avail < _faTune.gate);
+      // 讓「可點」有文字提示：游標與 hover 效果在 CSS，這裡補 title。
+      ms.title = T("set.faMemRefresh", "點一下重新整理");
     }
     const why = $("#fa-gate-why");
     if (why) {
@@ -3255,6 +3290,12 @@
       why.textContent = low
         ? T("set.faGateLow", null, { gb: _faTune.warn.toFixed(1) }) : "";
     }
+  }
+
+  // 點「目前可用 X.X GB」立刻刷新一次，不必等 3 秒的自動刷新。
+  // 游標與 hover 效果在 CSS（#fa-mem-state），讓「可點」這件事看得出來。
+  if ($("#fa-mem-state")) {
+    $("#fa-mem-state").addEventListener("click", () => refreshMemAvail());
   }
 
   function applyFaTuning(s) {
