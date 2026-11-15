@@ -634,6 +634,30 @@ class WebBackend:
             except Exception:
                 pass
 
+    def drop_checkpoint(self, path: str, name: str = "",
+                        upload: bool = False) -> dict:
+        """刪掉某個檔案的斷點，讓下次從頭跑。
+
+        **只刪斷點**（checkpoints.db 裡的那一行 + JSON 鏡像）。已寫出的 SRT /
+        rich.json 是產出，不動 —— 使用者可能是想重跑一遍拿新參數的結果，
+        舊產出留著才有對比。真要重來，runner 的「輸出檔落後於斷點」檢查
+        會自己從頭寫，不會把新內容接到舊檔尾。
+
+        ``upload`` 要與當初入隊時一致：拖放副本用內容身分，本地引用用路徑身分，
+        算出來的 task_id 不同，搞錯就刪不到真正的斷點。
+        """
+        try:
+            from longform_runner import Checkpoint
+            task_id, _src = self._source_identity(path, name, upload=upload)
+            db = BASE_DIR / "longform_state" / "checkpoints.db"
+            ck = Checkpoint(db, task_id)
+            _f, _i, status = ck.load()
+            had = bool(status)
+            ck.delete()
+            return {"ok": True, "taskId": task_id, "had": had}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     def _emit_inner(self, event: str, payload: dict):
         # Wave 11：只對進度類事件加 scope，其餘事件契約完全不變。
         # 單檔任務 scope=None → payload 一個字都不動，舊前端也相容。

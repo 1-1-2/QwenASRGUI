@@ -352,6 +352,11 @@
       if (MODE !== "web") return { ok: true, mock: true };
       return apiPost("/api/batch/rebuild/srt", { id });
     },
+    // 刪掉這一列的斷點，讓下次從頭跑（不動已生成的 SRT）
+    async batchDropCheckpoint(id) {
+      if (MODE !== "web") return { ok: true, mock: true, had: true };
+      return apiPost("/api/batch/drop-checkpoint", { id });
+    },
     async batchClear() {
       if (MODE !== "web") return { ok: true, removed: 0, mock: true };
       return apiPost("/api/batch/clear", {});

@@ -1015,7 +1015,22 @@ textarea.input { resize: vertical; min-height: 64px; font-size: 13px; line-heigh
 .b-row .dur { grid-area: dur; text-align: right; }
 .b-row .used { grid-area: used; text-align: right; }
 .b-row .left { grid-area: left; text-align: right; }
-.b-row .st { grid-area: st; justify-self: end; }
+.b-row .st {
+  grid-area: st; justify-self: end;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+}
+/* 行內「刪除斷點」：灰字帶底線 → hover 轉紅 → 點一次變紅「確認」，再點才執行。
+   放在狀態欄下方，不佔新的一行，所以列高不變。 */
+.b-row .ckpt-drop {
+  appearance: none; background: none; border: 0; padding: 0;
+  font-family: var(--font-sans); font-size: 11px; line-height: 1.2;
+  color: var(--faint);
+  text-decoration: underline; text-underline-offset: 2px;
+  cursor: pointer; white-space: nowrap;
+}
+.b-row .ckpt-drop:hover { color: var(--live); }
+.b-row .ckpt-drop.is-confirm { color: var(--live); font-weight: 500; }
+.b-row .ckpt-drop:disabled { opacity: .45; cursor: default; }
 /* 執行中：狀態欄換成兩行百分比，顏色與下面兩條進度條一一對應。
    非執行中仍用 .chip，所以只覆蓋 .st-pcts 這一支。 */
 .b-row .st-pcts {

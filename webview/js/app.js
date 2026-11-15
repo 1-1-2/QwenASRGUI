@@ -1913,20 +1913,27 @@
                      >${escapeHtml(T("batch.retry", "重試"))}</button>`
           : ""}</div>` : ""}</div>
       <span class="dur">${s.dur ? fmtDur(s.dur) : "—"}</span>
-      ${it.status === "failed"
-        // 失敗行：狀態 chip 直接變成重試按鈕。舊版只有「⋯」選單裡有「重試」，
-        // 使用者看到「失敗」卻找不到怎麼再跑一次，以為本次執行會自動重試。
-        ? `<button class="st chip chip-retry" data-retry="${it.id}"
-                   title="${escapeHtml(T("batch.retryHint", "點擊重新排隊；已跑完的段落會從斷點續跑"))}"
-                   >${escapeHtml(T("batch.retry", "重試"))} ↻</button>`
-        : s.isActive
-          // 跑起來之後，狀態欄換成兩行百分比（識別 / 對齊），顏色與下面
-          // 兩條進度條一一對應。待處理／完成等狀態仍用原來的 chip。
-          ? `<span class="st st-pcts">
-               <span class="asr">${escapeHtml(T("batch.asrPct", null, { p: s.pct }))}</span>
-               <span class="fa">${escapeHtml(T("batch.faPct", null, { p: s.pctFa }))}</span>
-             </span>`
-          : `<span class="st chip ${cls}">${label}</span>`}
+      <span class="st ${s.isActive ? "st-pcts" : "st-idle"}">
+        ${it.status === "failed"
+          // 失敗行：狀態 chip 直接變成重試按鈕。舊版只有「⋯」選單裡有「重試」，
+          // 使用者看到「失敗」卻找不到怎麼再跑一次，以為本次執行會自動重試。
+          ? `<button class="chip chip-retry" data-retry="${it.id}"
+                     title="${escapeHtml(T("batch.retryHint", "點擊重新排隊；已跑完的段落會從斷點續跑"))}"
+                     >${escapeHtml(T("batch.retry", "重試"))} ↻</button>`
+          : s.isActive
+            // 跑起來之後，狀態欄換成兩行百分比（識別 / 對齊），顏色與下面
+            // 兩條進度條一一對應。待處理／完成等狀態仍用原來的 chip。
+            ? `<span class="asr">${escapeHtml(T("batch.asrPct", null, { p: s.pct }))}</span>
+               <span class="fa">${escapeHtml(T("batch.faPct", null, { p: s.pctFa }))}</span>`
+            : `<span class="chip ${cls}">${label}</span>`}
+        ${!s.isActive && API.mode === "web"
+          // 行內刪斷點：灰字帶底線，hover 轉紅；點一次變紅「確認」，再點才真的刪。
+          // 兩段式而不是彈 confirm()：Edge --app 的原生對話框樣式突兀且會阻塞。
+          ? `<button class="ckpt-drop" data-ckpt="${it.id}"
+                     title="${escapeHtml(T("batch.dropCkptHint", "下次從頭跑；已生成的 SRT 保留"))}"
+                     >${escapeHtml(T("batch.dropCkpt", "刪除斷點"))}</button>`
+          : ""}
+      </span>
       <span class="used">${s.isActive && s.used > 0
         ? T("batch.used", null, { t: fmtDur(s.used) }) : "—"}</span>
       <span class="left">${s.isActive && s.left != null
@@ -1937,6 +1944,35 @@
         <div class="bar fa"><i style="width:${s.pctFa}%"></i></div>
       </div>
       <button class="more" title="${moreTitle}" aria-label="${moreTitle}">⋯</button>`;
+    // 行內刪斷點：第一次點變紅「確認」，3 秒內再點才執行；逾時自動復原。
+    const ckptBtn = row.querySelector(".ckpt-drop");
+    if (ckptBtn) {
+      ckptBtn.addEventListener("click", async e => {
+        e.stopPropagation();
+        if (!ckptBtn.classList.contains("is-confirm")) {
+          ckptBtn.classList.add("is-confirm");
+          ckptBtn.textContent = T("batch.dropCkptConfirm", "確認");
+          clearTimeout(ckptBtn._reset);
+          ckptBtn._reset = setTimeout(() => {
+            ckptBtn.classList.remove("is-confirm");
+            ckptBtn.textContent = T("batch.dropCkpt", "刪除斷點");
+          }, 3000);
+          return;
+        }
+        clearTimeout(ckptBtn._reset);
+        ckptBtn.disabled = true;
+        try {
+          const r = await API.batchDropCheckpoint(it.id);
+          if (r && r.ok === false) logLine("✕ " + (r.error || ""));
+          else logLine("· " + (r && r.had
+            ? T("batch.dropCkptDone") : T("batch.dropCkptNone")));
+        } finally {
+          ckptBtn.disabled = false;
+          ckptBtn.classList.remove("is-confirm");
+          ckptBtn.textContent = T("batch.dropCkpt", "刪除斷點");
+        }
+      });
+    }
     row.querySelector(".more").addEventListener("click", e => {
       e.stopPropagation();
       openBatchMenu(row.querySelector(".more"), it);
