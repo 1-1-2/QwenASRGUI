@@ -691,6 +691,12 @@ class WebViewServer:
                         if it is None:
                             return self._json({"ok": False,
                                                "error": "找不到這一列"})
+                        # 這一列還在跑（含取消後的收尾）時拒絕：worker 退出前
+                        # 會把斷點再寫一次，刪了也會立刻回來，使用者會以為沒生效。
+                        if (str(getattr(server.backend, "_batch_item_id", "") or "") == _id
+                                and int(getattr(server.backend, "_running", 0) or 0) > 0):
+                            return self._json({"ok": False,
+                                               "error": "這一列還在跑或收尾中，請等它停下來再刪"})
                         try:
                             r = server.backend.drop_checkpoint(
                                 it.get("path"), it.get("name") or "",
