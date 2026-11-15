@@ -652,7 +652,10 @@ class WebBackend:
             db = BASE_DIR / "longform_state" / "checkpoints.db"
             ck = Checkpoint(db, task_id)
             _f, _i, status = ck.load()
-            had = bool(status)
+            # Checkpoint 用 "new" 當「沒有斷點」的哨兵值（見 _json_load 的
+            # 回退分支），所以不能只判真假 —— 否則永遠回報「有斷點」，
+            # 明明沒有也提示「已刪除」，使用者會以為按鈕在騙人。
+            had = bool(status) and str(status) != "new"
             ck.delete()
             return {"ok": True, "taskId": task_id, "had": had}
         except Exception as e:
